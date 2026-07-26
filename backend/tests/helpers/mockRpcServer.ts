@@ -84,49 +84,16 @@ export class MockRpcServer {
   }
 
   private encodeEvent(e: MockRpcEvent): object {
-    // Return raw base64-encoded XDR topic stubs that EventIndexer expects.
-    // We encode each field as a ScVal symbol / address / i128 using the
-    // stellar-sdk so the real decoder in EventIndexer can parse them.
-    const { xdr } = require('@stellar/stellar-sdk');
-
-    const toBase64 = (scVal: unknown) =>
-      (scVal as { toXDR: (fmt: string) => string }).toXDR('base64');
-
+    // Return JSON-safe placeholders that the test's Stellar SDK mock can
+    // reconstruct into ScVal-like objects for EventIndexer.
     return {
       topic: [
-        toBase64(xdr.ScVal.scvSymbol(e.type)),
-        toBase64(
-          xdr.ScVal.scvAddress(
-            xdr.ScAddress.scAddressTypeAccount(
-              xdr.PublicKey.publicKeyTypeEd25519(
-                Buffer.alloc(32).fill(1),
-              ),
-            ),
-          ),
-        ),
-        toBase64(
-          xdr.ScVal.scvAddress(
-            xdr.ScAddress.scAddressTypeAccount(
-              xdr.PublicKey.publicKeyTypeEd25519(
-                Buffer.alloc(32).fill(2),
-              ),
-            ),
-          ),
-        ),
-        toBase64(
-          xdr.ScVal.scvAddress(
-            xdr.ScAddress.scAddressTypeContract(Buffer.alloc(32).fill(3)),
-          ),
-        ),
+        { type: 'symbol', value: e.type },
+        { type: 'address', value: 'GTESTSUBSCRIBER' },
+        { type: 'address', value: 'GTESTMERCHANT' },
+        { type: 'address', value: 'CTESTTOKEN' },
       ],
-      value: toBase64(
-        xdr.ScVal.scvI128(
-          new xdr.Int128Parts({
-            hi: xdr.Int64.fromString('0'),
-            lo: xdr.Uint64.fromString(e.amount),
-          }),
-        ),
-      ),
+      value: { type: 'i128', value: e.amount },
       ledger: e.ledger,
       contractId: 'CTEST',
       id: `${e.ledger}-0`,
