@@ -882,6 +882,17 @@ npm run dev
 
 ---
 
+## Documentation
+
+| Guide | Description |
+|---|---|
+| [Storage TTL Management](docs/operations.md) | Detecting at-risk entries, extending TTL programmatically, alert thresholds |
+| [Network Configuration](docs/networks.md) | Testnet vs. mainnet side-by-side, common mistakes, switching guide |
+| [Backend API Cookbook](docs/api-cookbook.md) | 8 recipes: auth, subscriptions, webhooks, CSV export, MRR, TTL health |
+| [Changelog](CHANGELOG.md) | Version history following Keep a Changelog format |
+
+---
+
 ## License
 
 MIT
