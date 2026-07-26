@@ -1,881 +1,639 @@
-# Backend Event-Indexing Architecture for SorobanPay
+# SorobanPay Architecture
 
-This document describes the recommended architecture for indexing and processing off-chain events from the SorobanPay smart contract. Contributors building integrations, dashboards, or payment analytics should use this guide to design a robust event processing pipeline.
+This document is the authoritative reference for SorobanPay's system architecture. It covers the three-layer design, data flows, component interactions, backend role definition, deployment topologies, and technology rationale.
 
 ---
 
 ## Table of Contents
 
-1. [Event Sources](#event-sources)
-2. [Event Schema](#event-schema)
-3. [Storage Architecture](#storage-architecture)
-4. [Indexing Patterns](#indexing-patterns)
-5. [Example Workflows](#example-workflows)
-6. [Implementation Considerations](#implementation-considerations)
-7. [Error Handling & Resilience](#error-handling--resilience)
+1. [System Overview](#1-system-overview)
+2. [Component Responsibility Matrix](#2-component-responsibility-matrix)
+3. [Data Flow Diagrams](#3-data-flow-diagrams)
+   - [subscribe flow](#31-subscribe-flow)
+   - [execute_payment flow](#32-execute_payment-flow)
+   - [cancel flow](#33-cancel-flow)
+   - [Event indexing flow](#34-event-indexing-flow)
+4. [Backend Role Definition](#4-backend-role-definition)
+5. [Inter-Service Communication](#5-inter-service-communication)
+6. [Deployment Topologies](#6-deployment-topologies)
+   - [Single-server](#61-single-server)
+   - [Docker Compose](#62-docker-compose)
+   - [Kubernetes](#63-kubernetes)
+7. [Storage TTL and Entry Lifecycle](#7-storage-ttl-and-entry-lifecycle)
+8. [Technology Choices and Rationale](#8-technology-choices-and-rationale)
+9. [Event Schema Reference](#9-event-schema-reference)
+10. [Backend Service Inventory](#10-backend-service-inventory)
 
 ---
 
-## Event Sources
+## 1. System Overview
 
-SorobanPay emits two distinct event types. All events originate from the Soroban smart contract and are indexed via Soroban RPC's event stream.
+SorobanPay is a non-custodial recurring payments protocol built on Stellar's Soroban smart contract platform. The system has three independent layers:
 
-### Event Type 1: `subscribe`
+```mermaid
+graph TD
+    subgraph Browser["Browser (Subscriber / Merchant)"]
+        FE["Frontend\nNext.js 14 + Freighter"]
+    end
 
-**When emitted:** After a subscription is successfully created or updated (i.e., new subscription data is persisted and TTL is set).
+    subgraph Chain["Stellar Blockchain"]
+        CONTRACT["Soroban Contract\nSubscriptionProtocol"]
+        TOKEN["SEP-41 Token\nContract"]
+        LEDGER["Persistent Storage\n(subscription entries)"]
+    end
 
-**Semantics:**
-- Marks the **start** or **update** of a recurring payment relationship.
-- The subscription is immediately active—the next payment window opens at `subscribe_ledger_time + interval`.
-- If called with the same `(subscriber, merchant)` pair, it **replaces** the previous subscription (not idempotent in terms of data, but safe to call multiple times).
+    subgraph Backend["Optional Backend (read-only)"]
+        API["Express REST API\n:3001"]
+        INDEXER["EventIndexer\n(cron every 5 min)"]
+        SCHEDULER["PaymentScheduler\n(cron every 1 min)"]
+        SUMMARY["PayoutSummaryGenerator\n(cron daily/weekly)"]
+        RECONCILER["Reconciler\n(cron every hour)"]
+        WEBHOOK["WebhookNotifier"]
+        DB[("PostgreSQL\n(Prisma ORM)")]
+    end
 
-**Event Schema:**
+    RPC["Soroban RPC\nhttps://soroban-testnet.stellar.org"]
 
-| Component | Type | Description |
-|-----------|------|-------------|
-| **Topic[0]** | Symbol | Literal: `"subscribe"` |
-| **Topic[1]** | Address | Subscriber Stellar account (G-address) |
-| **Topic[2]** | Address | Merchant Stellar account (G-address) |
-| **Data** | i128 | Payment amount in token's smallest unit (e.g., stroops for native asset) |
+    FE -->|"sign & submit txn"| RPC
+    RPC -->|"broadcast"| CONTRACT
+    CONTRACT -->|"transfer()"| TOKEN
+    CONTRACT -->|"set/get/remove"| LEDGER
+    CONTRACT -->|"emit events"| RPC
 
-**Example (RPC response):**
+    INDEXER -->|"getEvents()"| RPC
+    SCHEDULER -->|"simulateTransaction()\nsubmitTransaction()"| RPC
+    INDEXER -->|"upsert"| DB
+    SUMMARY -->|"read/write"| DB
+    RECONCILER -->|"read/write"| DB
+    WEBHOOK -->|"HTTP POST"| MerchantEndpoint["Merchant\nWebhook Endpoint"]
+    API -->|"SELECT"| DB
+```
 
-```json
-{
-  "type": "contract",
-  "ledger": 1_234_567,
-  "ledger_close_time": "2025-06-24T10:30:00Z",
-  "contract_id": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
-  "id": "0000005314649600-0000000000",
-  "topics": [
-    "AAAADwAAAAhzdWJzY3JpYmU=",
-    "AAAAAQB6Mcc...",
-    "AAAAAQB9RwE..."
-  ],
-  "data": "AAAACgAAAAoAAAAAAYchIE",
-  "in_successful_contract_invocation": true,
-  "tx_hash": "1a2b3c4d5e6f7g8h..."
-}
+The contract is the **sole source of truth** for subscription state. The backend is **read-only with respect to the chain** — it observes events and serves derived data, but never alters chain state (except the optional `PaymentScheduler`, which can be disabled by omitting `OPERATOR_SECRET`).
+
+---
+
+## 2. Component Responsibility Matrix
+
+| Concern | Contract | Frontend | Backend |
+|---------|:--------:|:--------:|:-------:|
+| Store subscription state | ✅ | ❌ | ❌ |
+| Execute token transfer | ✅ | ❌ | ❌ |
+| Enforce time-lock | ✅ | ❌ | ❌ |
+| Emit structured events | ✅ | ❌ | ❌ |
+| Manage storage TTL | ✅ | ❌ | ❌ |
+| Sign transactions | ❌ | ✅ | ❌* |
+| Submit transactions to RPC | ❌ | ✅ | ❌* |
+| Display subscription UI | ❌ | ✅ | ❌ |
+| Connect Freighter wallet | ❌ | ✅ | ❌ |
+| Index contract events | ❌ | ❌ | ✅ |
+| Detect cancellations | ❌ | ❌ | ✅ |
+| Serve analytics REST API | ❌ | ❌ | ✅ |
+| Generate payout summaries | ❌ | ❌ | ✅ |
+| Send webhook notifications | ❌ | ❌ | ✅ |
+| Reconcile chain vs. DB state | ❌ | ❌ | ✅ |
+
+> *The `PaymentScheduler` can submit `execute_payment` transactions when `OPERATOR_SECRET` is configured, making it a semi-active participant. This mode is **opt-in** and disabled by default.
+
+### What each component owns
+
+**Smart Contract (`contracts/subscription/`):**
+- Subscription records in Soroban persistent storage, keyed by `(subscriber, merchant)`.
+- All token movement — transfers go directly subscriber → merchant via SEP-41 `transfer()`.
+- Authorization enforcement via `require_auth()` on every entry point.
+- Event publication to the Soroban event log.
+
+**Frontend (`frontend/`):**
+- Browser-side wallet connection and transaction signing via Freighter.
+- User-facing forms for subscribing, viewing state, and cancelling.
+- No server-side rendering logic; a static Next.js App Router app.
+
+**Backend (`backend/`):**
+- Derived read models built from indexed events (PostgreSQL via Prisma).
+- Cron-scheduled indexing, summary generation, reconciliation, and (optionally) payment scheduling.
+- REST endpoints consumed by merchant dashboards.
+- Webhook delivery to merchant-configured endpoints.
+
+---
+
+## 3. Data Flow Diagrams
+
+### 3.1 subscribe flow
+
+```mermaid
+sequenceDiagram
+    actor Subscriber
+    participant Freighter
+    participant Frontend as Next.js Frontend
+    participant RPC as Soroban RPC
+    participant Contract as SubscriptionProtocol
+    participant Token as SEP-41 Token
+
+    Subscriber->>Frontend: Fill subscription form
+    Frontend->>Freighter: buildTransaction(subscribe(...))
+    Freighter-->>Subscriber: Prompt to approve
+    Subscriber->>Freighter: Approve & sign
+    Freighter-->>Frontend: signed XDR
+    Frontend->>RPC: submitTransaction(signedXDR)
+    RPC->>Contract: invoke subscribe(subscriber, merchant, token, amount, interval)
+    Contract->>Contract: require_auth(subscriber)
+    Contract->>Contract: validate inputs
+    Contract->>Contract: write SubscriptionData to persistent storage
+    Contract->>Contract: extend_ttl(key, MIN_TTL, MAX_TTL)
+    Contract->>RPC: emit event "subscribe"
+    RPC-->>Frontend: tx result
+    Frontend-->>Subscriber: SuccessCard (tx hash)
+```
+
+**Key invariants:**
+- `subscriber.require_auth()` is called before any state mutation.
+- `next_payment = ledger_timestamp + interval` — the first payment window opens immediately.
+- If the `(subscriber, merchant)` pair already exists, the record is overwritten (update semantics).
+
+### 3.2 execute_payment flow
+
+```mermaid
+sequenceDiagram
+    actor Merchant
+    participant RPC as Soroban RPC
+    participant Contract as SubscriptionProtocol
+    participant Token as SEP-41 Token
+    participant Backend as Backend EventIndexer
+
+    Merchant->>RPC: invoke execute_payment(subscriber, merchant)
+    RPC->>Contract: execute_payment(subscriber, merchant)
+    Contract->>Contract: require_auth(merchant)
+    Contract->>Contract: load SubscriptionData
+    Contract->>Contract: check now >= next_payment
+    Contract->>Token: balance(subscriber)
+    alt insufficient balance
+        Contract->>RPC: emit "payment_transfer_failure"
+        Contract-->>RPC: Err(TransferFailed)
+    else sufficient balance
+        Contract->>Token: transfer(subscriber, merchant, amount)
+        Contract->>Contract: next_payment = now + interval
+        Contract->>Contract: persist updated SubscriptionData
+        Contract->>Contract: extend_ttl(key, MIN_TTL, MAX_TTL)
+        Contract->>RPC: emit "payment_transfer_success"
+        Contract->>RPC: emit "executed"
+        Contract-->>RPC: Ok(())
+    end
+    Backend->>RPC: getEvents() [every 5 min]
+    RPC-->>Backend: events
+    Backend->>Backend: persist to PostgreSQL
+```
+
+**Late-payment rescheduling:** When a payment is collected after its scheduled time, `next_payment` is set to `now + interval` (not `old_next_payment + interval`). This prevents schedule drift from cascading across billing cycles. See the contract source for the full design rationale.
+
+### 3.3 cancel flow
+
+```mermaid
+sequenceDiagram
+    actor Subscriber
+    participant Frontend as Next.js Frontend
+    participant RPC as Soroban RPC
+    participant Contract as SubscriptionProtocol
+    participant Backend as Backend EventIndexer
+
+    Subscriber->>Frontend: Click Cancel
+    Frontend->>RPC: invoke cancel(subscriber, merchant)
+    RPC->>Contract: cancel(subscriber, merchant)
+    Contract->>Contract: require_auth(subscriber)
+    Contract->>Contract: has(key)?
+    alt no subscription
+        Contract-->>RPC: Err(NoActiveSubscription)
+    else subscription exists
+        Contract->>Contract: remove(key)
+        Contract->>RPC: emit "cancel"
+        Contract-->>RPC: Ok(())
+    end
+    Backend->>RPC: getEvents() [next poll]
+    RPC-->>Backend: cancel event
+    Backend->>Backend: mark subscription inactive in DB
+```
+
+### 3.4 Event indexing flow
+
+```mermaid
+flowchart TD
+    A["node-cron: every 5 min"] --> B["EventIndexer.fetchAndStoreEvents()"]
+    B --> C["SorobanRpc.getEvents()\nfilter: contractId, startLedger"]
+    C --> D{"events.length > 0?"}
+    D -->|No| E["log: no new events"]
+    D -->|Yes| F["for each event"]
+    F --> G["decodeScValSymbol(topics[0])"]
+    G --> H{"eventType in\n{subscribe, executed}?"}
+    H -->|No| I["skip"]
+    H -->|Yes| J["decode subscriber, merchant,\ntoken, amount"]
+    J --> K{"duplicate\nin DB?"}
+    K -->|Yes| I
+    K -->|No| L["prisma.event.create()"]
+    L --> M{"eventType == executed?"}
+    M -->|Yes| N["AuditLogger.logPayment()"]
+    M -->|No| O["done"]
+    N --> O
+
+    P["node-cron: every hour"] --> Q["Reconciler.run()"]
+    Q --> R["fetchChainEventsFromDB()"]
+    Q --> S["PrismaSubscriptionDB.load()"]
+    R --> T["reconcile(chainEvents, db)"]
+    S --> T
+    T --> U["apply repairs"]
+    U --> V["log errors"]
 ```
 
 ---
 
-### Event Type 2: `executed`
+## 4. Backend Role Definition
 
-**When emitted:** After a payment transfer is successfully completed and the subscription's `next_payment` timestamp is updated.
+The backend is **read-only with respect to the chain**. It never submits transactions, never holds funds, and never stores private keys.
 
-**Semantics:**
-- Confirms that a recurring payment was **collected** from subscriber and **delivered** to merchant.
-- The next payment window opens at `current_timestamp + interval` (captured at invocation start).
-- If the contract's `token.transfer()` fails (insufficient allowance or balance), **no event is emitted** and the subscription remains unmodified.
+### Definitive statement
 
-**Event Schema:**
+> The SorobanPay backend polls `getEvents()` from Soroban RPC to build derived read models in PostgreSQL. It exposes these models via a REST API and sends webhook notifications to merchant-configured endpoints. It does **not** submit transactions to the Stellar network except via the opt-in `PaymentScheduler` (disabled by default).
 
-| Component | Type | Description |
-|-----------|------|-------------|
-| **Topic[0]** | Symbol | Literal: `"executed"` |
-| **Topic[1]** | Address | Subscriber Stellar account (G-address) |
-| **Topic[2]** | Address | Merchant Stellar account (G-address) |
-| **Data** | i128 | Payment amount in token's smallest unit |
+### Service roles
 
-**Example (RPC response):**
+| Service | Trigger | Role |
+|---------|---------|------|
+| `EventIndexer` | cron every 5 min | Polls Soroban RPC, decodes and persists `subscribe` and `executed` events |
+| `PayoutSummaryGenerator` | cron daily at 01:00, weekly Sunday at 02:00 | Aggregates payment history into `PayoutSummary` rows per merchant |
+| `PaymentScheduler` | cron every 1 min (opt-in) | Submits `execute_payment` for due subscriptions; **disabled if `OPERATOR_SECRET` is unset** |
+| `Reconciler` | cron every hour | Compares chain event log against DB state; emits repair actions |
+| `WebhookNotifier` | triggered by indexer | HTTP POST to merchant webhook URLs on significant events |
+| `Express REST API` | on-demand HTTP | Serves `/api/summaries/:merchant` and `/api/reconcile` endpoints |
 
-```json
-{
-  "type": "contract",
-  "ledger": 1_234_890,
-  "ledger_close_time": "2025-07-24T10:30:00Z",
-  "contract_id": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
-  "id": "0000005314649600-0000000001",
-  "topics": [
-    "AAAADwAAAAhleGVjdXRlZA==",
-    "AAAAAQB6Mcc...",
-    "AAAAAQB9RwE..."
-  ],
-  "data": "AAAACgAAAAoAAAAAAYchIE",
-  "in_successful_contract_invocation": true,
-  "tx_hash": "2b3c4d5e6f7g8h9i..."
-}
+### What the backend does NOT do
+
+- It does not store subscriber funds or merchant balances.
+- It does not have authority over the smart contract.
+- It cannot cancel or modify subscriptions.
+- It does not hold Stellar keypairs (unless `OPERATOR_SECRET` is set for the optional scheduler).
+- It is not required for the contract to function — subscriptions work without any backend deployed.
+
+---
+
+## 5. Inter-Service Communication
+
+### How the REST API reads from the indexer's database
+
+The `EventIndexer` and the REST API share the same PostgreSQL database (accessed via Prisma). There is no message bus between them — the indexer writes rows to `Event`, `AuditLog`, and `PayoutSummary` tables, and the API reads from those tables directly.
+
+```
+EventIndexer ──writes──► PostgreSQL ◄──reads── Express REST API
+                              ▲
+PayoutSummaryGenerator ──writes─┘
 ```
 
+This is an intentional simplicity choice: for the traffic volume of a merchant dashboard, a shared database is sufficient and avoids operational complexity.
+
+### How the webhook worker consumes events
+
+The `WebhookNotifier` is not a separate process — it is called inline from the `EventIndexer` after a successful event persist. The delivery is HTTP POST with HMAC-SHA256 signature (signed with `WEBHOOK_SECRET`).
+
+```mermaid
+sequenceDiagram
+    participant Indexer as EventIndexer
+    participant DB as PostgreSQL
+    participant WH as WebhookNotifier
+    participant Merchant as Merchant Endpoint
+
+    Indexer->>DB: prisma.event.create(decoded)
+    Indexer->>DB: SELECT webhook_endpoints WHERE merchant=...
+    Indexer->>WH: notifyMerchant(event, endpoints)
+    WH->>WH: compute HMAC-SHA256(payload, WEBHOOK_SECRET)
+    WH->>Merchant: POST /webhook {event, signature}
+    Merchant-->>WH: 200 OK
+    WH->>DB: prisma.webhookDelivery.create(attempt, status)
+```
+
+Failed deliveries (non-2xx or timeout) are recorded in `WebhookDelivery` for retry inspection. The backend uses an exponential-backoff retry loop within the `PaymentScheduler` retry helper (`backend/src/lib/retry.ts`).
+
+### Reconciler
+
+The `Reconciler` (hourly cron) compares the DB's view of subscriptions against the event log to detect drift. It uses `fetchChainEventsFromDB()` to reconstruct chain state from stored events, then diffs against the live `subscriptions` table. Detected discrepancies are logged as `repairs` or `errors`.
+
 ---
 
-### Event Type 3: Cancellation (Implicit)
+## 6. Deployment Topologies
 
-**When detected:** When no `subscribe` or `executed` events appear for a `(subscriber, merchant)` pair for an extended period **and** the subscription's `next_payment` has not advanced.
+### 6.1 Single-server
 
-**Semantics:**
-- The smart contract does **not** emit a `cancel` event (per design).
-- Cancellation is inferred by:
-  1. Absence of `executed` events after a period longer than the subscription interval.
-  2. (Optional) Querying the contract's persistent storage directly via `getLedgerEntry` (expensive, not recommended for continuous indexing).
+Suitable for development, staging, or low-traffic production.
 
-**Why this design:**
-- Reduces event bloat on the ledger.
-- Makes cancellation detection an **indexer concern**, not an on-chain concern.
-- Allows indexers to implement their own TTL logic (e.g., mark inactive after 2× subscription interval).
+```
+┌─────────────────────────────────────────────────────────┐
+│  Single VM or VPS                                        │
+│                                                          │
+│  ┌───────────────┐  ┌───────────────┐  ┌─────────────┐  │
+│  │  Next.js      │  │  Express      │  │  PostgreSQL │  │
+│  │  (port 3000)  │  │  (port 3001)  │  │  (port 5432)│  │
+│  └───────────────┘  └───────────────┘  └─────────────┘  │
+│                                                          │
+│  ┌─────────────────────────────────────────────────────┐ │
+│  │  nginx reverse proxy (ports 80 / 443)               │ │
+│  │  /         → Next.js :3000                          │ │
+│  │  /api      → Express :3001                          │ │
+│  └─────────────────────────────────────────────────────┘ │
+└─────────────────────────────────────────────────────────┘
+```
+
+**Setup:**
+
+```bash
+# 1. Start PostgreSQL
+sudo systemctl start postgresql
+createdb sorobanpay
+
+# 2. Backend
+cd backend
+cp .env.example .env  # fill in DATABASE_URL, RPC_URL, CONTRACT_ID
+npx prisma migrate deploy
+npm start  # listens on :3001
+
+# 3. Frontend
+cd frontend
+cp .env.example .env.local  # fill in NEXT_PUBLIC_CONTRACT_ID
+npm run build
+npm start  # listens on :3000
+```
+
+### 6.2 Docker Compose
+
+For reproducible local development or single-host production with service isolation.
+
+```yaml
+# docker-compose.yml
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: sorobanpay
+      POSTGRES_USER: soroban
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U soroban"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build: ./backend
+    environment:
+      DATABASE_URL: postgresql://soroban:${POSTGRES_PASSWORD}@postgres:5432/sorobanpay
+      RPC_URL: ${RPC_URL}
+      CONTRACT_ID: ${CONTRACT_ID}
+      NETWORK_PASSPHRASE: ${NETWORK_PASSPHRASE}
+      PORT: 3001
+      WEBHOOK_SECRET: ${WEBHOOK_SECRET}
+    ports:
+      - "3001:3001"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: sh -c "npx prisma migrate deploy && node dist/index.js"
+
+  frontend:
+    build: ./frontend
+    environment:
+      NEXT_PUBLIC_CONTRACT_ID: ${CONTRACT_ID}
+      NEXT_PUBLIC_RPC_URL: ${RPC_URL}
+      NEXT_PUBLIC_NETWORK_PASSPHRASE: ${NETWORK_PASSPHRASE}
+    ports:
+      - "3000:3000"
+
+volumes:
+  pgdata:
+```
+
+```bash
+# Start all services
+cp .env.example .env  # fill in secrets
+docker compose up -d
+
+# View logs
+docker compose logs -f backend
+```
+
+### 6.3 Kubernetes
+
+For production workloads requiring horizontal scaling, rolling deployments, and secret management via Kubernetes Secrets or an external vault.
+
+```mermaid
+graph TD
+    subgraph Cluster["Kubernetes Cluster"]
+        subgraph NS["Namespace: sorobanpay"]
+            ING["Ingress\nnginx-ingress"]
+            FE_SVC["Service\nfrontend :3000"]
+            BE_SVC["Service\nbackend :3001"]
+            FE_DEPLOY["Deployment\nfrontend\n(2 replicas)"]
+            BE_DEPLOY["Deployment\nbackend\n(2 replicas)"]
+            DB_SVC["Service\npostgres :5432"]
+            DB_SS["StatefulSet\npostgres\n(1 replica)"]
+            PVC["PersistentVolumeClaim\n10Gi"]
+            SECRETS["Secret\nsorobanpay-secrets"]
+        end
+    end
+
+    Internet["Internet"] --> ING
+    ING -->|"/"| FE_SVC
+    ING -->|"/api"| BE_SVC
+    FE_SVC --> FE_DEPLOY
+    BE_SVC --> BE_DEPLOY
+    BE_DEPLOY --> DB_SVC
+    DB_SVC --> DB_SS
+    DB_SS --> PVC
+    BE_DEPLOY -.->|"envFrom"| SECRETS
+    FE_DEPLOY -.->|"envFrom"| SECRETS
+```
+
+**Minimal manifest snippets:**
+
+```yaml
+# secrets.yaml (values are base64-encoded)
+apiVersion: v1
+kind: Secret
+metadata:
+  name: sorobanpay-secrets
+  namespace: sorobanpay
+type: Opaque
+data:
+  DATABASE_URL: <base64>
+  WEBHOOK_SECRET: <base64>
+  OPERATOR_SECRET: <base64>   # optional; omit to disable PaymentScheduler
+
+---
+# backend-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend
+  namespace: sorobanpay
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: backend
+  template:
+    metadata:
+      labels:
+        app: backend
+    spec:
+      containers:
+        - name: backend
+          image: your-registry/sorobanpay-backend:latest
+          ports:
+            - containerPort: 3001
+          envFrom:
+            - secretRef:
+                name: sorobanpay-secrets
+          env:
+            - name: RPC_URL
+              value: "https://soroban-testnet.stellar.org"
+            - name: PORT
+              value: "3001"
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 3001
+            initialDelaySeconds: 10
+            periodSeconds: 5
+```
+
+**Scaling considerations:**
+
+- The `EventIndexer` cron job should run on **one replica only** (use a leader-election sidecar or disable horizontal scaling for cron-bearing pods, or extract crons into a dedicated `CronJob` resource).
+- The REST API and `WebhookNotifier` are stateless and scale horizontally.
+- Use `PodDisruptionBudget` to maintain availability during rolling updates.
 
 ---
 
-## Event Schema
+## 7. Storage TTL and Entry Lifecycle
 
-### Decoding Events from Soroban RPC
+Soroban persistent entries have a TTL measured in ledgers (not wall-clock time). SorobanPay sets explicit TTL values on every write:
 
-Events returned by `getEvents()` RPC call use XDR-encoded topics and data. Use the Stellar SDK to decode:
+| Constant | Ledgers | Wall-clock (approx.) |
+|----------|---------|----------------------|
+| `MIN_TTL_LEDGERS` | 518,400 | ~30 days |
+| `MAX_TTL_LEDGERS` | 6,307,200 | ~365 days |
 
-**TypeScript Example:**
+`extend_ttl(key, MIN_TTL, MAX_TTL)` is a no-op if the remaining TTL is already above `MIN_TTL`. When extension is needed, the entry is bumped to `MAX_TTL`.
+
+```
+subscribe()         ─────────────────────────────────────► TTL = MAX (~365 days)
+execute_payment()   ─────────────────────────────────────► TTL reset to MAX
+get_subscription()  ─────────────────────────────────────► TTL reset to MAX
+cancel()            → entry removed (TTL irrelevant)
+```
+
+Subscriptions that go a full year without a successful payment expire and are garbage-collected by the Soroban host — they cannot be read or paid against. A new `subscribe()` recreates the entry.
+
+---
+
+## 8. Technology Choices and Rationale
+
+### Why Soroban
+
+Soroban is Stellar's smart contract platform, chosen for:
+
+- **WASM execution**: Contracts compile to compact, deterministic WASM. SorobanPay's optimised release binary is typically < 30 KB.
+- **Persistent storage with TTL**: Native support for per-entry storage lifetimes, essential for garbage-collecting stale subscriptions without contract-level cleanup logic.
+- **SEP-41 token interface**: A standard fungible-token interface on Stellar, enabling compatibility with USDC, XLM wrapped tokens, and any other SEP-41 asset without bespoke integrations.
+- **Per-invocation auth**: `require_auth()` enforces fresh signatures on every call, eliminating stored session vulnerabilities.
+- **Low fees**: Soroban resource fees are predictable and far lower than EVM-equivalent operations, making micro-subscription amounts (e.g., $1/month) economically viable.
+- **Finality in ~5 seconds**: Stellar's consensus produces irreversible ledger finality in one round, with no probabilistic confirmation lag.
+
+### Why Next.js 14
+
+- **App Router**: React Server Components enable static rendering of UI shell; client components are hydrated only where wallet interaction is needed.
+- **TypeScript**: End-to-end type safety from Stellar SDK types to form state.
+- **Tailwind CSS**: Utility-first styling colocated with components; no separate CSS bundle.
+- **Zero server-side secrets**: The frontend has no backend-facing API routes. All Soroban RPC calls originate in the browser, consistent with the non-custodial model.
+
+### Why PostgreSQL + Prisma
+
+- **ACID transactions**: Event upserts are idempotent; duplicate events from cursor re-processing are handled by unique constraints.
+- **Structured queries**: Complex analytics (revenue by merchant, payment frequency, subscriber churn) require relational joins that document stores make awkward.
+- **Prisma ORM**: Type-safe schema migrations and generated client eliminate a class of runtime errors from raw SQL string building.
+- **Operational maturity**: Managed PostgreSQL is available on every major cloud provider (RDS, Cloud SQL, Supabase, Neon) with point-in-time recovery.
+
+### Why Express (not Fastify / NestJS / Hono)
+
+- Minimal dependency surface for a read-only analytics API.
+- `node-cron` integration is straightforward in a single Express process.
+- The backend is not a critical path for the protocol — it enhances UX but is not required for subscription correctness.
+
+---
+
+## 9. Event Schema Reference
+
+All events are published to the Soroban event log and available via `getEvents()` RPC.
+
+| Event | Topics | Data | Emitted by |
+|-------|--------|------|-----------|
+| `subscribe` | `(symbol, subscriber, merchant, token)` | `amount: i128` | `subscribe()` |
+| `executed` | `(symbol, subscriber, merchant, token)` | `amount: i128` | `execute_payment()`, `execute_payment_batch()` |
+| `payment_transfer_failure` | `(symbol, subscriber, merchant)` | `amount: i128` | `execute_payment()`, `execute_payment_batch()` |
+| `payment_transfer_success` | `(symbol, subscriber, merchant)` | `amount: i128` | `execute_payment_batch()` |
+| `cancel` | `(symbol, subscriber, merchant)` | `()` | `cancel()` |
+| `batch_execute_initiated` | `(symbol, merchant)` | `batch_size: i128` | `execute_payment_batch()` |
+
+**Decoding example (TypeScript):**
 
 ```typescript
-import { scValToNative, StrKey } from '@stellar/stellar-sdk';
-import { base64 } from '@stellar/stellar-sdk/lib/encoding';
+import { xdr, scValToNative } from "@stellar/stellar-sdk";
 
-interface DecodedEvent {
-  eventType: 'subscribe' | 'executed' | 'unknown';
-  subscriber: string;
-  merchant: string;
-  amount: bigint;
-  ledger: number;
-  ledgerCloseTime: string;
-  txHash: string;
-}
-
-export function decodeContractEvent(rpcEvent: any): DecodedEvent | null {
-  if (rpcEvent.type !== 'contract') {
-    return null;
-  }
-
-  try {
-    const topics = rpcEvent.topics.map((t: string) => 
-      scValToNative(xdr.SCVal.fromXDR(base64.decode(t)))
-    );
-    const data = scValToNative(xdr.SCVal.fromXDR(base64.decode(rpcEvent.data)));
-
-    const eventType = topics[0]; // "subscribe" or "executed"
-    const subscriber = StrKey.encodeAccount(
-      Buffer.from(topics[1].toString(), 'hex')
-    );
-    const merchant = StrKey.encodeAccount(
-      Buffer.from(topics[2].toString(), 'hex')
-    );
-    const amount = BigInt(data);
-
-    return {
-      eventType: eventType as 'subscribe' | 'executed',
-      subscriber,
-      merchant,
-      amount,
-      ledger: rpcEvent.ledger,
-      ledgerCloseTime: rpcEvent.ledger_close_time,
-      txHash: rpcEvent.tx_hash,
-    };
-  } catch (error) {
-    console.error('Failed to decode event:', error);
-    return null;
-  }
+function decodeEvent(topics: string[], value: string) {
+  const [type, subscriber, merchant, token] = topics.map((t) =>
+    scValToNative(xdr.ScVal.fromXDR(t, "base64"))
+  );
+  const amount = BigInt(scValToNative(xdr.ScVal.fromXDR(value, "base64")));
+  return { type, subscriber, merchant, token, amount };
 }
 ```
 
----
-
-## Storage Architecture
-
-### Option 1: PostgreSQL (Recommended for SaaS/Enterprise)
-
-**Pros:**
-- ACID transactions ensure consistency during concurrent indexing.
-- Query flexibility for complex subscription analytics.
-- Mature ecosystem and operational tooling.
-- TTL management via application logic or database jobs.
-
-**Schema Example:**
-
-```sql
--- Core subscription state
-CREATE TABLE subscriptions (
-  id BIGSERIAL PRIMARY KEY,
-  subscriber_address VARCHAR(56) NOT NULL, -- G-address
-  merchant_address VARCHAR(56) NOT NULL,   -- G-address
-  token_contract_id VARCHAR(56) NOT NULL,  -- C-address
-  amount NUMERIC NOT NULL,                 -- exact token amount
-  interval_seconds INT NOT NULL,           -- e.g., 86400 (1 day)
-  created_at TIMESTAMP NOT NULL DEFAULT NOW(),
-  updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
-  status VARCHAR(20) NOT NULL DEFAULT 'active', -- 'active', 'cancelled', 'failed'
-  cancelled_at TIMESTAMP,
-  UNIQUE (subscriber_address, merchant_address),
-  INDEX (merchant_address, status), -- for payment collection queries
-  INDEX (subscriber_address)        -- for subscriber dashboards
-);
-
--- Payment history
-CREATE TABLE payments (
-  id BIGSERIAL PRIMARY KEY,
-  subscription_id BIGINT NOT NULL REFERENCES subscriptions(id),
-  amount NUMERIC NOT NULL,
-  executed_at TIMESTAMP NOT NULL,
-  ledger_sequence INT NOT NULL,
-  transaction_hash VARCHAR(64) NOT NULL UNIQUE,
-  INDEX (subscription_id, executed_at DESC), -- payment history
-  INDEX (merchant_address, executed_at DESC) -- revenue reports
-);
-
--- Ledger tracking (for resumable polling)
-CREATE TABLE indexer_state (
-  id INT PRIMARY KEY DEFAULT 1,
-  last_ledger_processed INT NOT NULL DEFAULT 0,
-  last_cursor VARCHAR(255),
-  updated_at TIMESTAMP NOT NULL DEFAULT NOW()
-);
-```
-
-**Initialization Flow:**
-
-1. Query Soroban RPC for events from ledger 0 (or a known checkpoint).
-2. Decode each event and upsert into `subscriptions` table.
-3. Record `last_ledger_processed` in `indexer_state`.
-4. Resume from `last_ledger_processed` on restart.
-
-**Cancellation Detection:**
-
-```sql
--- Mark subscriptions as cancelled if no executed event in 2× interval
-UPDATE subscriptions
-SET status = 'cancelled', cancelled_at = NOW()
-WHERE status = 'active'
-  AND updated_at < NOW() - INTERVAL '1 day' * (interval_seconds / 86400 * 2);
-```
+For the full event reference and RPC query examples, see [docs/events.md](events.md).
 
 ---
 
-### Option 2: MongoDB (Flexible Schema)
-
-**Pros:**
-- Flexible schema for evolving event data.
-- Document-oriented storage aligns with event payloads.
-- Horizontal scaling via sharding.
-
-**Schema Example:**
-
-```javascript
-db.subscriptions.insertOne({
-  _id: ObjectId(),
-  subscriber: "GAAAA...",
-  merchant: "GAAAB...",
-  tokenContract: "CAAAA...",
-  amount: NumberLong(1000000),
-  intervalSeconds: 86400,
-  status: "active", // "active", "cancelled", "failed"
-  createdAt: new Date(),
-  updatedAt: new Date(),
-  cancelledAt: null,
-  nextPaymentExpected: new Date("2025-07-24T10:30:00Z"),
-});
-
-db.payments.insertOne({
-  _id: ObjectId(),
-  subscriptionId: ObjectId(),
-  amount: NumberLong(1000000),
-  executedAt: new Date(),
-  ledgerSequence: 1_234_890,
-  transactionHash: "2b3c4d5e6f7g8h9i...",
-});
-
-db.indexerState.insertOne({
-  _id: "cursor",
-  lastLedger: 1_234_890,
-  lastCursor: "...",
-  updatedAt: new Date(),
-});
-```
-
-**Indexing:**
-
-```javascript
-db.subscriptions.createIndex({ subscriber: 1 });
-db.subscriptions.createIndex({ merchant: 1, status: 1 });
-db.payments.createIndex({ subscriptionId: 1, executedAt: -1 });
-```
-
----
-
-### Option 3: Time-Series Database (InfluxDB, TimescaleDB)
-
-**Pros:**
-- Optimized for high-frequency payment streams.
-- Automatic retention policies.
-- Excellent for metrics and analytics (revenue over time).
-
-**Schema (TimescaleDB example):**
-
-```sql
-CREATE TABLE payments_timeseries (
-  time TIMESTAMP NOT NULL,
-  merchant_address VARCHAR(56) NOT NULL,
-  subscriber_address VARCHAR(56) NOT NULL,
-  amount NUMERIC NOT NULL,
-  ledger_sequence INT NOT NULL,
-  transaction_hash VARCHAR(64) NOT NULL
-);
-
-SELECT create_hypertable('payments_timeseries', 'time');
-SELECT add_compression_policy('payments_timeseries', INTERVAL '7 days');
-```
-
-**Use case:** Real-time dashboards, revenue analytics, payment velocity monitoring.
-
----
-
-### Option 4: Event Store (EventStoreDB, Axon)
-
-**Pros:**
-- Immutable log of all events.
-- Event sourcing pattern native.
-- Full audit trail.
-
-**Schema (pseudocode):**
-
-```
-EventStore:
-  ├── stream: "subscription-subscriber-merchant"
-  │   ├── event 1: SubscribeEvent(amount=1000000, interval=86400, timestamp=...)
-  │   ├── event 2: ExecutedEvent(amount=1000000, timestamp=..., nextPayment=...)
-  │   ├── event 3: ExecutedEvent(amount=1000000, timestamp=..., nextPayment=...)
-  │   └── event 4: CancelledEvent(timestamp=...)
-  └── stream: "subscription-subscriber2-merchant2"
-      └── ...
-```
-
-**Pros for SorobanPay:**
-- Complete payment history immutable.
-- Snapshots for subscription state reduce replay overhead.
-- Natural fit for CQRS (Command Query Responsibility Segregation).
-
----
-
-## Indexing Patterns
-
-### Pattern 1: Pull-Based Polling (Recommended for Most Use Cases)
-
-**Flow:**
-
-1. **Poll Interval:** Query RPC every N seconds (e.g., 5–30 seconds).
-2. **Pagination:** Use `cursor` from previous response to resume.
-3. **Decode & Persist:** Decode events, write to storage.
-4. **Resumability:** Save cursor in indexer state; restart from cursor on failure.
-
-**Implementation (Node.js pseudocode):**
-
-```typescript
-import { SorobanRpc } from '@stellar/stellar-sdk';
-
-const server = new SorobanRpc.Server(rpcUrl);
-const indexerState = await getIndexerState(); // from DB
-
-while (true) {
-  try {
-    const response = await server.getEvents({
-      startLedger: indexerState.lastLedger,
-      cursor: indexerState.lastCursor,
-      limit: 100,
-      filters: [
-        {
-          type: 'contract',
-          contractIds: [contractId],
-          topics: [], // all topics
-        },
-      ],
-    });
-
-    for (const event of response.events) {
-      const decoded = decodeContractEvent(event);
-      if (decoded) {
-        await persistEvent(decoded);
-      }
-    }
-
-    // Save progress
-    indexerState.lastLedger = response.latestLedger;
-    indexerState.lastCursor = response.cursor || null;
-    await updateIndexerState(indexerState);
-
-    // Sleep before next poll
-    await sleep(5_000);
-  } catch (error) {
-    console.error('Indexing error:', error);
-    await sleep(30_000); // longer backoff on error
-  }
-}
-```
-
-**Advantages:**
-- Simple to implement.
-- Resilient to RPC downtime (cursor enables resumption).
-- No infrastructure overhead.
-
-**Disadvantages:**
-- Polling lag (N-second delay before indexing).
-- RPC rate limits may apply.
-
----
-
-### Pattern 2: Event Sourcing + CQRS
-
-**Architecture:**
-
-```
-┌─────────────────┐
-│  Soroban RPC    │
-│   Event Stream  │
-└────────┬────────┘
-         │ (poll)
-         ▼
-┌─────────────────────────┐
-│  Event Sourcing Layer   │
-│  (append-only log)      │
-└────────┬────────────────┘
-         │
-         ▼
-┌─────────────────────────┐
-│  Projection Layer       │
-│  (read models: SQL,     │
-│   cache, etc.)          │
-└────────┬────────────────┘
-         │
-         ▼
-┌─────────────────────────┐
-│  Query Interfaces       │
-│  (API, Dashboard)       │
-└─────────────────────────┘
-```
-
-**When to use:**
-- Complex business logic (e.g., failed payments, retries).
-- Need full audit trail.
-- Multiple projections (subscription summary, payment history, revenue).
-
-**Example:**
-
-```typescript
-// Event log (immutable)
-interface SubscriptionEvent {
-  id: string;
-  streamId: string; // "subscription-subscriber-merchant"
-  type: 'subscribe' | 'executed' | 'cancelled';
-  data: Record<string, any>;
-  ledger: number;
-  timestamp: Date;
-}
-
-// Projection: subscription summary
-interface SubscriptionSummary {
-  subscriber: string;
-  merchant: string;
-  status: 'active' | 'cancelled' | 'failed';
-  currentAmount: bigint;
-  currentInterval: number;
-  nextPaymentExpected: Date;
-  totalCollected: bigint;
-  paymentCount: number;
-}
-
-// Apply events to projection
-function applyEvent(summary: SubscriptionSummary, event: SubscriptionEvent): SubscriptionSummary {
-  if (event.type === 'subscribe') {
-    return {
-      ...summary,
-      status: 'active',
-      currentAmount: BigInt(event.data.amount),
-      currentInterval: event.data.interval,
-      nextPaymentExpected: new Date(event.data.nextPayment * 1000),
-    };
-  }
-  if (event.type === 'executed') {
-    return {
-      ...summary,
-      totalCollected: summary.totalCollected + BigInt(event.data.amount),
-      paymentCount: summary.paymentCount + 1,
-      nextPaymentExpected: new Date(event.data.nextPayment * 1000),
-    };
-  }
-  if (event.type === 'cancelled') {
-    return {
-      ...summary,
-      status: 'cancelled',
-    };
-  }
-  return summary;
-}
-```
-
----
-
-## Example Workflows
-
-### Workflow 1: Tracking Subscription Lifecycle
-
-**Requirement:** Dashboard showing all active subscriptions for a merchant.
-
-**Implementation:**
-
-1. **Index subscribe events:** On each `subscribe` event, insert/update row in `subscriptions` table with `status='active'`.
-2. **Update on executed:** On each `executed` event, update `subscriptions.updated_at` and insert row in `payments` table.
-3. **Detect cancellation:** Batch job (hourly) marks subscriptions as `status='cancelled'` if `updated_at < NOW() - (2 × interval)` and `status='active'`.
-4. **Query:** 
-
-```sql
-SELECT * FROM subscriptions
-WHERE merchant_address = $1 AND status = 'active'
-ORDER BY created_at DESC;
-```
-
----
-
-### Workflow 2: Building Payment History
-
-**Requirement:** Display last 10 payments for a subscription.
-
-**Implementation:**
-
-```sql
-SELECT p.amount, p.executed_at, p.ledger_sequence, p.transaction_hash
-FROM payments p
-WHERE p.subscription_id = (
-  SELECT id FROM subscriptions
-  WHERE subscriber_address = $1 AND merchant_address = $2
-)
-ORDER BY p.executed_at DESC
-LIMIT 10;
-```
-
----
-
-### Workflow 3: Detecting Failed Payment Attempts
-
-**Requirement:** Alert when a payment is due but no `executed` event appears (e.g., insufficient allowance).
-
-**Implementation:**
-
-1. **Compute expected payment time:** `subscription.next_payment + grace_period` (e.g., +1 hour).
-2. **Batch check (every 5 minutes):**
-
-```sql
-SELECT s.* FROM subscriptions s
-WHERE s.status = 'active'
-  AND s.updated_at < NOW() - INTERVAL '1 hour'
-  AND (SELECT MAX(executed_at) FROM payments WHERE subscription_id = s.id) < NOW() - INTERVAL '30 minutes';
-```
-
-3. **Action:** Send alert to merchant, suggest checking subscriber's token allowance.
-
----
-
-### Workflow 4: Revenue Analytics
-
-**Requirement:** Total revenue collected by a merchant over time.
-
-**Implementation:**
-
-```sql
-SELECT
-  DATE_TRUNC('day', p.executed_at) AS day,
-  SUM(p.amount) AS total_collected,
-  COUNT(DISTINCT p.subscription_id) AS payment_count
-FROM payments p
-WHERE p.merchant_address = $1
-  AND p.executed_at >= NOW() - INTERVAL '30 days'
-GROUP BY DATE_TRUNC('day', p.executed_at)
-ORDER BY day DESC;
-```
-
----
-
-## Implementation Considerations
-
-### 1. Atomic Upserts
-
-**Problem:** Multiple indexer instances may process the same event concurrently.
-
-**Solution:** Use database-level uniqueness constraints or idempotent operations.
-
-**PostgreSQL:**
-
-```sql
-INSERT INTO subscriptions (subscriber_address, merchant_address, amount, interval_seconds, status, created_at, updated_at)
-VALUES ($1, $2, $3, $4, 'active', NOW(), NOW())
-ON CONFLICT (subscriber_address, merchant_address)
-DO UPDATE SET
-  amount = $3,
-  interval_seconds = $4,
-  status = 'active',
-  updated_at = NOW();
-```
-
----
-
-### 2. Cursor-Based Pagination
-
-**Why not ledger sequence?** Soroban RPC may skip ledgers with no events. Always use the cursor returned in the previous response.
-
-```typescript
-interface IndexerState {
-  lastLedger: number;
-  lastCursor: string | null; // use this!
-  updatedAt: Date;
-}
-```
-
----
-
-### 3. Batch Processing
-
-For high-volume scenarios, batch event processing:
-
-```typescript
-const batchSize = 100;
-const batch = [];
-
-for (const event of response.events) {
-  const decoded = decodeContractEvent(event);
-  if (decoded) {
-    batch.push(decoded);
-  }
-
-  if (batch.length >= batchSize) {
-    await persistBatch(batch);
-    batch.length = 0;
-  }
-}
-
-// flush remaining
-if (batch.length > 0) {
-  await persistBatch(batch);
-}
-```
-
----
-
-### 4. Error Recovery
-
-Handle transient RPC failures gracefully:
-
-```typescript
-async function pollWithRetry(maxRetries = 3) {
-  for (let attempt = 0; attempt < maxRetries; attempt++) {
-    try {
-      return await server.getEvents({ /* ... */ });
-    } catch (error) {
-      if (attempt === maxRetries - 1) throw error;
-      const backoff = Math.pow(2, attempt) * 1000; // exponential backoff
-      await sleep(backoff);
-    }
-  }
-}
-```
-
----
-
-### 5. Monitoring & Alerting
-
-Track indexer health:
-
-- **Lag:** `NOW() - indexer_state.updated_at` (should be < 60 seconds)
-- **Error rate:** Percentage of failed RPC calls per hour
-- **Event throughput:** Events indexed per minute
-
----
-
-## Error Handling & Resilience
-
-### Scenario 1: RPC Endpoint Down
-
-**Mitigation:**
-- Fallback to secondary RPC endpoint.
-- Exponential backoff before retry.
-- Store cursor; resume from exact position.
-
-**Implementation:**
-
-```typescript
-const rpcEndpoints = [
-  'https://soroban-testnet.stellar.org',
-  'https://secondary.rpc.endpoint',
-];
-
-let rpcIndex = 0;
-
-async function getServer() {
-  return new SorobanRpc.Server(rpcEndpoints[rpcIndex % rpcEndpoints.length]);
-}
-
-async function pollWithFailover() {
-  for (let attempt = 0; attempt < rpcEndpoints.length; attempt++) {
-    try {
-      const server = getServer();
-      return await server.getEvents({ /* ... */ });
-    } catch (error) {
-      rpcIndex = (rpcIndex + 1) % rpcEndpoints.length;
-      console.log(`RPC failed, trying endpoint ${rpcIndex}: ${error.message}`);
-    }
-  }
-  throw new Error('All RPC endpoints failed');
-}
-```
-
----
-
-### Scenario 2: Database Write Failure
-
-**Mitigation:**
-- Retry with exponential backoff.
-- If retry exhausted, store raw event to dead-letter queue (DLQ).
-- Replay DLQ periodically.
-
-**Implementation:**
-
-```typescript
-const dlq = new Set<DecodedEvent>();
-
-async function persistEventWithDLQ(event: DecodedEvent) {
-  try {
-    await persistEvent(event);
-  } catch (error) {
-    console.error(`DB write failed for event ${event.txHash}, queueing for retry`, error);
-    dlq.add(event);
-
-    // Retry DLQ every minute
-    if (dlq.size > 0) {
-      setTimeout(async () => {
-        for (const dlqEvent of Array.from(dlq)) {
-          try {
-            await persistEvent(dlqEvent);
-            dlq.delete(dlqEvent);
-          } catch (error) {
-            console.error(`DLQ retry failed for ${dlqEvent.txHash}`, error);
-          }
-        }
-      }, 60_000);
-    }
-  }
-}
-```
-
-## Recommended Implementation Checklist
-
-Use this checklist to ensure the SorobanPay backend indexer is production-ready.
-
-1. Persist the indexer state with a durable cursor and ledger checkpoint.
-2. Decode `subscribe` and `executed` contract events reliably.
-3. Use idempotent database writes and unique constraints to avoid duplicate records.
-4. Record both subscription state and payment history in separate store projections.
-5. Implement cancellation inference in a periodic reconciliation job.
-6. Add health metrics for indexer lag, event throughput, and error rates.
-7. Provide a failover path for RPC endpoint outages and transient database failures.
-
-## References
-
-- [Soroban RPC Event Streaming](https://developers.stellar.org/docs/learn/soroban-rpc/events)
-- [Stellar JavaScript SDK](https://developers.stellar.org/docs/learn/stellar-sdk)
-- [Event Sourcing Pattern](https://martinfowler.com/eaaDev/EventSourcing.html)
-- [CQRS Pattern](https://martinfowler.com/bliki/CQRS.html)
-
----
-
-### Scenario 3: Ledger Rollback (Rare)
-
-**Context:** Stellar ledgers are finalized after 1000 ledgers (~83 minutes). Events older than that are immutable.
-
-**Mitigation:**
-- For real-time indexing, only mark events as "finalized" after 1000-ledger confirmation.
-- If a rollback occurs (highly unlikely), re-index from the rollback point.
-
-**Implementation:**
-
-```typescript
-const FINALIZATION_LEDGERS = 1000;
-
-async function indexEvent(event: DecodedEvent) {
-  const currentLedger = await server.getLatestLedger();
-  const isFinalized = (currentLedger.sequence - event.ledger) >= FINALIZATION_LEDGERS;
-
-  await persistEvent({
-    ...event,
-    isFinalized,
-  });
-
-  // Only publish to downstream systems if finalized
-  if (isFinalized) {
-    await publishEvent(event); // e.g., to message queue
-  }
-}
-```
-
----
-
-## Deployment Checklist
-
-- [ ] **RPC Endpoint:** Configure primary and fallback endpoints.
-- [ ] **Database:** Set up schema, indexes, and retention policies.
-- [ ] **Indexer State:** Initialize `indexer_state` table with `last_ledger=0`.
-- [ ] **Monitoring:** Set up alerting for indexer lag and error rates.
-- [ ] **Testing:** Test resume from cursor after simulated crash.
-- [ ] **Backfill:** Run initial sync from ledger 0 (or known checkpoint).
-- [ ] **Documentation:** Document custom event projections and query patterns.
-
----
-
-## Backend Role
-
-SorobanPay has a clear separation between on-chain and off-chain responsibilities.
-
-### On-Chain (Soroban Contract)
-
-The smart contract is the single source of truth for subscription state. It is solely responsible for:
-
-| Concern | Details |
-|---------|---------|
-| Subscription state | Creating, updating, and removing `(subscriber, merchant)` pairs in persistent storage |
-| Payment execution | Transferring tokens directly subscriber → merchant via SEP-41 `transfer` |
-| Authorization | Enforcing `require_auth()` on every entry point |
-| Time-lock | Rejecting `execute_payment` before `next_payment` is due |
-| TTL management | Setting and bumping persistent storage TTL on each write |
-| Event emission | Publishing `subscribe` and `executed` events to the Soroban event log |
-
-The contract does **not** handle notifications, analytics, retry logic, or any I/O beyond ledger state and token transfers.
-
-### Off-Chain (Backend Service)
-
-The backend (`backend/`) is an optional layer for concerns that cannot be satisfied on-chain:
-
-| Concern | Details |
-|---------|---------|
-| Event indexing | Polling Soroban RPC `getEvents()` and persisting decoded events to PostgreSQL |
-| Cancellation detection | Inferring cancellations from absence of `executed` events (no cancel event is emitted) |
-| Payout summaries | Aggregating payment history into daily/weekly reports per merchant |
-| Scheduled jobs | Periodic indexing and summary generation via `node-cron` |
-| REST API | Serving merchant dashboards via `/api/summaries/…` endpoints |
-
-The backend is **read-only with respect to on-chain state** — it never submits transactions.
-
-### Responsibility Matrix
-
-```
-                        Contract    Backend    Frontend
-─────────────────────────────────────────────────────
-Store subscription          ✅         ❌          ❌
-Execute payment             ✅         ❌          ❌
-Emit events                 ✅         ❌          ❌
-Index events                ❌         ✅          ❌
-Detect cancellations        ❌         ✅          ❌
-Serve analytics API         ❌         ✅          ❌
-Sign & submit transactions  ❌         ❌          ✅
-Display subscription UI     ❌         ❌          ✅
-```
+## 10. Backend Service Inventory
+
+| File | Service | Schedule | Description |
+|------|---------|----------|-------------|
+| `src/services/eventIndexer.ts` | `EventIndexer` | every 5 min | Polls RPC, decodes events, persists to `Event` and `AuditLog` |
+| `src/services/payoutSummaryGenerator.ts` | `PayoutSummaryGenerator` | daily 01:00, weekly Sun 02:00 | Aggregates payments into `PayoutSummary` rows |
+| `src/services/paymentScheduler.ts` | `PaymentScheduler` | every 1 min (opt-in) | Submits `execute_payment` for due subscriptions |
+| `src/services/reconciler.ts` | `Reconciler` | every hour | Diffs chain event log vs. DB; applies repairs |
+| `src/services/webhookNotifier.ts` | `WebhookNotifier` | triggered | HTTP POST to merchant endpoints on events |
+| `src/routes/subscriptions.ts` | REST | on-demand | `GET /api/subscriptions/:subscriber` |
+| `src/routes/summaries.ts` | REST | on-demand | `GET /api/summaries/:merchant` |
+| `src/routes/reconcile.ts` | REST | on-demand | `POST /api/reconcile` |
+| `src/routes/health.ts` | REST | on-demand | `GET /health` — liveness check |
+| `src/routes/auditLogs.ts` | REST | on-demand | `GET /api/audit-logs/:merchant` |
+
+### Prisma schema summary
+
+| Table | Purpose |
+|-------|---------|
+| `Event` | Raw decoded contract events (`subscribe`, `executed`) |
+| `AuditLog` | Enriched payment records with tx hash and status |
+| `PayoutSummary` | Aggregated daily/weekly revenue per merchant |
+| `WebhookEndpoint` | Registered merchant webhook URLs |
+| `WebhookDelivery` | Per-attempt delivery log (status code, error, retry count) |
 
 ---
 
 ## References
 
-- [Soroban RPC Event Streaming](https://developers.stellar.org/docs/learn/soroban-rpc/events)
+- [Soroban RPC Documentation](https://developers.stellar.org/docs/learn/soroban-rpc/events)
+- [SEP-41 Token Interface](https://github.com/stellar/stellar-protocol/blob/master/ecosystem/sep-0041.md)
 - [Stellar JavaScript SDK](https://developers.stellar.org/docs/learn/stellar-sdk)
-- [Event Sourcing Pattern](https://martinfowler.com/eaaDev/EventSourcing.html)
-- [CQRS Pattern](https://martinfowler.com/bliki/CQRS.html)
+- [Freighter Wallet](https://www.freighter.app)
+- [Prisma ORM](https://www.prisma.io/docs)
+- [docs/events.md](events.md) — full event reference
+- [docs/security.md](security.md) — security model and secrets management
+- [docs/contract-api.md](contract-api.md) — entry point parameter reference
