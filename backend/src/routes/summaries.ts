@@ -6,16 +6,17 @@ const router = Router();
 // Get all summaries for a merchant
 router.get('/merchant/:merchantAddress', async (req: Request, res: Response) => {
   try {
-    const { merchantAddress } = req.params;
-    const { type } = req.query; // Optional: filter by type (daily/weekly)
+    const merchantAddress = req.params.merchantAddress as string;
+    const rawType = req.query.type; // Optional: filter by type (daily/weekly)
+    const type = Array.isArray(rawType) ? rawType[0] : rawType;
 
-    const where: any = { merchant: merchantAddress };
+    const where: Record<string, unknown> = { merchant: merchantAddress };
     if (type) {
       where.type = type;
     }
 
     const summaries = await prisma.payoutSummary.findMany({
-      where: where,
+      where,
       orderBy: { createdAt: 'desc' },
     });
 
@@ -28,7 +29,7 @@ router.get('/merchant/:merchantAddress', async (req: Request, res: Response) => 
 // Get a specific summary by ID
 router.get('/:id', async (req: Request, res: Response) => {
   try {
-    const { id } = req.params;
+    const id = req.params.id as string;
     const summary = await prisma.payoutSummary.findUnique({
       where: { id: parseInt(id) },
     });
