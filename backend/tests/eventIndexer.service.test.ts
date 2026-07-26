@@ -1,12 +1,85 @@
 import { MockRpcServer } from './helpers/mockRpcServer';
 import { InMemoryPrismaClient } from './helpers/inMemoryDb';
 
-jest.mock('../../src/lib/prisma', () => ({
+jest.mock('@stellar/stellar-sdk', () => {
+  class MockScVal {
+    constructor(private value: unknown) {}
+
+    sym() {
+      return { toString: () => this.value };
+    }
+
+    address() {
+      return { toString: () => this.value };
+    }
+
+    i128() {
+      return { toString: () => this.value };
+    }
+
+    u64() {
+      return { toString: () => this.value };
+    }
+
+    toXDR() {
+      return 'mock-xdr';
+    }
+  }
+
+  return {
+    rpc: {
+      Server: class {
+        constructor(public url: string) {}
+        async getEvents() {
+          const response = await fetch(this.url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ method: 'getEvents' }),
+          });
+          const payload = await response.json();
+          const events = (payload.result?.events ?? []).map((event: any) => ({
+            ...event,
+            topic: (event.topic ?? []).map((item: any) => {
+              if (item.type === 'symbol') return new MockScVal(item.value);
+              if (item.type === 'address') return new MockScVal(item.value);
+              return new MockScVal('');
+            }),
+            value: new MockScVal(event.value?.value ?? '0'),
+          }));
+          return { events };
+        }
+      },
+    },
+    xdr: {
+      ScVal: {
+        scvSymbol: (value: string) => new MockScVal(value),
+        scvAddress: (value: string) => new MockScVal(value),
+        scvI128: (value: string) => new MockScVal(value),
+      },
+      ScAddress: {
+        scAddressTypeAccount: (value: unknown) => value,
+        scAddressTypeContract: (value: unknown) => value,
+      },
+      PublicKey: {
+        publicKeyTypeEd25519: (value: unknown) => value,
+      },
+      Int128Parts: class {},
+      Int64: {
+        fromString: (value: string) => value,
+      },
+      Uint64: {
+        fromString: (value: string) => value,
+      },
+    },
+  };
+});
+
+jest.mock('../src/lib/prisma', () => ({
   __esModule: true,
   default: new (require('./helpers/inMemoryDb').InMemoryPrismaClient)(),
 }));
 
-import prisma from '../../src/lib/prisma';
+import prisma from '../src/lib/prisma';
 import { EventIndexer } from '../src/services/eventIndexer';
 
 const db = prisma as unknown as InMemoryPrismaClient;

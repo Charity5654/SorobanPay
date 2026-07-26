@@ -6,22 +6,22 @@
  * Satisfies the SubscriptionDB interface from reconciler.ts.
  */
 
-import type { SubscriptionDB, StoredSubscription } from '../../reconciler';
+import type { SubscriptionDB, StoredSubscription as ReconcilerStoredSubscription } from '../../reconciler';
 
 // ── In-memory subscription store ──────────────────────────────────────────────
 
 export class InMemorySubscriptionDB implements SubscriptionDB {
-  private store = new Map<string, StoredSubscription>();
+  private store = new Map<string, ReconcilerStoredSubscription>();
 
   private key(subscriber: string, merchant: string, token: string) {
     return `${subscriber}:${merchant}:${token}`;
   }
 
-  get(subscriber: string, merchant: string, token: string): StoredSubscription | undefined {
+  get(subscriber: string, merchant: string, token: string): ReconcilerStoredSubscription | undefined {
     return this.store.get(this.key(subscriber, merchant, token));
   }
 
-  upsert(record: StoredSubscription): void {
+  upsert(record: ReconcilerStoredSubscription): void {
     this.store.set(this.key(record.subscriber, record.merchant, record.token), record);
   }
 
@@ -29,7 +29,7 @@ export class InMemorySubscriptionDB implements SubscriptionDB {
     this.store.delete(this.key(subscriber, merchant, token));
   }
 
-  all(): StoredSubscription[] {
+  all(): ReconcilerStoredSubscription[] {
     return Array.from(this.store.values());
   }
 
@@ -67,10 +67,36 @@ export interface StoredSummary {
   createdAt: Date;
 }
 
+interface StoredAuditLog {
+  transactionHash: string;
+  eventType: string;
+  subscriber: string;
+  merchant: string;
+  token: string;
+  amount: string;
+  ledger: bigint;
+}
+
+interface StoredNotificationPreference {
+  subscriber: string;
+  email?: string;
+}
+
+type InMemoryStoredSubscription = {
+  subscriber: string;
+  merchant: string;
+  token: string;
+  amount: string;
+  status: string;
+}
+
 /** Minimal Prisma-compatible client for use in integration tests. */
 export class InMemoryPrismaClient {
   private events: StoredEvent[] = [];
   private summaries: StoredSummary[] = [];
+  private subscriptions: InMemoryStoredSubscription[] = [];
+  private auditLogs: StoredAuditLog[] = [];
+  private notificationPreferences: StoredNotificationPreference[] = [];
   private nextEventId = 1;
   private nextSummaryId = 1;
 
@@ -96,6 +122,41 @@ export class InMemoryPrismaClient {
       };
       this.events.push(record);
       return record;
+    },
+  };
+
+  subscription = {
+    findUnique: async (args: { where: { subscriber_merchant: { subscriber: string; merchant: string } } }) => {
+      return this.subscriptions.find((s) => s.subscriber === args.where.subscriber_merchant.subscriber && s.merchant === args.where.subscriber_merchant.merchant) ?? null;
+    },
+    upsert: async (args: { where: { subscriber_merchant: { subscriber: string; merchant: string } }; create: InMemoryStoredSubscription; update: Partial<InMemoryStoredSubscription> }) => {
+      const existingIndex = this.subscriptions.findIndex((s) => s.subscriber === args.where.subscriber_merchant.subscriber && s.merchant === args.where.subscriber_merchant.merchant);
+      if (existingIndex >= 0) {
+        this.subscriptions[existingIndex] = { ...this.subscriptions[existingIndex], ...args.update } as InMemoryStoredSubscription;
+        return this.subscriptions[existingIndex];
+      }
+      const created = { ...args.create };
+      this.subscriptions.push(created);
+      return created;
+    },
+  };
+
+  auditLog = {
+    upsert: async (args: { where: { transactionHash: string }; create: StoredAuditLog; update: Partial<StoredAuditLog> }) => {
+      const existingIndex = this.auditLogs.findIndex((entry) => entry.transactionHash === args.where.transactionHash);
+      if (existingIndex >= 0) {
+        this.auditLogs[existingIndex] = { ...this.auditLogs[existingIndex], ...args.update } as StoredAuditLog;
+        return this.auditLogs[existingIndex];
+      }
+      const created = { ...args.create };
+      this.auditLogs.push(created);
+      return created;
+    },
+  };
+
+  notificationPreference = {
+    findFirst: async (args: { where: { subscriber: string } }) => {
+      return this.notificationPreferences.find((pref) => pref.subscriber === args.where.subscriber) ?? null;
     },
   };
 
@@ -151,6 +212,9 @@ export class InMemoryPrismaClient {
   reset(): void {
     this.events = [];
     this.summaries = [];
+    this.subscriptions = [];
+    this.auditLogs = [];
+    this.notificationPreferences = [];
     this.nextEventId = 1;
     this.nextSummaryId = 1;
   }
