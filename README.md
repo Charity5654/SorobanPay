@@ -1,5 +1,9 @@
 # SorobanPay — Decentralized Subscription & Recurring Payments Protocol
 
+[![Contract Coverage](https://codecov.io/gh/Chrisland58/SorobanPay/branch/main/graph/badge.svg?flag=contract)](https://codecov.io/gh/Chrisland58/SorobanPay)
+[![Frontend Coverage](https://codecov.io/gh/Chrisland58/SorobanPay/branch/main/graph/badge.svg?flag=frontend)](https://codecov.io/gh/Chrisland58/SorobanPay)
+[![CI](https://github.com/Chrisland58/SorobanPay/actions/workflows/ci.yml/badge.svg)](https://github.com/Chrisland58/SorobanPay/actions/workflows/ci.yml)
+
 A production-grade, non-custodial recurring payments protocol built on Stellar's Soroban smart contract platform. Enables SaaS billing, creator subscriptions, and recurring donations directly on-chain — no custodial wallets, no pre-authorized transaction arrays.
 
 ---
@@ -21,37 +25,11 @@ SorobanPay
 3. **Backend** (`backend/`) — Optional off-chain service for event indexing, cancellation detection, payout summaries, and a merchant REST API. Read-only with respect to the chain — it polls `getEvents()` but never submits transactions. See [docs/architecture.md](docs/architecture.md) for the full backend role definition.
 4. **Build & Deploy** — GNU Makefile + bash deployment script with testnet/mainnet switching.
 
-### System flow
+### System diagram
 
-```
-+------------------+        +---------------------+        +----------------+
-|   Subscriber     |        |       Merchant      |        | Optional       |
-|  (Freighter)     |<------>|   (Service Owner)   |<------>| Backend/Indexer|
-+--------+---------+  Web   +----------+-----------+  API   +--------+-------+
-         |                       Web                         |    ^
-         |                        |                         |    |
-         v                        v                         |    |
-+--------+--------+        +--------+--------+               |    |
-|   Frontend       |        | Merchant Portal  |---------------+    |
-|  (Next.js + TS)  |        | or Admin Panel    |                      |
-+--------+--------+        +-------------------+                      |
-         |                                                                 |
-         | contract ops                                                    |
-         v                                                                 |
-+--------+--------+                                                       |
-| Soroban Contract |------------------------------------------------------+
-| subscribe()       |
-| execute_payment() |
-| cancel()          |
-+--------+--------+
-         |
-         v
-+--------+--------+
-| Soroban Ledger   |
-| + PersistentStore |
-| + SEP-41 Token    |
-+------------------+
-```
+![SorobanPay Architecture](docs/assets/architecture.svg)
+
+> The diagram above is rendered from `docs/assets/architecture.svg`. To edit it, open the file in [draw.io](https://app.diagrams.net) or [Excalidraw](https://excalidraw.com), or modify the SVG source directly.
 
 **Flow summary:**
 1. **Subscriber** signs transactions via Freighter in the Next.js frontend.
@@ -60,6 +38,39 @@ SorobanPay
 4. **Structured events** emitted by the contract can be indexed by an **optional backend** for analytics, history, or notification triggers.
 5. **Cancellation audit records** are persisted off-chain by backend services after confirmed `cancel` transactions because the contract does not emit cancellation events.
 6. **Merchant** may use a dedicated portal or admin panel to trigger `execute_payment` and view subscription state.
+
+---
+
+## Demo
+
+### Subscription flow walkthrough
+
+> **Demo GIF coming soon.**
+> The recording below will show: connecting Freighter → filling the subscription form → approving in Freighter → success card with transaction hash.
+>
+> <!-- Replace this notice with the actual embed once docs/assets/demo.gif is recorded:
+>      ![SorobanPay subscription flow](docs/assets/demo.gif)
+>      File size must be < 5 MB. See docs/assets/README.md for recording instructions. -->
+
+To record the GIF yourself:
+1. Run the frontend locally (`npm run dev` in `frontend/`).
+2. Record with [Peek](https://github.com/phw/peek) (Linux), [LICEcap](https://www.cockos.com/licecap/) (macOS), or [ScreenToGif](https://www.screentogif.com) (Windows).
+3. Compress to < 5 MB: `gifsicle -O3 --lossy=80 demo.gif -o docs/assets/demo.gif`
+4. Replace the notice above with `![SorobanPay subscription flow](docs/assets/demo.gif)`.
+
+### Video walkthrough (YouTube)
+
+> **Video walkthrough coming soon.**
+> The planned video (5–10 min) will cover:
+> 1. Installing prerequisites
+> 2. Deploying the contract to Stellar testnet
+> 3. Configuring `frontend/.env.local`
+> 4. Creating your first subscription end-to-end
+> 5. Verifying the on-chain payment via [Stellar Expert](https://stellar.expert)
+>
+> <!-- Replace this notice once the video is published:
+>      [![SorobanPay Walkthrough](https://img.youtube.com/vi/VIDEO_ID/maxresdefault.jpg)](https://www.youtube.com/watch?v=VIDEO_ID)
+>      Swap VIDEO_ID for the YouTube video identifier. -->
 
 ---
 
@@ -879,6 +890,17 @@ npm run dev
 | `contract` | Changes to the Soroban smart contract |
 | `frontend` | Changes to the Next.js frontend |
 | `deployment` | Changes to build or deploy scripts |
+
+---
+
+## Documentation
+
+| Guide | Description |
+|---|---|
+| [Storage TTL Management](docs/operations.md) | Detecting at-risk entries, extending TTL programmatically, alert thresholds |
+| [Network Configuration](docs/networks.md) | Testnet vs. mainnet side-by-side, common mistakes, switching guide |
+| [Backend API Cookbook](docs/api-cookbook.md) | 8 recipes: auth, subscriptions, webhooks, CSV export, MRR, TTL health |
+| [Changelog](CHANGELOG.md) | Version history following Keep a Changelog format |
 
 ---
 

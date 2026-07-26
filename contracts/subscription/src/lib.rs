@@ -790,3 +790,9 @@ impl SubscriptionProtocol {
 
 #[cfg(test)]
 mod test;
+
+#[cfg(test)]
+mod security_tests;
+
+#[cfg(test)]
+mod property_tests;

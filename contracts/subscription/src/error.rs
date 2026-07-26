@@ -26,4 +26,8 @@ pub enum ContractError {
     AmountTooLarge       = 9,
     /// `subscribe` called with subscriber == merchant (self-subscription)
     SelfSubscription     = 10,
+    /// `subscribe` called with `token` equal to the contract's own address
+    InvalidTokenAddress  = 11,
+    /// `execute_payment_batch` called with an empty payments vector
+    EmptyBatch           = 12,
 }
