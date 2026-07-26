@@ -1,5 +1,9 @@
 # SorobanPay — Decentralized Subscription & Recurring Payments Protocol
 
+[![Contract Coverage](https://codecov.io/gh/Chrisland58/SorobanPay/branch/main/graph/badge.svg?flag=contract)](https://codecov.io/gh/Chrisland58/SorobanPay)
+[![Frontend Coverage](https://codecov.io/gh/Chrisland58/SorobanPay/branch/main/graph/badge.svg?flag=frontend)](https://codecov.io/gh/Chrisland58/SorobanPay)
+[![CI](https://github.com/Chrisland58/SorobanPay/actions/workflows/ci.yml/badge.svg)](https://github.com/Chrisland58/SorobanPay/actions/workflows/ci.yml)
+
 A production-grade, non-custodial recurring payments protocol built on Stellar's Soroban smart contract platform. Enables SaaS billing, creator subscriptions, and recurring donations directly on-chain — no custodial wallets, no pre-authorized transaction arrays.
 
 ---
