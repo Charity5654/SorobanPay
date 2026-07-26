@@ -3,6 +3,11 @@ name: CI
 on:
   push:
   pull_request:
+  # Run gas estimation weekly on Sundays at 02:00 UTC
+  schedule:
+    - cron: "0 2 * * 0"
+  # Allow manual trigger (e.g., to run gas estimation or load tests on demand)
+  workflow_dispatch:
 
 jobs:
   contract:
@@ -217,3 +222,101 @@ jobs:
       - name: Type check (fail on errors)
         run: npm run type-check
         working-directory: frontend
+
+  # TEST-102: k6 load tests — runs weekly against staging environment
+  load-test:
+    name: "[TEST-102] k6 load tests"
+    runs-on: ubuntu-latest
+    # Only run on schedule or manual trigger; requires a staging environment
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install k6
+        run: |
+          sudo gpg -k
+          sudo gpg --no-default-keyring \
+            --keyring /usr/share/keyrings/k6-archive-keyring.gpg \
+            --keyserver hkp://keyserver.ubuntu.com:80 \
+            --recv-keys C5AD17C747E3415A3642D57D77C6C491D6AC1D69
+          echo "deb [signed-by=/usr/share/keyrings/k6-archive-keyring.gpg] https://dl.k6.io/deb stable main" \
+            | sudo tee /etc/apt/sources.list.d/k6.list
+          sudo apt-get update && sudo apt-get install -y k6
+
+      - name: Create results directory
+        run: mkdir -p results
+
+      - name: "[TEST-102] Read-heavy scenario (100 VUs, 2 min)"
+        env:
+          BASE_URL: ${{ secrets.LOAD_TEST_BASE_URL }}
+          MERCHANT_ADDRESS: ${{ secrets.LOAD_TEST_MERCHANT_ADDRESS }}
+        run: |
+          k6 run \
+            -e BASE_URL="$BASE_URL" \
+            -e MERCHANT_ADDRESS="$MERCHANT_ADDRESS" \
+            --out json=results/read-heavy-results.json \
+            tests/load/read-heavy.js
+
+      - name: "[TEST-102] Mixed scenario (50 VUs, ramp)"
+        env:
+          BASE_URL: ${{ secrets.LOAD_TEST_BASE_URL }}
+          MERCHANT_ADDRESS: ${{ secrets.LOAD_TEST_MERCHANT_ADDRESS }}
+        run: |
+          k6 run \
+            -e BASE_URL="$BASE_URL" \
+            -e MERCHANT_ADDRESS="$MERCHANT_ADDRESS" \
+            --out json=results/mixed-results.json \
+            tests/load/mixed.js
+
+      - name: "[TEST-102] Webhook storm scenario (50 VUs, 2 min)"
+        env:
+          BASE_URL: ${{ secrets.LOAD_TEST_BASE_URL }}
+          MERCHANT_ADDRESS: ${{ secrets.LOAD_TEST_MERCHANT_ADDRESS }}
+        run: |
+          k6 run \
+            -e BASE_URL="$BASE_URL" \
+            -e MERCHANT_ADDRESS="$MERCHANT_ADDRESS" \
+            --out json=results/webhook-storm-results.json \
+            tests/load/webhook-storm.js
+
+      - name: Upload load test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: load-test-results
+          path: results/
+
+  # TEST-100: Gas estimation regression harness — runs against staging on schedule
+  gas-estimation:
+    name: "[TEST-100] Gas estimation regression"
+    runs-on: ubuntu-latest
+    # Only run on schedule or when manually triggered; staging credentials required
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install script dependencies
+        run: npm install
+        working-directory: .
+
+      - name: Run gas estimation harness
+        env:
+          RPC_URL: ${{ secrets.GAS_RPC_URL }}
+          CONTRACT_ID: ${{ secrets.GAS_CONTRACT_ID }}
+          SUBSCRIBER_KEY: ${{ secrets.GAS_SUBSCRIBER_KEY }}
+          MERCHANT_KEY: ${{ secrets.GAS_MERCHANT_KEY }}
+          TOKEN_ADDRESS: ${{ secrets.GAS_TOKEN_ADDRESS }}
+          NETWORK_PASSPHRASE: ${{ secrets.GAS_NETWORK_PASSPHRASE }}
+        run: npm run gas-estimation
+
+      - name: Upload gas estimation report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gas-estimation-report
+          path: gas-estimation-report.md
