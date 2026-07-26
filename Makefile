@@ -49,3 +49,49 @@ clean:
 ## test-frontend: Run the frontend Jest test suite (unit + load tests)
 test-frontend:
 	cd $(FRONTEND_DIR) && npm run test
+
+## load-test: Run all k6 load test scenarios against the local staging stack.
+## Requires: k6 installed (https://k6.io) and the staging backend running via
+##   docker compose -f tests/load/docker-compose.staging.yml up -d
+LOAD_TEST_DIR  := tests/load
+LOAD_RESULTS   := results
+BASE_URL       ?= http://localhost:3001
+MERCHANT_ADDR  ?= GMERCHANT0000000000000000000000000000000000000000000001
+
+.PHONY: load-test load-test-read load-test-mixed load-test-webhook load-test-staging-up load-test-staging-down
+
+load-test-staging-up:
+	docker compose -f $(LOAD_TEST_DIR)/docker-compose.staging.yml up -d
+	@echo "Waiting for backend to become healthy..."
+	@timeout 60 sh -c 'until docker compose -f $(LOAD_TEST_DIR)/docker-compose.staging.yml ps | grep backend | grep -q "healthy"; do sleep 2; done'
+	@echo "Backend is ready."
+
+load-test-staging-down:
+	docker compose -f $(LOAD_TEST_DIR)/docker-compose.staging.yml down -v
+
+load-test-read:
+	@mkdir -p $(LOAD_RESULTS)
+	k6 run \
+	  -e BASE_URL=$(BASE_URL) \
+	  -e MERCHANT_ADDRESS=$(MERCHANT_ADDR) \
+	  --out json=$(LOAD_RESULTS)/read-heavy-results.json \
+	  $(LOAD_TEST_DIR)/read-heavy.js
+
+load-test-mixed:
+	@mkdir -p $(LOAD_RESULTS)
+	k6 run \
+	  -e BASE_URL=$(BASE_URL) \
+	  -e MERCHANT_ADDRESS=$(MERCHANT_ADDR) \
+	  --out json=$(LOAD_RESULTS)/mixed-results.json \
+	  $(LOAD_TEST_DIR)/mixed.js
+
+load-test-webhook:
+	@mkdir -p $(LOAD_RESULTS)
+	k6 run \
+	  -e BASE_URL=$(BASE_URL) \
+	  -e MERCHANT_ADDRESS=$(MERCHANT_ADDR) \
+	  --out json=$(LOAD_RESULTS)/webhook-storm-results.json \
+	  $(LOAD_TEST_DIR)/webhook-storm.js
+
+load-test: load-test-read load-test-mixed load-test-webhook
+	@echo "All load test scenarios complete. Results in $(LOAD_RESULTS)/"
