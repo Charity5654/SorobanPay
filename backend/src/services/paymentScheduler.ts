@@ -8,6 +8,8 @@ import {
   Contract,
 } from '@stellar/stellar-sdk';
 import prisma from '../lib/prisma';
+import logger from '../lib/logger';
+import { redactAddress } from '../lib/logger';
 
 /**
  * PaymentScheduler — discovers due subscriptions from the event index and
@@ -39,18 +41,28 @@ export class PaymentScheduler {
   async processDuePayments(): Promise<void> {
     const due = await this.findDueSubscriptions();
     if (due.length === 0) {
-      console.log('[scheduler] No due payments found.');
+      logger.debug({ event: 'scheduler.no_due_payments' });
       return;
     }
-    console.log(`[scheduler] Found ${due.length} due subscription(s). Executing…`);
+    logger.info({ event: 'scheduler.due_payments_found', count: due.length });
 
     for (const { subscriber, merchant } of due) {
       try {
         const txHash = await this.executePayment(subscriber, merchant);
-        console.log(`[scheduler] execute_payment OK  ${subscriber}→${merchant}  tx=${txHash}`);
+        logger.info({
+          event: 'scheduler.payment_ok',
+          subscriber: redactAddress(subscriber),
+          merchant: redactAddress(merchant),
+          txHash,
+        });
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        console.error(`[scheduler] execute_payment FAIL ${subscriber}→${merchant}: ${msg}`);
+        logger.error({
+          event: 'scheduler.payment_failed',
+          subscriber: redactAddress(subscriber),
+          merchant: redactAddress(merchant),
+          msg,
+        });
       }
     }
   }
