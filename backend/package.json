@@ -3,19 +3,29 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
+    "build": "tsc --noEmit false --outDir dist",
+    "start": "node dist/src/index.js",
+    "dev": "ts-node src/index.ts",
     "test": "jest --testPathPattern='(?<!integration)\\.test\\.ts$'",
     "test:integration": "jest --testPathPattern='integration\\.test\\.ts$'",
     "test:all": "jest",
     "test:watch": "jest --watch",
-    "type-check": "tsc --noEmit"
+    "type-check": "tsc --noEmit",
+    "db:migrate": "node-pg-migrate up --migrations-dir migrations --database-url-var DATABASE_URL",
+    "db:rollback": "node-pg-migrate down --migrations-dir migrations --database-url-var DATABASE_URL",
+    "db:status": "node-pg-migrate status --migrations-dir migrations --database-url-var DATABASE_URL",
+    "db:create": "node-pg-migrate create --migrations-dir migrations"
   },
   "devDependencies": {
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.6",
     "@types/jest": "^29.5.12",
     "@types/node-cron": "^3.0.11",
+    "@types/pg": "^8.15.4",
     "@types/supertest": "^6.0.2",
+    "@types/uuid": "^10.0.0",
     "jest": "^29.7.0",
+    "pino-pretty": "^13.0.0",
     "supertest": "^7.0.0",
     "ts-jest": "^29.2.2",
     "ts-node": "^10.9.2",
@@ -26,6 +36,12 @@
     "cors": "^2.8.6",
     "express": "^5.2.1",
     "express-rate-limit": "^7.5.0",
-    "node-cron": "^4.5.0"
+    "node-cron": "^4.5.0",
+    "node-pg-migrate": "^7.9.0",
+    "pg": "^8.16.0",
+    "pino": "^9.6.0",
+    "pino-http": "^10.4.0",
+    "uuid": "^11.1.0",
+    "zod": "^3.24.0"
   }
 }

@@ -1,6 +1,8 @@
-import { SorobanRpc, xdr } from '@stellar/stellar-sdk';
+import { rpc as SorobanRpc, xdr } from '@stellar/stellar-sdk';
 import prisma from '../lib/prisma';
 import { AuditLogger } from './auditLogger';
+import logger from '../lib/logger';
+import { redactAddress } from '../lib/logger';
 
 const auditLogger = new AuditLogger();
 const SUPPORTED_EVENT_TYPES = new Set(['subscribe', 'executed']);
@@ -62,23 +64,23 @@ export class EventIndexer {
 
       const events = eventsResponse.events ?? [];
       if (events.length === 0) {
-        console.log('No new events found');
+        logger.debug({ event: 'indexer.no_new_events' });
         return;
       }
 
-      console.log(`Found ${events.length} contract events`);
+      logger.info({ event: 'indexer.events_found', count: events.length });
 
       for (const event of events) {
         await this.processEvent(event);
       }
 
-      console.log('Events processed successfully');
+      logger.info({ event: 'indexer.events_processed' });
     } catch (error) {
-      console.error('Error fetching events:', error);
+      logger.error({ event: 'indexer.fetch_error', err: error });
     }
   }
 
-  private async processEvent(event: SorobanRpc.RawEvent): Promise<void> {
+  private async processEvent(event: SorobanRpc.Api.RawEventResponse): Promise<void> {
     try {
       const topics = event.topic;
       if (!topics || topics.length < 4) {
@@ -138,9 +140,14 @@ export class EventIndexer {
         });
       }
 
-      console.log(`Stored event: ${eventType} for merchant ${merchant}`);
+      logger.info({
+        event: 'indexer.event_stored',
+        eventType,
+        merchant: redactAddress(merchant),
+        subscriber: redactAddress(subscriber),
+      });
     } catch (error) {
-      console.error('Error processing event:', error);
+      logger.error({ event: 'indexer.process_event_error', err: error });
     }
   }
 }

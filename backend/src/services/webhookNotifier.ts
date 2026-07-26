@@ -1,4 +1,6 @@
 import prisma from '../lib/prisma';
+import logger from '../lib/logger';
+import { redactAddress } from '../lib/logger';
 
 export type WebhookEventType = 'payment.executed' | 'payment.failed';
 
@@ -54,10 +56,10 @@ async function deliverWithRetry(url: string, payload: WebhookPayload): Promise<v
 
       if (res.ok) return;
 
-      console.warn(`[webhook] attempt ${attempt + 1} → ${url} returned ${res.status}`);
+      logger.warn({ event: 'webhook.attempt_http_error', attempt: attempt + 1, url, statusCode: res.status, merchant: redactAddress(payload.merchant) });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      console.error(`[webhook] attempt ${attempt + 1} → ${url} error: ${msg}`);
+      logger.error({ event: 'webhook.attempt_error', attempt: attempt + 1, url, msg, merchant: redactAddress(payload.merchant) });
 
       await prisma.webhookDelivery.create({
         data: {
@@ -74,7 +76,7 @@ async function deliverWithRetry(url: string, payload: WebhookPayload): Promise<v
     }
   }
 
-  console.error(`[webhook] all ${MAX_ATTEMPTS} attempts exhausted for ${url}`);
+  logger.error({ event: 'webhook.all_attempts_exhausted', url, maxAttempts: MAX_ATTEMPTS, merchant: redactAddress(payload.merchant) });
 }
 
 function sleep(ms: number) {

@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { reconcile } from '../services/reconciler';
 import { PrismaSubscriptionDB, fetchChainEventsFromDB } from '../services/reconciler';
+import logger from '../lib/logger';
 
 const router = Router();
 
@@ -30,7 +31,7 @@ router.get('/', async (_req: Request, res: Response) => {
     const result = reconcile(chainEvents, db);
     return res.json({ dry_run: false, ...result });
   } catch (error) {
-    console.error('Reconcile error:', error);
+    logger.error({ event: 'reconcile.error', err: error });
     return res.status(500).json({ error: 'Reconciliation failed' });
   }
 });
