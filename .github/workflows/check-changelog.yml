@@ -1,0 +1,68 @@
+name: Check Changelog
+
+on:
+  pull_request:
+    branches:
+      - main
+      - master
+
+jobs:
+  check-changelog:
+    name: Require non-empty [Unreleased] section
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify CHANGELOG.md exists
+        run: |
+          if [ ! -f CHANGELOG.md ]; then
+            echo "::error file=CHANGELOG.md::CHANGELOG.md not found. Please add one following https://keepachangelog.com"
+            exit 1
+          fi
+
+      - name: Check that [Unreleased] section has content
+        run: |
+          # Extract the content between the first [Unreleased] heading and the
+          # next ## heading (the previous release). Strip blank lines, comments,
+          # and the sub-section headers (### Added, ### Fixed, etc.).
+          # If nothing meaningful remains, fail the build.
+
+          python3 - <<'EOF'
+          import re, sys
+
+          with open("CHANGELOG.md", encoding="utf-8") as f:
+              content = f.read()
+
+          # Find the [Unreleased] section
+          match = re.search(
+              r"##\s+\[Unreleased\](.*?)(?=\n##\s+\[|\Z)",
+              content,
+              re.DOTALL | re.IGNORECASE,
+          )
+
+          if not match:
+              print("::error file=CHANGELOG.md::No [Unreleased] section found in CHANGELOG.md.")
+              sys.exit(1)
+
+          section = match.group(1)
+
+          # Remove blank lines and sub-section headers (### Added, ### Fixed, etc.)
+          meaningful_lines = [
+              line for line in section.splitlines()
+              if line.strip()
+              and not line.strip().startswith("###")
+              and not line.strip().startswith(">")
+          ]
+
+          if not meaningful_lines:
+              print(
+                  "::error file=CHANGELOG.md::The [Unreleased] section in CHANGELOG.md is empty. "
+                  "Please document your changes under the appropriate sub-heading "
+                  "(### Added, ### Changed, ### Fixed, etc.) before merging."
+              )
+              sys.exit(1)
+
+          print(f"✅ [Unreleased] section has {len(meaningful_lines)} line(s) of content.")
+          EOF

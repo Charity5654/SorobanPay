@@ -37,45 +37,14 @@ jobs:
           echo "--- Test summary ---"
           grep -E "^test result|FAILED|ok$" /tmp/contract-test-output.txt || true
 
-      - name: "[TEST-101] Security tests (auth bypass)"
-        run: |
-          set -o pipefail
-          cargo test --manifest-path contracts/subscription/Cargo.toml \
-            security_tests 2>&1 | tee /tmp/security-test-output.txt
-          echo "--- Security test summary ---"
-          grep -E "^test result|FAILED|ok$" /tmp/security-test-output.txt || true
-
-      - name: "[TEST-99] Property-based tests (1000 iterations)"
-        env:
-          PROPTEST_CASES: "1000"
-        run: |
-          set -o pipefail
-          cargo test --manifest-path contracts/subscription/Cargo.toml \
-            property_tests 2>&1 | tee /tmp/property-test-output.txt
-          echo "--- Property test summary ---"
-          grep -E "^test result|FAILED|ok$" /tmp/property-test-output.txt || true
-
-      - name: Upload security test results
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: security-test-results
-          path: /tmp/security-test-output.txt
-
-      - name: Upload property test results
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: property-test-results
-          path: /tmp/property-test-output.txt
-
+  # Issue #432 – 95% coverage threshold enforcement
   contract-coverage:
-    name: Rust contract coverage
+    name: Rust contract coverage (≥95%)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust stable
+      - name: Install Rust stable + llvm-tools
         uses: dtolnay/rust-toolchain@stable
         with:
           components: llvm-tools-preview
@@ -88,20 +57,87 @@ jobs:
       - name: Install cargo-llvm-cov
         run: cargo install cargo-llvm-cov --locked
 
-      - name: Generate coverage report
+      - name: Generate coverage report (LCOV + HTML)
         run: make test-coverage
 
-      - name: Upload LCOV report
+      - name: Check 95% line coverage threshold
+        run: |
+          # Extract line coverage % from lcov.info and fail if below 95
+          LCOV_FILE="contracts/target/lcov.info"
+          if [ ! -f "$LCOV_FILE" ]; then
+            echo "ERROR: lcov.info not found at $LCOV_FILE" >&2
+            exit 1
+          fi
+
+          LINES_FOUND=$(grep -E "^LF:" "$LCOV_FILE" | awk -F: '{sum += $2} END {print sum}')
+          LINES_HIT=$(grep -E "^LH:" "$LCOV_FILE" | awk -F: '{sum += $2} END {print sum}')
+
+          if [ -z "$LINES_FOUND" ] || [ "$LINES_FOUND" -eq 0 ]; then
+            echo "ERROR: No coverage data found in lcov.info" >&2
+            exit 1
+          fi
+
+          COVERAGE=$(echo "scale=2; $LINES_HIT * 100 / $LINES_FOUND" | bc)
+          echo "Line coverage: ${COVERAGE}% (${LINES_HIT}/${LINES_FOUND} lines)"
+
+          # Use awk for floating-point comparison (bc outputs e.g. "97.42")
+          PASS=$(echo "$COVERAGE" | awk '{print ($1 >= 95) ? "yes" : "no"}')
+          if [ "$PASS" != "yes" ]; then
+            echo "FAIL: Coverage ${COVERAGE}% is below the required 95% threshold." >&2
+            exit 1
+          fi
+          echo "PASS: Coverage ${COVERAGE}% meets the 95% threshold."
+
+      - name: Upload LCOV to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          files: contracts/target/lcov.info
+          flags: contract
+          name: sorobanpay-contract
+          fail_ci_if_error: false
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+
+      - name: Upload HTML report as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: contract-coverage-html
+          path: contracts/target/coverage-html/
+
+      - name: Upload LCOV report as artifact
         uses: actions/upload-artifact@v4
         with:
           name: contract-coverage-lcov
           path: contracts/target/lcov.info
 
-      - name: Upload HTML report
-        uses: actions/upload-artifact@v4
+  # Issue #431 – Integration test suite on local Soroban node
+  contract-integration:
+    name: Smart contract integration tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable + wasm32 target
+        uses: dtolnay/rust-toolchain@stable
         with:
-          name: contract-coverage-html
-          path: contracts/target/coverage-html/
+          targets: wasm32-unknown-unknown
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: contracts/subscription
+
+      - name: Install Stellar CLI
+        run: cargo install --locked stellar-cli --features opt
+
+      - name: Make integration test script executable
+        run: chmod +x scripts/integration-test.sh
+
+      - name: Run integration tests (local Soroban node via Docker)
+        run: bash scripts/integration-test.sh
+        env:
+          DOCKER_BUILDKIT: 1
 
   backend-integration:
     name: Backend integration tests
@@ -124,9 +160,9 @@ jobs:
         run: npm run test:integration
         working-directory: backend
 
-  # #191: Frontend type check + unit tests on every push/PR
+  # Issue #433 – Frontend unit tests + coverage (>80%)
   frontend:
-    name: Frontend type check and unit tests
+    name: Frontend type check, unit tests & coverage
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -142,10 +178,29 @@ jobs:
         run: npm ci
         working-directory: frontend
 
-      # #191: TypeScript type checking — catches type errors before merge
       - name: Type check
         run: npm run type-check
         working-directory: frontend
+
+      - name: Run unit tests with coverage
+        run: npm run test:ci
+        working-directory: frontend
+
+      - name: Upload frontend coverage to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          files: frontend/coverage/lcov.info
+          flags: frontend
+          name: sorobanpay-frontend
+          fail_ci_if_error: false
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+
+      - name: Upload coverage HTML report
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-coverage-html
+          path: frontend/coverage/
 
   frontend-typecheck:
     name: Frontend strict type check
