@@ -91,7 +91,6 @@ export default function Home() {
     isConnecting,
     connectError,
     freighterInstalled,
-    sessionInvalid,
     connect,
     disconnect,
   } = useWallet();
@@ -124,24 +123,6 @@ export default function Home() {
 
       {/* Wallet section */}
       <div className="w-full max-w-lg mb-6">
-        {/* Session-invalid fallback — shown when Freighter is removed while connected */}
-        {sessionInvalid && (
-          <div
-            role="alert"
-            className="mb-4 rounded-lg bg-orange-900/60 border border-orange-600 p-4 text-sm text-orange-200"
-          >
-            <p className="font-semibold mb-1">Wallet session lost</p>
-            <p className="text-xs mb-3">
-              Freighter is no longer available. Disconnect and reconnect to restore your session.
-            </p>
-            <button
-              onClick={disconnect}
-              className="rounded-lg bg-orange-700 hover:bg-orange-600 px-4 py-2 text-xs font-semibold transition-colors focus:outline-none focus:ring-2 focus:ring-orange-400"
-            >
-              Disconnect &amp; reconnect
-            </button>
-          </div>
-        )}
 
         <OnboardingCard freighterInstalled={freighterInstalled} />
 
@@ -238,7 +219,7 @@ export default function Home() {
             </a>{' '}
             and click <strong className="text-gray-300">Connect Freighter Wallet</strong> above.
             Then set <code className="bg-gray-800 px-1 rounded text-yellow-300 text-xs">NEXT_PUBLIC_CONTRACT_ID</code> in{' '}
-            <code className="bg-gray-800 px-1 rounded text-gray-300 text-xs">frontend/.env.local</code> if you haven't deployed yet.
+            <code className="bg-gray-800 px-1 rounded text-gray-300 text-xs">frontend/.env.local</code> if you haven&apos;t deployed yet.
             See the <a href="https://github.com/Chrisland58/SorobanPay#quick-start-testnet-demo--5-minutes" target="_blank" rel="noopener noreferrer" className="underline text-blue-400 hover:text-blue-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400 rounded">Quick Start guide</a>.
           </p>
         </div>

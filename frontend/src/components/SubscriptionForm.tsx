@@ -34,6 +34,8 @@
 
 import { useState, useEffect, useCallback, type FormEvent } from "react";
 import { useWallet } from "@/hooks/useWallet";
+import { ErrorBoundary } from "@/components/ErrorBoundary";
+import { ShareQRCode } from "@/components/ShareQRCode";
 import {
   getPersistedFormData,
   persistFormData,
@@ -707,22 +709,45 @@ function ErrorCard({
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
-export default function SubscriptionForm() {
+// ─── Props ────────────────────────────────────────────────────────────────────
+
+export interface SubscriptionFormInitialValues {
+  /** Pre-filled merchant Stellar address (validated before use). */
+  merchantAddress?: string;
+  /** Pre-filled token contract address (validated before use). */
+  tokenAddress?: string;
+  /** Pre-filled payment amount. */
+  amount?: string;
+  /** Pre-filled interval in seconds. */
+  interval?: string;
+}
+
+export interface SubscriptionFormProps {
+  /**
+   * Optional initial form values (FE-37 — pre-population from share URL).
+   * Each field is only applied when non-empty; invalid values are ignored.
+   */
+  initialValues?: SubscriptionFormInitialValues;
+}
+
+export default function SubscriptionForm({ initialValues }: SubscriptionFormProps = {}) {
   const { publicKey, isCheckingFreighter, freighterInstalled } = useWallet();
 
-  // Guard: must have a valid contract address before rendering the form
-  if (!CONTRACT_ID) return <ContractConfigError />;
-
-  const [merchantAddress, setMerchantAddress] = useState('');
-  const [tokenAddress, setTokenAddress]       = useState('');
-  const [amount, setAmount]                   = useState('');
-  const [interval, setInterval]               = useState(String(DEFAULT_INTERVAL_SECONDS));
+  // All hooks must be declared before any early return (rules-of-hooks)
+  const [merchantAddress, setMerchantAddress] = useState(initialValues?.merchantAddress ?? '');
+  const [tokenAddress, setTokenAddress]       = useState(initialValues?.tokenAddress ?? '');
+  const [amount, setAmount]                   = useState(initialValues?.amount ?? '');
+  const [interval, setInterval]               = useState(initialValues?.interval ?? String(DEFAULT_INTERVAL_SECONDS));
 
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [fieldErrors, setFieldErrors]   = useState<FieldErrors>({});
   const [txError, setTxError]           = useState<TxErrorInfo | null>(null);
   const [successData, setSuccessData]   = useState<SuccessData | null>(null);
   const [showConfirm, setShowConfirm]   = useState(false);
+
+  // Guard: must have a valid contract address before rendering the form
+  // (placed after hooks so rules-of-hooks is satisfied)
+  if (!CONTRACT_ID) return <ContractConfigError />;
   const intervalNum = Number(interval);
 
   const labelCls = 'block text-sm font-semibold text-gray-100 mb-2.5';
@@ -806,6 +831,7 @@ export default function SubscriptionForm() {
   }
 
   return (
+    <ErrorBoundary name="SubscriptionForm">
     <div className="w-full max-w-lg mx-auto bg-gray-900 rounded-2xl shadow-xl p-5 sm:p-8 text-white">
       {showConfirm && (
         <ConfirmModal
@@ -1061,6 +1087,14 @@ export default function SubscriptionForm() {
             )}
           </div>
 
+          {/* Share / QR code (FE-37) — merchant portal share button */}
+          <ShareQRCode
+            merchant={merchantAddress}
+            token={tokenAddress}
+            amount={amount}
+            interval={interval}
+          />
+
           {/* Submit */}
           <div>
             {!publicKey && (
@@ -1112,5 +1146,6 @@ export default function SubscriptionForm() {
         </form>
       )}
     </div>
+    </ErrorBoundary>
   );
 }

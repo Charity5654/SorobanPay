@@ -1,3 +1,14 @@
+import createNextIntlPlugin from 'next-intl/plugin';
+
+/**
+ * next.config.mjs
+ *
+ * Wraps the base Next.js config with the next-intl plugin (FE-35).
+ * The plugin wires up the i18n request config defined in src/i18n.ts.
+ */
+
+const withNextIntl = createNextIntlPlugin('./src/i18n.ts');
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
@@ -13,4 +24,4 @@ const nextConfig = {
   },
 };
 
-export default nextConfig;
+export default withNextIntl(nextConfig);
