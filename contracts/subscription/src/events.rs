@@ -113,3 +113,44 @@ pub fn emit_batch_execute_initiated(env: &Env, merchant: &Address, batch_size: u
         batch_size as i128,
     );
 }
+
+/// Emit the `contract_migrated` event after a schema migration completes successfully.
+///
+/// Topics:  (symbol("contract_migrated"), admin)
+/// Data:    new schema version (u32 as i128)
+pub fn emit_contract_migrated(env: &Env, admin: &Address, new_version: u32) {
+    env.events().publish(
+        (
+            Symbol::new(env, "contract_migrated"),
+            admin.clone(),
+        ),
+        new_version as i128,
+    );
+}
+
+/// Emit the `low_allowance` warning event when a subscriber's token allowance is below
+/// the subscription amount at the time of `subscribe`.
+///
+/// This is a non-fatal warning (unless strict mode is enabled).  Off-chain systems can
+/// use it to prompt the subscriber to approve a larger allowance before the first payment.
+///
+/// Topics:  (symbol("low_allowance"), subscriber, merchant, token)
+/// Data:    (allowance: i128, required: i128)
+pub fn emit_low_allowance(
+    env: &Env,
+    subscriber: &Address,
+    merchant: &Address,
+    token: &Address,
+    allowance: i128,
+    required: i128,
+) {
+    env.events().publish(
+        (
+            Symbol::new(env, "low_allowance"),
+            subscriber.clone(),
+            merchant.clone(),
+            token.clone(),
+        ),
+        (allowance, required),
+    );
+}

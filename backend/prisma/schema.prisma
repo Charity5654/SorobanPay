@@ -10,17 +10,18 @@ generator client {
 
 datasource db {
   provider = "postgresql"
+  url      = env("DATABASE_URL")
 }
 
 model Event {
-  id            Int      @id @default(autoincrement())
-  type          String   // "subscribe" or "executed"
-  subscriber    String
-  merchant      String
-  token         String
-  amount        String   // Store as string to handle big integers
+  id              Int      @id @default(autoincrement())
+  type            String   // "subscribe", "executed", "payment_transfer_failure", "cancel"
+  subscriber      String
+  merchant        String
+  token           String
+  amount          String   // Store as string to handle big integers
   ledgerTimestamp BigInt
-  createdAt     DateTime @default(now())
+  createdAt       DateTime @default(now())
 }
 
 model AuditLog {
@@ -37,15 +38,15 @@ model AuditLog {
 }
 
 model PayoutSummary {
-  id            Int      @id @default(autoincrement())
-  merchant      String
-  startDate     DateTime
-  endDate       DateTime
-  totalAmount   String   // Total amount for the period
-  paymentCount  Int      // Number of payments
-  currency      String   // Token address
-  createdAt     DateTime @default(now())
-  type          String   // "daily" or "weekly"
+  id           Int      @id @default(autoincrement())
+  merchant     String
+  startDate    DateTime
+  endDate      DateTime
+  totalAmount  String   // Total amount for the period
+  paymentCount Int      // Number of payments
+  currency     String   // Token address
+  createdAt    DateTime @default(now())
+  type         String   // "daily" or "weekly"
 }
 
 model WebhookEndpoint {
@@ -53,20 +54,62 @@ model WebhookEndpoint {
   merchant  String
   url       String
   active    Boolean  @default(true)
+  secret    String?  // HMAC-SHA256 signing secret; null = unsigned
   createdAt DateTime @default(now())
+
+  deliveries WebhookDelivery[]
 
   @@unique([merchant, url])
 }
 
 model WebhookDelivery {
+  id          Int      @id @default(autoincrement())
+  /// Stable event identifier — sha256(txHash + eventIndex).
+  /// Constant across all retry attempts for the same event.
+  /// Merchants use this as their idempotency key.
+  eventId     String
+  /// UUID v4 unique per delivery attempt (changes on every retry).
+  deliveryId  String   @unique @default(uuid())
+  url         String
+  merchant    String
+  event       String
+  payload     String
+  statusCode  Int
+  attempt     Int
+  success     Boolean
+  error       String?
+  createdAt   DateTime @default(now())
+
+  endpointId  Int?
+  endpoint    WebhookEndpoint? @relation(fields: [endpointId], references: [id])
+
+  @@index([eventId])
+  @@index([merchant, createdAt])
+  @@index([merchant, success, createdAt])
+}
+
+// BE-67: Subscription lifecycle state machine persistence
+model Subscription {
   id         Int      @id @default(autoincrement())
-  url        String
+  subscriber String
   merchant   String
-  event      String
-  payload    String
-  statusCode Int
-  attempt    Int
-  success    Boolean
-  error      String?
+  token      String   @default("")
+  status     String   @default("ACTIVE") // ACTIVE | PAUSED | OVERDUE | CANCELLED | EXPIRED
+  amount     String   @default("0")
   createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@unique([subscriber, merchant], name: "subscriber_merchant")
+}
+
+// BE-68: Email notification preferences
+model NotificationPreference {
+  id           Int      @id @default(autoincrement())
+  email        String   @unique
+  subscriber   String?
+  merchant     String?
+  unsubToken   String   @unique @default(cuid())
+  emailEnabled Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
 }
