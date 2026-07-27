@@ -137,6 +137,150 @@ Open http://localhost:3000 in a browser with the [Freighter extension](https://w
 
 ---
 
+## Kubernetes Deployment (backend services)
+
+The `deploy/k8s/` directory contains production-grade Kubernetes manifests for the three SorobanPay backend roles:
+
+| Manifest | Workload | Replicas |
+|---|---|---|
+| `indexer-deployment.yaml` | Event indexer — polls Soroban RPC every 5 min | 1 (Recreate) |
+| `api-deployment.yaml` | REST API — subscriptions, webhooks, admin, reports | 2–10 (HPA) |
+| `webhook-worker-deployment.yaml` | Webhook worker — delivers merchant notifications | 2 (RollingUpdate) |
+
+All three run the same `sorobanpay/backend` Docker image; the `SERVICE_ROLE` env var selects the active mode at startup.
+
+### Prerequisites
+
+| Tool | Install |
+|---|---|
+| `kubectl` ≥ 1.28 | https://kubernetes.io/docs/tasks/tools/ |
+| A Kubernetes cluster | minikube, kind, EKS, GKE, AKS, etc. |
+| [nginx-ingress controller](https://kubernetes.github.io/ingress-nginx/) | `kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.11.1/deploy/static/provider/cloud/deploy.yaml` |
+| [cert-manager](https://cert-manager.io/) (TLS) | `kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.15.1/cert-manager.yaml` |
+| [metrics-server](https://github.com/kubernetes-sigs/metrics-server) (HPA) | `kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml` |
+
+### Quick start — minikube
+
+```bash
+# 1. Start minikube
+minikube start --cpus=4 --memory=4096
+
+# 2. Enable the nginx ingress addon
+minikube addons enable ingress
+
+# 3. Build the backend image inside minikube's Docker daemon
+eval $(minikube docker-env)
+docker build -t sorobanpay/backend:latest backend/
+
+# 4. Set real secret values (do not commit these to source control)
+kubectl create secret generic sorobanpay-secrets \
+  --from-literal=DATABASE_URL="postgresql://sorobanpay:sorobanpay@postgres:5432/sorobanpay?schema=public" \
+  --from-literal=WEBHOOK_SECRET="$(openssl rand -hex 32)" \
+  --from-literal=ADMIN_JWT_SECRET="$(openssl rand -hex 32)" \
+  -n sorobanpay --dry-run=client -o yaml > /tmp/sorobanpay-secrets.yaml
+# Edit /tmp/sorobanpay-secrets.yaml if needed, then apply after the namespace:
+
+# 5. Apply all manifests (namespace first, then the rest via kustomize)
+kubectl apply -f deploy/k8s/namespace.yaml
+kubectl apply /tmp/sorobanpay-secrets.yaml
+kubectl apply -k deploy/k8s/
+
+# 6. Verify the rollout
+kubectl rollout status deployment/sorobanpay-api     -n sorobanpay
+kubectl rollout status deployment/sorobanpay-indexer -n sorobanpay
+kubectl rollout status deployment/sorobanpay-webhook-worker -n sorobanpay
+
+# 7. Check HPA
+kubectl get hpa -n sorobanpay
+
+# 8. Port-forward to test locally (bypasses Ingress)
+kubectl port-forward svc/sorobanpay-api 8080:80 -n sorobanpay
+curl http://localhost:8080/health
+```
+
+### Quick start — existing cluster (production)
+
+```bash
+# 1. Create the namespace
+kubectl apply -f deploy/k8s/namespace.yaml
+
+# 2. Populate secrets from your secret manager (example: plain kubectl)
+kubectl create secret generic sorobanpay-secrets \
+  --from-literal=DATABASE_URL="postgresql://..." \
+  --from-literal=WEBHOOK_SECRET="$(openssl rand -hex 32)" \
+  --from-literal=ADMIN_JWT_SECRET="$(openssl rand -hex 32)" \
+  -n sorobanpay
+
+# 3. Edit deploy/k8s/configmap.yaml — set CONTRACT_ID, RPC_URL, and API_BASE_URL
+
+# 4. Edit deploy/k8s/api-service.yaml — replace api.sorobanpay.example.com with your domain
+
+# 5. Apply everything
+kubectl apply -k deploy/k8s/
+
+# 6. Watch pods come up
+kubectl get pods -n sorobanpay -w
+```
+
+### Updating the image tag
+
+Use `kustomize edit` to pin a specific release without editing manifests by hand:
+
+```bash
+cd deploy/k8s
+kustomize edit set image sorobanpay/backend=sorobanpay/backend:v1.2.3
+kubectl apply -k .
+```
+
+### Directory structure
+
+```
+deploy/k8s/
+├── namespace.yaml                  # sorobanpay namespace
+├── configmap.yaml                  # Non-secret env vars (RPC_URL, CONTRACT_ID, …)
+├── secrets.yaml                    # Placeholder secrets — replace with real values
+├── indexer-deployment.yaml         # Event indexer (1 replica, Recreate)
+├── api-deployment.yaml             # REST API (2 replicas min, HPA to 10)
+├── webhook-worker-deployment.yaml  # Webhook worker (2 replicas)
+├── api-service.yaml                # ClusterIP service + Ingress with TLS
+├── hpa.yaml                        # HPA: CPU ≥ 70% or Memory ≥ 80%
+├── postgres-statefulset.yaml       # PostgreSQL (dev/CI only — use managed DB in prod)
+├── redis-statefulset.yaml          # Redis reference (not yet used — future roadmap)
+└── kustomization.yaml              # Kustomize root — applies all of the above
+```
+
+### Secret management
+
+The provided `secrets.yaml` contains **placeholder base64-encoded values** and must never be applied as-is to a real cluster. Recommended approaches:
+
+- **External Secrets Operator** (recommended): sync from AWS Secrets Manager, GCP Secret Manager, or HashiCorp Vault. Replace `secrets.yaml` with an `ExternalSecret` CRD.
+- **Sealed Secrets**: `kubeseal --format yaml < secrets.yaml > secrets-sealed.yaml` — safe to commit.
+- **`kubectl create secret`**: generate secrets on-the-fly in your CI/CD pipeline, never touching disk.
+
+See [docs/security.md](docs/security.md) for full guidance on managing backend secrets.
+
+### Health probes
+
+All three deployments expose `/health` on port 3001. Kubernetes uses this endpoint for liveness, readiness, and startup probes. The health handler verifies:
+1. Soroban RPC reachability (`getHealth`)
+2. Contract address resolvability (`getContractData`)
+
+A pod will not receive traffic and will be restarted if either check fails consistently. See `backend/src/routes/health.ts` for the implementation.
+
+### Observability
+
+Prometheus annotations are set on all pods:
+
+```
+prometheus.io/scrape: "true"
+prometheus.io/port:   "3001"
+prometheus.io/path:   "/metrics"
+```
+
+If you use the prometheus-operator, create a `ServiceMonitor` targeting the `sorobanpay-api` service. The Grafana dashboard in `deploy/grafana/sorobanpay-dashboard.json` can be imported directly.
+
+---
+
 ## Prerequisites
 
 | Tool | Version | Install |
