@@ -224,6 +224,7 @@ mod property_tests {
                 &p.token,
                 &1_000_i128, // fixed valid amount
                 &interval,
+                &false,
             );
             prop_assert!(
                 result.is_ok(),
@@ -252,6 +253,7 @@ mod property_tests {
                 &p.token,
                 &1_000_i128,
                 &interval,
+                &false,
             );
             prop_assert!(
                 matches!(result, Err(Ok(ContractError::IntervalTooShort))),
@@ -276,6 +278,7 @@ mod property_tests {
                 &p.token,
                 &1_000_i128,
                 &interval,
+                &false,
             );
             prop_assert!(
                 matches!(result, Err(Ok(ContractError::IntervalTooLong))),
@@ -311,6 +314,7 @@ mod property_tests {
                 &p.token,
                 &amount,
                 &interval,
+                &false,
             );
 
             // Attempt payment immediately — ledger clock has NOT advanced past next_payment.
@@ -349,6 +353,7 @@ mod property_tests {
                 &p.token,
                 &amount,
                 &interval,
+                &false,
             );
 
             // Advance ledger clock past the payment due time.
@@ -491,6 +496,7 @@ mod property_tests {
                 &p.token,
                 &amount,
                 &interval,
+                &false,
             );
 
             let stored: crate::storage::SubscriptionData = p.env
