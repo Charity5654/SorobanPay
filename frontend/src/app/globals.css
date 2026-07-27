@@ -7,6 +7,15 @@
   body {
     background-color: #030712; /* gray-950 — darker than gray-900 for better card contrast */
     color: #f9fafb;            /* gray-50 — 16.7:1 on gray-950, exceeds WCAG AAA */
+
+    /* UX-114: prevent horizontal scrolling at any viewport width */
+    overflow-x: hidden;
+    min-width: 320px;
+  }
+
+  /* UX-114: smooth scroll for in-page anchor navigation */
+  html {
+    scroll-behavior: smooth;
   }
 
   /*
@@ -23,5 +32,12 @@
   /* Remove the browser default outline only when we know JS focus-visible is active */
   :focus:not(:focus-visible) {
     outline: none;
+  }
+}
+
+@layer utilities {
+  /* UX-114: safe-area-inset-bottom padding for iOS home indicator */
+  .safe-area-inset-bottom {
+    padding-bottom: env(safe-area-inset-bottom, 0px);
   }
 }
