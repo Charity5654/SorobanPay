@@ -198,8 +198,8 @@ export default function Home() {
       {/* Accessible live region for screen-reader announcements */}
       <LiveRegion />
 
-      {/* Global keyboard help modal */}
-      <ShortcutsHelpModal isOpen={isHelpOpen} onClose={closeHelp} />
+      {/* Wallet section */}
+      <div className="w-full max-w-lg mb-6">
 
       {/* Fixed ? trigger button */}
       <ShortcutsTriggerButton onClick={openHelp} />
@@ -372,17 +372,37 @@ export default function Home() {
           </section>
         )}
 
-        {/* ── Merchant portal section (coming soon) ───────────────────────── */}
-        {/* id is referenced by the M shortcut in useKeyboardShortcuts */}
-        <section
-          id={SECTION_IDS.merchantPortal}
-          aria-label="Merchant portal"
-          className="w-full max-w-lg mt-6"
-          tabIndex={-1}
-        >
-          <div className="rounded-2xl border border-dashed border-gray-700 bg-gray-900/20 p-6 text-center space-y-3">
-            <p className="text-2xl" aria-hidden="true">🏪</p>
-            <p className="text-gray-300 font-semibold text-sm">Merchant Portal</p>
+      {/* Subscription form — only rendered when wallet is connected (Req 9.5) */}
+      {publicKey ? (
+        <SubscriptionForm />
+      ) : (
+        <div className="w-full max-w-lg rounded-2xl border border-gray-800 bg-gray-900/40 p-8 text-center space-y-3">
+          <p className="text-2xl" aria-hidden="true">🔒</p>
+          <p className="text-gray-300 font-semibold text-sm">Connect your wallet to get started</p>
+          <p className="text-gray-500 text-xs leading-relaxed">
+            Install{' '}
+            <a
+              href="https://www.freighter.app"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="underline text-blue-400 hover:text-blue-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400 rounded"
+            >
+              Freighter
+            </a>{' '}
+            and click <strong className="text-gray-300">Connect Freighter Wallet</strong> above.
+            Then set <code className="bg-gray-800 px-1 rounded text-yellow-300 text-xs">NEXT_PUBLIC_CONTRACT_ID</code> in{' '}
+            <code className="bg-gray-800 px-1 rounded text-gray-300 text-xs">frontend/.env.local</code> if you haven&apos;t deployed yet.
+            See the <a href="https://github.com/Chrisland58/SorobanPay#quick-start-testnet-demo--5-minutes" target="_blank" rel="noopener noreferrer" className="underline text-blue-400 hover:text-blue-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400 rounded">Quick Start guide</a>.
+          </p>
+        </div>
+      )}
+
+      {/* Subscription history placeholder */}
+      {publicKey && (
+        <div className="w-full max-w-lg mt-6">
+          <div className="rounded-2xl border border-dashed border-gray-700 bg-gray-900/30 p-6 text-center space-y-3">
+            <p className="text-2xl" aria-hidden="true">📋</p>
+            <p className="text-gray-300 font-semibold text-sm">Payment History</p>
             <p className="text-gray-500 text-xs leading-relaxed max-w-xs mx-auto">
               Trigger <code className="bg-gray-800 px-1 rounded text-gray-400 text-xs">execute_payment</code>,
               view active subscriptions, and review revenue analytics.

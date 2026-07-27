@@ -1,0 +1,86 @@
+{
+  "app": {
+    "title": "SorobanPay",
+    "tagline": "Decentralized recurring payments on Stellar"
+  },
+  "nav": {
+    "connectWallet": "Connect Freighter Wallet",
+    "connecting": "Connecting…",
+    "disconnect": "Disconnect",
+    "connected": "Connected",
+    "disconnected": "Disconnected"
+  },
+  "wallet": {
+    "notInstalled": "Freighter wallet is not installed.",
+    "installLink": "Install Freighter",
+    "notInstalledSuffix": "to continue.",
+    "sessionLost": "Wallet session lost",
+    "sessionLostDescription": "Freighter is no longer available. Disconnect and reconnect to restore your session.",
+    "disconnectAndReconnect": "Disconnect & reconnect"
+  },
+  "subscriptionForm": {
+    "title": "Create Subscription",
+    "description": "Authorize a recurring on-chain payment using your Freighter wallet.",
+    "requiredNote": "Fields marked * are required.",
+    "merchantAddress": "Merchant address",
+    "merchantAddressPlaceholder": "e.g. GXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
+    "merchantAddressHint": "The merchant's Stellar account public key — starts with G, 56 characters.",
+    "tokenAddress": "Token contract address",
+    "tokenAddressPlaceholder": "e.g. CXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
+    "tokenAddressHint": "The SEP-41 token contract address — starts with C, 56 characters.",
+    "amount": "Amount",
+    "amountPlaceholder": "100",
+    "amountHint": "Required. Enter the recurring payment amount in token units.",
+    "interval": "Interval",
+    "intervalHint": "Required. The recurrence cadence for the subscription. Default is 30 days.",
+    "submit": "Authorize Subscription",
+    "submitting": "Submitting…",
+    "walletHint": "Connect your Freighter wallet to enable submission.",
+    "contract": "Contract"
+  },
+  "share": {
+    "button": "Share",
+    "hideButton": "Hide QR code",
+    "title": "Subscription share link",
+    "description": "Anyone who scans this QR code will land on a pre-filled subscription form with your merchant address, token, amount, and interval.",
+    "copyLink": "Copy link",
+    "copied": "Copied!",
+    "downloadPng": "Download PNG",
+    "qrAlt": "QR code for subscription link",
+    "disabledHint": "Enter a merchant address to generate a share link"
+  },
+  "success": {
+    "title": "Subscription created!",
+    "createAnother": "Create Another Subscription"
+  },
+  "errors": {
+    "somethingWentWrong": "Something went wrong",
+    "refreshOrContact": "Something went wrong. Refresh the page or contact support.",
+    "tryAgain": "Try again",
+    "refreshPage": "Refresh page",
+    "errorDetails": "Error details (dev only)"
+  },
+  "onboarding": {
+    "heading": "Launch your first recurring payment",
+    "steps": "3 steps",
+    "step1Title": "Wallet setup",
+    "step1": "Install Freighter and switch it to Testnet. Then connect your wallet with the button below.",
+    "step2Title": "Environment config",
+    "step2": "Add NEXT_PUBLIC_CONTRACT_ID to frontend/.env.local and restart the app.",
+    "step3Title": "Create a subscription",
+    "step3": "Fill in the merchant, token, amount, and interval fields. Then authorize the subscription with Freighter."
+  },
+  "paymentHistory": {
+    "title": "Payment History",
+    "description": "Executed payments and subscription activity will appear here once on-chain event indexing is available.",
+    "comingSoon": "Coming soon"
+  },
+  "disconnectedCard": {
+    "message": "Connect your wallet to get started"
+  },
+  "languageSelector": {
+    "label": "Language",
+    "en": "English",
+    "es": "Español"
+  }
+}
