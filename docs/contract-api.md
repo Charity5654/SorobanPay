@@ -14,11 +14,23 @@ Creates or updates a recurring payment authorization from a subscriber to a merc
 
 | Parameter | Type | Constraints | Description |
 |-----------|------|-------------|-------------|
-| `subscriber` | `Address` | — | Wallet authorizing the subscription |
-| `merchant` | `Address` | — | Recipient of recurring payments |
-| `token` | `Address` | SEP-41 | Token contract address |
-| `amount` | `i128` | > 0 | Units per payment interval |
+| `subscriber` | `Address` | ≠ merchant | Wallet authorizing the subscription |
+| `merchant` | `Address` | ≠ subscriber | Recipient of recurring payments |
+| `token` | `Address` | SEP-41, not contract address | Token contract address |
+| `amount` | `i128` | > 0, ≤ 10¹⁸ | Base units per payment interval (see [token-decimals.md](token-decimals.md)) |
 | `interval` | `u64` | 86400–31536000 s | Seconds between payments |
+
+### Error cases
+
+| Error | Code | Trigger |
+|-------|------|---------|
+| `SelfSubscription` | 10 | `subscriber == merchant` |
+| `InvalidTokenAddress` | 11 | `token` is the contract's own address |
+| `AmountMustBePositive` | 1 | `amount ≤ 0` |
+| `AmountTooLarge` | 9 | `amount > 10¹⁸` |
+| `IntervalTooShort` | 2 | `interval < 86400` |
+| `IntervalTooLong` | 3 | `interval > 31536000` |
+| `InvalidTimestamp` | 8 | Ledger clock is zero |
 
 ### CLI example
 

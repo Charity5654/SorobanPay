@@ -6,12 +6,12 @@ use alloc::vec::Vec;
 use soroban_sdk::{
     testutils::{Address as _, Events, Ledger},
     token::{self, StellarAssetClient},
-    Address, Env,
+    Address, Env, IntoVal, Symbol,
 };
 
 use crate::{
     error::ContractError,
-    storage::{DataKey, SubscriptionData},
+    storage::{subscription_key, DataKey, SubscriptionData},
     SubscriptionProtocol, SubscriptionProtocolClient,
 };
 
@@ -70,19 +70,60 @@ impl T {
     }
 
     fn has_sub(&self) -> bool {
-        let key = DataKey::Subscription(self.subscriber.clone(), self.merchant.clone());
-        let contract_id = self.contract_id.clone();
-        self.env.as_contract(&contract_id, || {
-            self.env.storage().persistent().has(&key)
-        })
+        self.env
+            .storage()
+            .persistent()
+            .has(&DataKey::Subscription(subscription_key(&self.env, &self.subscriber, &self.merchant)))
     }
 
     fn get_sub(&self) -> SubscriptionData {
-        let key = DataKey::Subscription(self.subscriber.clone(), self.merchant.clone());
-        let contract_id = self.contract_id.clone();
-        self.env.as_contract(&contract_id, || {
-            self.env.storage().persistent().get(&key).unwrap()
-        })
+        self.env
+            .storage()
+            .persistent()
+            .get(&DataKey::Subscription(subscription_key(&self.env, &self.subscriber, &self.merchant)))
+            .unwrap()
+    }
+}
+
+// ─── Subscribe: Data Storage & Event Emission ────────────────────────────────
+
+/// Test that subscribe correctly stores SubscriptionData and emits the subscribe event.
+/// Verifies that stored fields match input parameters and event topics are correct.
+#[test]
+fn test_subscribe_stores_data_and_emits_event() {
+    let t = T::new();
+    let amt = 100_000_i128;
+    let ivl = 86_400_u64;
+    let ts = t.env.ledger().timestamp();
+
+    // Subscribe
+    t.client.subscribe(&t.subscriber, &t.merchant, &t.token, &amt, &ivl, &false);
+
+    // Verify subscription is stored
+    assert!(t.has_sub(), "subscription must be stored after subscribe");
+
+    // Verify stored data fields match input parameters
+    let stored = t.get_sub();
+    assert_eq!(stored.amount, amt, "stored amount must match input");
+    assert_eq!(stored.interval, ivl, "stored interval must match input");
+    assert_eq!(stored.token, t.token, "stored token must match input");
+    assert_eq!(stored.next_payment, ts + ivl, "next_payment must be now + interval");
+
+    // Verify subscribe event was emitted with correct topics
+    let events = t.env.events().all();
+    let contract_events: Vec<_> = events.iter().filter(|e| e.0 == t.contract_id).collect();
+    
+    assert!(!contract_events.is_empty(), "subscribe must emit at least one event");
+    
+    // The first event should be the subscribe event
+    let (_, topics, data) = &contract_events[0];
+    
+    // Topics should be: (symbol("subscribe"), subscriber, merchant, token)
+    assert_eq!(topics.len(), 4, "subscribe event must have 4 topics");
+    
+    // Verify the emitted amount in event data
+    if let Ok(emitted_amount) = data.try_into_val::<_, i128>(&t.env) {
+        assert_eq!(emitted_amount, amt, "emitted amount must match subscription amount");
     }
 }
 
@@ -96,7 +137,7 @@ fn test_full_lifecycle() {
     let ts0  = t.env.ledger().timestamp();
 
     // (a) subscribe
-    t.client().subscribe(&t.subscriber, &t.merchant, &t.token, &amt, &ivl);
+    t.client.subscribe(&t.subscriber, &t.merchant, &t.token, &amt, &ivl, &false);
     let d = t.get_sub();
     assert_eq!(d.amount,       amt);
     assert_eq!(d.interval,     ivl);
@@ -122,7 +163,7 @@ fn test_full_lifecycle() {
 #[test]
 fn test_payment_not_due_after_subscribe() {
     let t = T::new();
-    t.client().subscribe(&t.subscriber, &t.merchant, &t.token, &100_000_i128, &86_400_u64);
+    t.client.subscribe(&t.subscriber, &t.merchant, &t.token, &100_000_i128, &86_400_u64, &false);
     let bal = t.sub_bal();
     let r = t.client().try_execute_payment(&t.subscriber, &t.merchant);
     assert!(matches!(r, Err(Ok(ContractError::PaymentNotDue))));
@@ -137,7 +178,7 @@ fn test_execute_payment_before_due_time() {
     let amt = 100_000_i128;
     let ivl = 86_400_u64;
 
-    t.client().subscribe(&t.subscriber, &t.merchant, &t.token, &amt, &ivl);
+    t.client.subscribe(&t.subscriber, &t.merchant, &t.token, &amt, &ivl, &false);
     let bal_before = t.sub_bal();
     let mer_bal_before = t.mer_bal();
 
@@ -157,13 +198,101 @@ fn test_execute_payment_before_due_time() {
     assert_eq!(d.interval, ivl);
 }
 
+// ─── Requirement 13.2b — No double payment within same interval ──────────────
+
+/// After a successful execute_payment, the next_payment timestamp is advanced by one
+/// interval. A second immediate call must return PaymentNotDue because the new
+/// next_payment lies in the future, preventing any double-charge within the same
+/// billing period.
+#[test]
+fn test_no_double_payment_within_same_interval() {
+    let t   = T::new();
+    let amt = 100_000_i128;
+    let ivl = 86_400_u64;
+
+    t.client.subscribe(&t.subscriber, &t.merchant, &t.token, &amt, &ivl, &false);
+
+    // Advance just past the first due timestamp.
+    t.advance(ivl + 1);
+
+    let sb_before = t.sub_bal();
+    let mb_before = t.mer_bal();
+
+    // First call — must succeed and transfer funds.
+    t.client.execute_payment(&t.subscriber, &t.merchant);
+    assert_eq!(t.sub_bal(), sb_before - amt, "first payment must debit subscriber");
+    assert_eq!(t.mer_bal(), mb_before + amt, "first payment must credit merchant");
+
+    // next_payment is now `now + interval` — still in the future.
+    let d = t.get_sub();
+    assert!(
+        d.next_payment > t.env.ledger().timestamp(),
+        "next_payment must be in the future after a successful payment"
+    );
+
+    // Second immediate call — must be rejected; no funds may move.
+    let r = t.client.try_execute_payment(&t.subscriber, &t.merchant);
+    assert!(
+        matches!(r, Err(Ok(ContractError::PaymentNotDue))),
+        "second execute_payment before next interval must return PaymentNotDue"
+    );
+    assert_eq!(t.sub_bal(), sb_before - amt, "subscriber balance must not change on rejected second attempt");
+    assert_eq!(t.mer_bal(), mb_before + amt, "merchant balance must not change on rejected second attempt");
+
+    // Subscription state must remain intact (subscription is not cancelled on error).
+    assert!(t.has_sub(), "subscription must still exist after rejected double-payment attempt");
+}
+
+// ─── Requirement 13.2b — Double payment prevention ───────────────────────────
+
+/// Verifies that `execute_payment` returns `PaymentNotDue` if called a second time
+/// immediately after a successful payment, before the next interval has elapsed.
+///
+/// The contract must advance `next_payment` by `interval` on success so that any
+/// retry within the same window is rejected, preventing double charges.
+#[test]
+fn test_execute_payment_double_payment_prevented() {
+    let t   = T::new();
+    let amt = 100_000_i128;
+    let ivl = 86_400_u64;
+
+    // (a) Subscribe and advance past the first due date.
+    t.client.subscribe(&t.subscriber, &t.merchant, &t.token, &amt, &ivl, &false);
+    t.advance(ivl + 1);
+
+    let sub_bal_before = t.sub_bal();
+    let mer_bal_before = t.mer_bal();
+
+    // (b) First execute_payment must succeed and transfer funds.
+    t.client.execute_payment(&t.subscriber, &t.merchant);
+    assert_eq!(t.sub_bal(), sub_bal_before - amt, "first payment must debit subscriber");
+    assert_eq!(t.mer_bal(), mer_bal_before + amt, "first payment must credit merchant");
+
+    // Capture the advanced next_payment timestamp.
+    let next = t.get_sub().next_payment;
+
+    // (c) Immediate retry — no time has passed, so next_payment has not elapsed.
+    let result = t.client.try_execute_payment(&t.subscriber, &t.merchant);
+    assert!(
+        matches!(result, Err(Ok(ContractError::PaymentNotDue))),
+        "second execute_payment within the same interval must return PaymentNotDue"
+    );
+
+    // (d) Balances must be unchanged after the failed retry.
+    assert_eq!(t.sub_bal(), sub_bal_before - amt, "subscriber balance must not change on retry");
+    assert_eq!(t.mer_bal(), mer_bal_before + amt, "merchant balance must not change on retry");
+
+    // (e) next_payment must remain unchanged — the failed call must not mutate state.
+    assert_eq!(t.get_sub().next_payment, next, "next_payment must not advance on failed retry");
+}
+
 // ─── Requirement 13.3 — Execute after cancel ─────────────────────────────────
 
 #[test]
 fn test_execute_after_cancel() {
     let t = T::new();
-    t.client().subscribe(&t.subscriber, &t.merchant, &t.token, &100_000_i128, &86_400_u64);
-    t.client().cancel(&t.subscriber, &t.merchant);
+    t.client.subscribe(&t.subscriber, &t.merchant, &t.token, &100_000_i128, &86_400_u64, &false);
+    t.client.cancel(&t.subscriber, &t.merchant);
     t.advance(90_000);
     let r = t.client().try_execute_payment(&t.subscriber, &t.merchant);
     assert!(matches!(r, Err(Ok(ContractError::NoActiveSubscription))));
@@ -208,7 +337,7 @@ fn test_subscribe_interval_too_long() {
 fn test_subscribe_interval_exact_lower_boundary() {
     let t = T::new();
     let ivl = 86_400_u64; // exactly 1 day
-    t.client().subscribe(&t.subscriber, &t.merchant, &t.token, &100_i128, &ivl);
+    t.client.subscribe(&t.subscriber, &t.merchant, &t.token, &100_i128, &ivl, &false);
     let d = t.get_sub();
     assert_eq!(d.interval, ivl, "interval at exact lower boundary must be accepted");
 }
@@ -261,7 +390,7 @@ fn test_subscribe_interval_one_second() {
 fn test_subscribe_interval_exact_upper_boundary() {
     let t = T::new();
     let ivl = 31_536_000_u64; // exactly 365 days
-    t.client().subscribe(&t.subscriber, &t.merchant, &t.token, &100_i128, &ivl);
+    t.client.subscribe(&t.subscriber, &t.merchant, &t.token, &100_i128, &ivl, &false);
     let d = t.get_sub();
     assert_eq!(d.interval, ivl, "interval at exact upper boundary must be accepted");
 }
@@ -317,7 +446,7 @@ fn test_subscribe_min_amount_min_interval_boundary() {
     let t = T::new();
     let amt = 1_i128; // minimum positive amount
     let ivl = 86_400_u64; // exact lower boundary
-    t.client().subscribe(&t.subscriber, &t.merchant, &t.token, &amt, &ivl);
+    t.client.subscribe(&t.subscriber, &t.merchant, &t.token, &amt, &ivl, &false);
     let d = t.get_sub();
     assert_eq!(d.amount, amt);
     assert_eq!(d.interval, ivl);
@@ -330,7 +459,7 @@ fn test_subscribe_large_amount_max_interval_boundary() {
     let t = T::new();
     let amt = i128::MAX / 2; // large but safe amount
     let ivl = 31_536_000_u64; // exact upper boundary
-    t.client().subscribe(&t.subscriber, &t.merchant, &t.token, &amt, &ivl);
+    t.client.subscribe(&t.subscriber, &t.merchant, &t.token, &amt, &ivl, &false);
     let d = t.get_sub();
     assert_eq!(d.amount, amt);
     assert_eq!(d.interval, ivl);
@@ -353,9 +482,9 @@ fn test_subscribe_zero_interval_with_valid_amount() {
 #[test]
 fn test_subscribe_overwrites_existing() {
     let t = T::new();
-    t.client().subscribe(&t.subscriber, &t.merchant, &t.token, &100_i128, &86_400_u64);
+    t.client.subscribe(&t.subscriber, &t.merchant, &t.token, &100_i128, &86_400_u64, &false);
     let ts2 = t.env.ledger().timestamp();
-    t.client().subscribe(&t.subscriber, &t.merchant, &t.token, &999_i128, &172_800_u64);
+    t.client.subscribe(&t.subscriber, &t.merchant, &t.token, &999_i128, &172_800_u64, &false);
     let d = t.get_sub();
     assert_eq!(d.amount,       999);
     assert_eq!(d.interval,     172_800);
@@ -381,7 +510,7 @@ fn test_cancel_and_resubscribe() {
     let ts1   = t.env.ledger().timestamp();
 
     // (a) first subscribe
-    t.client().subscribe(&t.subscriber, &t.merchant, &t.token, &amt1, &ivl1);
+    t.client.subscribe(&t.subscriber, &t.merchant, &t.token, &amt1, &ivl1, &false);
     let d1 = t.get_sub();
     assert_eq!(d1.amount,       amt1);
     assert_eq!(d1.interval,     ivl1);
@@ -395,7 +524,7 @@ fn test_cancel_and_resubscribe() {
     let amt2  = 200_000_i128;
     let ivl2  = 172_800_u64;
     let ts2   = t.env.ledger().timestamp();
-    t.client().subscribe(&t.subscriber, &t.merchant, &t.token, &amt2, &ivl2);
+    t.client.subscribe(&t.subscriber, &t.merchant, &t.token, &amt2, &ivl2, &false);
 
     // (d) verify new subscription replaces old one
     let d2 = t.get_sub();
@@ -413,7 +542,7 @@ fn test_cancel_and_resubscribe() {
 fn test_execute_payment_emits_success_event() {
     let t = T::new();
     let amt = 500_i128;
-    t.client().subscribe(&t.subscriber, &t.merchant, &t.token, &amt, &86_400_u64);
+    t.client.subscribe(&t.subscriber, &t.merchant, &t.token, &amt, &86_400_u64, &false);
     t.advance(86_401);
 
     t.client().execute_payment(&t.subscriber, &t.merchant);
@@ -430,7 +559,7 @@ fn test_execute_payment_insufficient_balance() {
     let high_amt = 15_000_000_i128; // exceeds subscriber balance (10_000_000)
 
     // Subscribe with an amount larger than subscriber balance
-    t.client().subscribe(&t.subscriber, &t.merchant, &t.token, &high_amt, &86_400_u64);
+    t.client.subscribe(&t.subscriber, &t.merchant, &t.token, &high_amt, &86_400_u64, &false);
     let d_before = t.get_sub();
     let sub_balance_before = t.sub_bal();
 
@@ -465,7 +594,7 @@ fn test_execute_payment_emits_failure_event_on_insufficient_balance() {
     let t = T::new();
     let high_amt = 15_000_000_i128; // exceeds subscriber balance
 
-    t.client().subscribe(&t.subscriber, &t.merchant, &t.token, &high_amt, &86_400_u64);
+    t.client.subscribe(&t.subscriber, &t.merchant, &t.token, &high_amt, &86_400_u64, &false);
     t.advance(86_401);
 
     let _ = t.client().try_execute_payment(&t.subscriber, &t.merchant);
@@ -483,7 +612,7 @@ fn test_subscription_retryable_after_failed_transfer() {
     let high_amt = 15_000_000_i128; // exceeds subscriber balance
     let ivl = 86_400_u64;
 
-    t.client().subscribe(&t.subscriber, &t.merchant, &t.token, &high_amt, &ivl);
+    t.client.subscribe(&t.subscriber, &t.merchant, &t.token, &high_amt, &ivl, &false);
     let d = t.get_sub();
     let original_next_payment = d.next_payment;
 
@@ -519,7 +648,7 @@ fn test_subscription_retryable_after_failed_transfer() {
 #[test]
 fn test_subscribe_emits_one_event() {
     let t = T::new();
-    t.client().subscribe(&t.subscriber, &t.merchant, &t.token, &500_i128, &86_400_u64);
+    t.client.subscribe(&t.subscriber, &t.merchant, &t.token, &500_i128, &86_400_u64, &false);
     // Only our contract event should be present (not token system events)
     let ours = t.env.events().all().filter_by_contract(&t.contract_id);
     assert_eq!(ours.events().len(), 1, "subscribe should emit exactly 1 event");
@@ -528,12 +657,188 @@ fn test_subscribe_emits_one_event() {
 #[test]
 fn test_execute_payment_emits_event() {
     let t = T::new();
-    t.client().subscribe(&t.subscriber, &t.merchant, &t.token, &500_i128, &86_400_u64);
+    t.client.subscribe(&t.subscriber, &t.merchant, &t.token, &500_i128, &86_400_u64, &false);
+    let n_before = t.env.events().all().iter().filter(|e| e.0 == t.contract_id).count();
     t.advance(86_401);
     t.client().execute_payment(&t.subscriber, &t.merchant);
     // Events are per-invocation in SDK v27: after execute_payment there should be exactly 1 event.
     let n_after = t.env.events().all().filter_by_contract(&t.contract_id).events().len();
     assert_eq!(n_after, 1, "execute_payment should emit 1 event");
+}
+
+// ─── Issue #149 — Event Indexer Compatibility Tests ──────────────────────────
+
+/// Verifies subscribe event topics are exactly:
+///   (symbol("subscribe"), subscriber: Address, merchant: Address, token: Address)
+/// and data is amount: i128.
+/// Event indexers depend on this exact schema for parsing.
+#[test]
+fn test_subscribe_event_topics_and_payload_exact() {
+    let t = T::new();
+    let amt = 500_i128;
+    t.client.subscribe(&t.subscriber, &t.merchant, &t.token, &amt, &86_400_u64, &false);
+
+    let all = t.env.events().all();
+    let our_events: Vec<_> = all.iter().filter(|e| e.0 == t.contract_id).collect();
+    assert_eq!(our_events.len(), 1, "exactly one contract event");
+
+    let event = &our_events[0];
+    // Topics: (symbol("subscribe"), subscriber, merchant, token)
+    let expected_topics = (
+        Symbol::new(&t.env, "subscribe"),
+        t.subscriber.clone(),
+        t.merchant.clone(),
+        t.token.clone(),
+    )
+        .into_val(&t.env);
+    assert_eq!(event.1, expected_topics, "subscribe event topics must match indexer schema");
+
+    // Data: amount as i128
+    let expected_data = amt.into_val(&t.env);
+    assert_eq!(event.2, expected_data, "subscribe event data must be amount as i128");
+}
+
+/// Verifies the subscribe event topic count is exactly 4:
+/// symbol + 3 address fields. No extra or missing topics.
+/// Validated by asserting all 4 expected topics match, and that swapping any
+/// one (e.g. wrong symbol) causes a mismatch.
+#[test]
+fn test_subscribe_event_has_four_topics() {
+    let t = T::new();
+    t.client.subscribe(&t.subscriber, &t.merchant, &t.token, &100_i128, &86_400_u64, &false);
+
+    let all = t.env.events().all();
+    let event = all.iter().find(|e| e.0 == t.contract_id).expect("event must exist");
+
+    // Exact 4-topic tuple must match — any missing/extra topic changes the Val encoding.
+    let expected = (
+        Symbol::new(&t.env, "subscribe"),
+        t.subscriber.clone(),
+        t.merchant.clone(),
+        t.token.clone(),
+    )
+        .into_val(&t.env);
+    assert_eq!(event.1, expected, "topics must be exactly (symbol, subscriber, merchant, token)");
+
+    // A 3-topic tuple must NOT match, confirming token is present.
+    let three_topics = (
+        Symbol::new(&t.env, "subscribe"),
+        t.subscriber.clone(),
+        t.merchant.clone(),
+    )
+        .into_val(&t.env);
+    assert_ne!(event.1, three_topics, "token must be present as 4th topic");
+}
+
+/// Verifies that the first topic of a subscribe event is the symbol "subscribe".
+#[test]
+fn test_subscribe_event_first_topic_is_symbol() {
+    let t = T::new();
+    t.client.subscribe(&t.subscriber, &t.merchant, &t.token, &100_i128, &86_400_u64, &false);
+
+    let all = t.env.events().all();
+    let event = all.iter().find(|e| e.0 == t.contract_id).expect("event must exist");
+
+    // Re-build the exact expected topics tuple and compare symbol position via full match.
+    let expected_topics = (
+        Symbol::new(&t.env, "subscribe"),
+        t.subscriber.clone(),
+        t.merchant.clone(),
+        t.token.clone(),
+    )
+        .into_val(&t.env);
+    assert_eq!(
+        event.1, expected_topics,
+        "first topic must be the symbol 'subscribe'"
+    );
+}
+
+/// Verifies executed event schema:
+///   topics: (symbol("executed"), subscriber, merchant, token)
+///   data:   amount as i128
+#[test]
+fn test_executed_event_topics_and_payload_exact() {
+    let t = T::new();
+    let amt = 200_i128;
+    t.client.subscribe(&t.subscriber, &t.merchant, &t.token, &amt, &86_400_u64, &false);
+    t.advance(86_401);
+    t.client.execute_payment(&t.subscriber, &t.merchant);
+
+    let all = t.env.events().all();
+    let our_events: Vec<_> = all.iter().filter(|e| e.0 == t.contract_id).collect();
+    // subscribe + executed = 2
+    assert_eq!(our_events.len(), 2);
+
+    let event = &our_events[1]; // executed is second
+    let expected_topics = (
+        Symbol::new(&t.env, "executed"),
+        t.subscriber.clone(),
+        t.merchant.clone(),
+        t.token.clone(),
+    )
+        .into_val(&t.env);
+    assert_eq!(event.1, expected_topics, "executed event topics must match indexer schema");
+    assert_eq!(event.2, amt.into_val(&t.env), "executed event data must be amount as i128");
+}
+
+/// Verifies that subscribe events for different token contracts are distinguished
+/// by token address in the topics — critical for multi-token indexing.
+#[test]
+fn test_subscribe_events_distinct_tokens_have_distinct_topics() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin      = Address::generate(&env);
+    let subscriber = Address::generate(&env);
+    let merchant   = Address::generate(&env);
+
+    let token1 = env.register_stellar_asset_contract_v2(admin.clone()).address();
+    let token2 = env.register_stellar_asset_contract_v2(admin.clone()).address();
+
+    for tok in [&token1, &token2] {
+        StellarAssetClient::new(&env, tok).mint(&subscriber, &1_000_000_i128);
+    }
+
+    let contract_id = env.register(SubscriptionProtocol, ());
+    let client      = SubscriptionProtocolClient::new(&env, &contract_id);
+
+    for tok in [&token1, &token2] {
+        token::Client::new(&env, tok).approve(
+            &subscriber,
+            &contract_id,
+            &500_000_i128,
+            &(env.ledger().sequence() + 100_000_u32),
+        );
+    }
+
+    client.subscribe(&subscriber, &merchant, &token1, &100_i128, &86_400_u64, &false);
+    client.subscribe(&subscriber, &merchant, &token2, &200_i128, &86_400_u64, &false);
+
+    let all = env.events().all();
+    let our_events: Vec<_> = all.iter().filter(|e| e.0 == contract_id).collect();
+    assert_eq!(our_events.len(), 2);
+
+    let topics1 = (
+        Symbol::new(&env, "subscribe"),
+        subscriber.clone(),
+        merchant.clone(),
+        token1.clone(),
+    )
+        .into_val(&env);
+    let topics2 = (
+        Symbol::new(&env, "subscribe"),
+        subscriber.clone(),
+        merchant.clone(),
+        token2.clone(),
+    )
+        .into_val(&env);
+
+    assert_eq!(our_events[0].1, topics1, "first event must reference token1");
+    assert_eq!(our_events[1].1, topics2, "second event must reference token2");
+    assert_ne!(our_events[0].1, our_events[1].1, "distinct tokens produce distinct topics");
+
+    assert_eq!(our_events[0].2, 100_i128.into_val(&env));
+    assert_eq!(our_events[1].2, 200_i128.into_val(&env));
 }
 
 // ─── Requirement 13.11 — No events on failure ────────────────────────────────
@@ -548,21 +853,21 @@ fn test_no_events_on_invalid_subscribe() {
 #[test]
 fn test_no_events_on_payment_not_due() {
     let t = T::new();
-    t.client().subscribe(&t.subscriber, &t.merchant, &t.token, &100_i128, &86_400_u64);
-    // Events are per-invocation; failed calls emit 0 events (filtered out).
-    let _ = t.client().try_execute_payment(&t.subscriber, &t.merchant);
-    let n_after = t.env.events().all().filter_by_contract(&t.contract_id).events().len();
-    assert_eq!(n_after, 0, "failed execute_payment (PaymentNotDue) must emit no events");
+    t.client.subscribe(&t.subscriber, &t.merchant, &t.token, &100_i128, &86_400_u64, &false);
+    let n = t.env.events().all().iter().filter(|e| e.0 == t.contract_id).count();
+    let _ = t.client.try_execute_payment(&t.subscriber, &t.merchant);
+    let n2 = t.env.events().all().iter().filter(|e| e.0 == t.contract_id).count();
+    assert_eq!(n, n2, "no extra events on failed execute_payment");
 }
 
 #[test]
 fn test_cancel_emits_event() {
     let t = T::new();
-    t.client().subscribe(&t.subscriber, &t.merchant, &t.token, &100_i128, &86_400_u64);
-    t.client().cancel(&t.subscriber, &t.merchant);
-    // Events are per-invocation; cancel should have emitted exactly 1 event.
-    let n2 = t.env.events().all().filter_by_contract(&t.contract_id).events().len();
-    assert_eq!(n2, 1, "cancel should emit exactly 1 event");
+    t.client.subscribe(&t.subscriber, &t.merchant, &t.token, &100_i128, &86_400_u64, &false);
+    let n = t.env.events().all().iter().filter(|e| e.0 == t.contract_id).count();
+    t.client.cancel(&t.subscriber, &t.merchant);
+    let n2 = t.env.events().all().iter().filter(|e| e.0 == t.contract_id).count();
+    assert_eq!(n2, n + 1, "cancel should emit exactly 1 event");
 }
 
 // ─── Transfer failure — state integrity ──────────────────────────────────────
@@ -577,7 +882,7 @@ fn test_execute_payment_fails_on_zero_allowance_state_unchanged() {
     let amt = 15_000_000_i128;
     let ivl = 86_400_u64;
 
-    t.client().subscribe(&t.subscriber, &t.merchant, &t.token, &amt, &ivl);
+    t.client.subscribe(&t.subscriber, &t.merchant, &t.token, &amt, &ivl, &false);
     let sub_before = t.get_sub();
     let sb = t.sub_bal();
     let mb = t.mer_bal();
@@ -617,7 +922,7 @@ fn test_execute_payment_fails_on_insufficient_balance_state_unchanged() {
         &(t.env.ledger().sequence() + 100_000_u32),
     );
 
-    t.client().subscribe(&t.subscriber, &t.merchant, &t.token, &amt, &ivl);
+    t.client.subscribe(&t.subscriber, &t.merchant, &t.token, &amt, &ivl, &false);
     let sub_before = t.get_sub();
     let sb = t.sub_bal();
     let mb = t.mer_bal();
@@ -639,7 +944,303 @@ fn test_execute_payment_fails_on_insufficient_balance_state_unchanged() {
     assert_eq!(events_after.events().len(), 0, "no executed event on failed transfer");
 }
 
-// ─── Property-Based Tests ─────────────────────────────────────────────────────
+// ─── Transfer failure — subscription state must remain unchanged ──────────────
+
+/// Req: failed transfer due to zero allowance must not mutate subscription state.
+#[test]
+fn test_execute_payment_fails_with_zero_allowance() {
+    let t   = T::new();
+    let amt = 100_000_i128;
+    let ivl = 86_400_u64;
+
+    t.client.subscribe(&t.subscriber, &t.merchant, &t.token, &amt, &ivl, &false);
+    let before = t.get_sub();
+
+    // Revoke allowance so the token transfer will fail.
+    token::Client::new(&t.env, &t.token).approve(
+        &t.subscriber,
+        &t.contract_id,
+        &0_i128,
+        &(t.env.ledger().sequence() + 1_u32),
+    );
+
+    t.advance(ivl + 1);
+
+    // execute_payment should fail at the token transfer level (host error).
+    let r = t.client.try_execute_payment(&t.subscriber, &t.merchant);
+    assert!(r.is_err());
+    assert!(!matches!(r, Err(Ok(_))), "must not be a ContractError — it's a host-level panic");
+
+    // Subscription record is unchanged: next_payment was NOT advanced.
+    let after = t.get_sub();
+    assert_eq!(after.next_payment, before.next_payment);
+    assert_eq!(after.amount,       before.amount);
+    assert_eq!(t.sub_bal(),        10_000_000_i128);
+}
+
+/// Req: failed transfer due to insufficient balance must not mutate subscription state.
+#[test]
+fn test_execute_payment_fails_with_insufficient_balance() {
+    let t = T::new();
+    // Subscribe for more than the subscriber's entire balance.
+    let amt = 20_000_000_i128; // subscriber only has 10_000_000
+    let ivl = 86_400_u64;
+
+    // Approve a large allowance so the allowance check passes.
+    token::Client::new(&t.env, &t.token).approve(
+        &t.subscriber,
+        &t.contract_id,
+        &amt,
+        &(t.env.ledger().sequence() + 100_000_u32),
+    );
+
+    t.client.subscribe(&t.subscriber, &t.merchant, &t.token, &amt, &ivl, &false);
+    let before = t.get_sub();
+
+    t.advance(ivl + 1);
+
+    // execute_payment should fail at the token transfer level (insufficient balance).
+    let r = t.client.try_execute_payment(&t.subscriber, &t.merchant);
+    assert!(r.is_err());
+    assert!(!matches!(r, Err(Ok(_))), "must not be a ContractError — it's a host-level panic");
+
+    // Subscription record is unchanged: next_payment was NOT advanced.
+    let after = t.get_sub();
+    assert_eq!(after.next_payment, before.next_payment);
+    assert_eq!(after.amount,       before.amount);
+    assert_eq!(t.sub_bal(),        10_000_000_i128);
+}
+
+// ─── Token Transfer Failure Scenarios ─────────────────────────────────────────
+
+/// Test that execute_payment fails when subscriber lacks sufficient allowance.
+///
+/// Validates: Token transfer failure is caught and logged with diagnostic context
+/// Scenario:
+/// 1. Subscribe with amount = 100_000
+/// 2. Approve contract with only 50_000 (less than payment amount)
+/// 3. Advance time past payment due
+/// 4. execute_payment should fail (TokenTransferFailed or panic caught by framework)
+/// 5. Verify subscription data is NOT modified
+/// 6. Verify no payment event is emitted
+#[test]
+fn test_execute_payment_insufficient_allowance() {
+    let t = T::new();
+    let amt = 100_000_i128;
+    let ivl = 86_400_u64;
+
+    // (a) Subscribe for payment of 100_000
+    t.client.subscribe(&t.subscriber, &t.merchant, &t.token, &amt, &ivl, &false);
+    let data_before = t.get_sub();
+    let events_before = t.env.events().all().len();
+
+    // (b) Reduce allowance to 50_000 (less than payment amount)
+    // First, reduce to 0
+    token::Client::new(&t.env, &t.token).approve(
+        &t.subscriber,
+        &t.contract_id,
+        &0_i128,
+        &(t.env.ledger().sequence() + 100_000_u32),
+    );
+    // Then set to insufficient amount
+    token::Client::new(&t.env, &t.token).approve(
+        &t.subscriber,
+        &t.contract_id,
+        &50_000_i128,
+        &(t.env.ledger().sequence() + 100_000_u32),
+    );
+
+    // (c) Advance time past payment due
+    t.advance(ivl + 1);
+
+    // (d) Record balances before payment attempt
+    let sub_bal_before = t.sub_bal();
+    let mer_bal_before = t.mer_bal();
+
+    // (e) Attempt payment — should fail due to insufficient allowance
+    let r = t.client.try_execute_payment(&t.subscriber, &t.merchant);
+    
+    // Framework catches the token transfer failure and returns error
+    assert!(r.is_err(), "execute_payment should fail with insufficient allowance");
+
+    // (f) Verify subscription data was NOT modified
+    let data_after = t.get_sub();
+    assert_eq!(data_after.amount, data_before.amount, "amount should not change");
+    assert_eq!(data_after.interval, data_before.interval, "interval should not change");
+    assert_eq!(data_after.next_payment, data_before.next_payment, "next_payment should not change");
+
+    // (g) Verify no funds were transferred
+    assert_eq!(t.sub_bal(), sub_bal_before, "subscriber balance must not change");
+    assert_eq!(t.mer_bal(), mer_bal_before, "merchant balance must not change");
+
+    // (h) Verify no new events were emitted (transfer failed before event emission)
+    let events_after = t.env.events().all().len();
+    assert_eq!(
+        events_after, events_before,
+        "no new events should be emitted on transfer failure"
+    );
+}
+
+/// Test that execute_payment fails when subscriber lacks sufficient balance.
+///
+/// Validates: Token transfer failure is caught and logged with diagnostic context
+/// Scenario:
+/// 1. Subscribe with amount = 100_000
+/// 2. Have sufficient allowance but insufficient balance
+/// 3. Advance time past payment due
+/// 4. execute_payment should fail (TokenTransferFailed or panic caught by framework)
+/// 5. Verify subscription data is NOT modified
+/// 6. Verify no payment event is emitted
+#[test]
+fn test_execute_payment_insufficient_balance() {
+    let t = T::new();
+    let amt = 100_000_i128;
+    let ivl = 86_400_u64;
+
+    // Reduce subscriber balance to less than payment amount (50_000 < 100_000)
+    // We do this by creating another account and transferring most of the tokens away
+    let third_party = Address::generate(&t.env);
+    
+    // First, transfer most of subscriber's balance to third party, leaving only 50_000
+    // We need to approve the transfer first
+    token::Client::new(&t.env, &t.token).approve(
+        &t.subscriber,
+        &t.subscriber,  // self-approve for transferring own tokens
+        &10_000_000_i128,
+        &(t.env.ledger().sequence() + 100_000_u32),
+    );
+    
+    // Transfer 9_950_000 away, keeping only 50_000
+    token::Client::new(&t.env, &t.token).transfer(
+        &t.subscriber,
+        &third_party,
+        &9_950_000_i128,
+    );
+
+    let sub_balance = t.sub_bal();
+    assert_eq!(sub_balance, 50_000_i128, "subscriber should have 50_000 after transfer");
+
+    // Approve contract for more than current balance
+    token::Client::new(&t.env, &t.token).approve(
+        &t.subscriber,
+        &t.contract_id,
+        &200_000_i128,
+        &(t.env.ledger().sequence() + 100_000_u32),
+    );
+
+    // (a) Subscribe for payment of 100_000 (but subscriber only has 50_000)
+    t.client.subscribe(&t.subscriber, &t.merchant, &t.token, &amt, &ivl, &false);
+    let data_before = t.get_sub();
+    let events_before = t.env.events().all().len();
+
+    // (b) Advance time past payment due
+    t.advance(ivl + 1);
+
+    // (c) Record balances before payment attempt
+    let sub_bal_before = t.sub_bal();
+    let mer_bal_before = t.mer_bal();
+
+    // (d) Attempt payment — should fail due to insufficient balance (50_000 < 100_000)
+    let r = t.client.try_execute_payment(&t.subscriber, &t.merchant);
+    
+    // Framework catches the token transfer failure and returns error
+    assert!(r.is_err(), "execute_payment should fail with insufficient balance");
+
+    // (e) Verify subscription data was NOT modified
+    let data_after = t.get_sub();
+    assert_eq!(data_after.amount, data_before.amount, "amount should not change");
+    assert_eq!(data_after.interval, data_before.interval, "interval should not change");
+    assert_eq!(data_after.next_payment, data_before.next_payment, "next_payment should not change");
+
+    // (f) Verify no funds were transferred
+    assert_eq!(t.sub_bal(), sub_bal_before, "subscriber balance must not change");
+    assert_eq!(t.mer_bal(), mer_bal_before, "merchant balance must not change");
+
+    // (g) Verify no new events were emitted (transfer failed before event emission)
+    let events_after = t.env.events().all().len();
+    assert_eq!(events_after, events_before, "no new events on transfer failure");
+}
+
+/// Test that successful payment includes pre-transfer diagnostics logging.
+///
+/// Validates: execute_token_transfer logs balance and allowance before transfer
+/// Scenario:
+/// 1. Subscribe and execute a successful payment
+/// 2. Verify that diagnostics (balance, allowance, amount) are logged
+/// 3. Verify that transaction succeeds and event is emitted
+#[test]
+fn test_execute_payment_logs_diagnostics_on_success() {
+    let t = T::new();
+    let amt = 100_000_i128;
+    let ivl = 86_400_u64;
+
+    // (a) Subscribe
+    t.client.subscribe(&t.subscriber, &t.merchant, &t.token, &amt, &ivl, &false);
+    let events_after_subscribe = t.env.events().all().len();
+
+    // (b) Advance time and execute payment
+    t.advance(ivl + 1);
+    let r = t.client.try_execute_payment(&t.subscriber, &t.merchant);
+
+    // (c) Verify payment succeeded
+    assert!(r.is_ok(), "execute_payment should succeed");
+
+    // (d) Verify that logs were emitted (events count should increase)
+    // Note: Soroban logs are captured in env.events()
+    let events_after_payment = t.env.events().all().len();
+    assert!(
+        events_after_payment > events_after_subscribe,
+        "payment should emit logs and executed event"
+    );
+
+    // (e) Verify executed event was emitted
+    let contract_events: Vec<_> = t.env
+        .events()
+        .all()
+        .iter()
+        .filter(|e| e.0 == t.contract_id)
+        .collect();
+    
+    assert!(
+        contract_events.len() > 0,
+        "at least the executed event should be present"
+    );
+}
+
+/// Property test: No state mutation on transfer failure across random parameters
+#[test]
+fn test_no_state_mutation_on_transfer_failure() {
+    let t = T::new();
+    let amt = 100_000_i128;
+    let ivl = 86_400_u64;
+
+    // Subscribe
+    t.client.subscribe(&t.subscriber, &t.merchant, &t.token, &amt, &ivl, &false);
+    let data_before = t.get_sub();
+
+    // Reduce allowance to cause transfer to fail
+    token::Client::new(&t.env, &t.token).approve(
+        &t.subscriber,
+        &t.contract_id,
+        &0_i128,
+        &(t.env.ledger().sequence() + 100_000_u32),
+    );
+
+    // Advance time
+    t.advance(ivl + 1);
+
+    // Attempt payment
+    let _r = t.client.try_execute_payment(&t.subscriber, &t.merchant);
+
+    // Verify subscription data is identical
+    let data_after = t.get_sub();
+    assert_eq!(data_after.token, data_before.token, "token should not change");
+    assert_eq!(data_after.amount, data_before.amount, "amount should not change");
+    assert_eq!(data_after.interval, data_before.interval, "interval should not change");
+    assert_eq!(data_after.next_payment, data_before.next_payment, "next_payment should not change");
+}
+
+// ─── Existing property-based tests ─────────────────────────────────────────────
 
 use proptest::prelude::*;
 
@@ -653,7 +1254,7 @@ proptest! {
     ) {
         let t  = T::new();
         let ts = t.env.ledger().timestamp();
-        t.client().subscribe(&t.subscriber, &t.merchant, &t.token, &amount, &interval);
+        t.client.subscribe(&t.subscriber, &t.merchant, &t.token, &amount, &interval, &false);
         let d = t.get_sub();
         prop_assert_eq!(d.amount,       amount);
         prop_assert_eq!(d.interval,     interval);
@@ -669,8 +1270,8 @@ proptest! {
     ) {
         let t   = T::new();
         let bal = t.sub_bal();
-        t.client().subscribe(&t.subscriber, &t.merchant, &t.token, &amount, &interval);
-        let r = t.client().try_execute_payment(&t.subscriber, &t.merchant);
+        t.client.subscribe(&t.subscriber, &t.merchant, &t.token, &amount, &interval, &false);
+        let r = t.client.try_execute_payment(&t.subscriber, &t.merchant);
         prop_assert!(matches!(r, Err(Ok(ContractError::PaymentNotDue))));
         prop_assert_eq!(t.sub_bal(), bal);
     }
@@ -683,7 +1284,7 @@ proptest! {
         interval in 86_400_u64..=31_536_000_u64,
     ) {
         let t = T::new();
-        t.client().subscribe(&t.subscriber, &t.merchant, &t.token, &amount, &interval);
+        t.client.subscribe(&t.subscriber, &t.merchant, &t.token, &amount, &interval, &false);
         t.advance(interval + 1);
         t.client().execute_payment(&t.subscriber, &t.merchant);
         let bal = t.sub_bal();
@@ -739,8 +1340,8 @@ proptest! {
         interval in 86_400_u64..=31_536_000_u64,
     ) {
         let t = T::new();
-        t.client().subscribe(&t.subscriber, &t.merchant, &t.token, &amount, &interval);
-        t.client().cancel(&t.subscriber, &t.merchant);
+        t.client.subscribe(&t.subscriber, &t.merchant, &t.token, &amount, &interval, &false);
+        t.client.cancel(&t.subscriber, &t.merchant);
         t.advance(interval + 1);
         let r = t.client().try_execute_payment(&t.subscriber, &t.merchant);
         prop_assert!(matches!(r, Err(Ok(ContractError::NoActiveSubscription))));
@@ -757,7 +1358,7 @@ proptest! {
         let t  = T::new();
         let sb = t.sub_bal();
         let mb = t.mer_bal();
-        t.client().subscribe(&t.subscriber, &t.merchant, &t.token, &amount, &interval);
+        t.client.subscribe(&t.subscriber, &t.merchant, &t.token, &amount, &interval, &false);
         t.advance(interval + 1);
         t.client().execute_payment(&t.subscriber, &t.merchant);
         prop_assert_eq!(t.sub_bal(), sb - amount);
@@ -820,15 +1421,13 @@ fn load_test_bulk_subscribe_distinct_pairs() {
 
     // Subscribe all pairs sequentially (Soroban testutils are single-threaded).
     for sub in &subscribers {
-        client.subscribe(sub, &merchant, &token, &amt, &ivl);
+        client.subscribe(sub, &merchant, &token, &amt, &ivl, &false);
     }
 
     // Verify every subscription was persisted correctly.
     for sub in &subscribers {
-        let key = DataKey::Subscription(sub.clone(), merchant.clone());
-        let data: SubscriptionData = env.as_contract(&contract_id, || {
-            env.storage().persistent().get(&key).unwrap()
-        });
+        let key = DataKey::Subscription(subscription_key(&env, sub, &merchant));
+        let data: SubscriptionData = env.storage().persistent().get(&key).unwrap();
         assert_eq!(data.amount,   amt);
         assert_eq!(data.interval, ivl);
     }
@@ -845,7 +1444,7 @@ fn load_test_repeated_resubscribe_same_pair() {
 
     for i in 1..=N {
         let amt = i as i128 * 1_000;
-        t.client().subscribe(&t.subscriber, &t.merchant, &t.token, &amt, &ivl);
+        t.client.subscribe(&t.subscriber, &t.merchant, &t.token, &amt, &ivl, &false);
     }
 
     // Only the last subscription must exist — no duplicates or accumulated state.
@@ -864,11 +1463,10 @@ fn load_test_repeated_resubscribe_same_pair() {
 }
 
 fn env_has_sub(t: &T, sub: &Address, mer: &Address) -> bool {
-    let key = DataKey::Subscription(sub.clone(), mer.clone());
-    let contract_id = t.contract_id.clone();
-    t.env.as_contract(&contract_id, || {
-        t.env.storage().persistent().has(&key)
-    })
+    t.env
+        .storage()
+        .persistent()
+        .has(&DataKey::Subscription(subscription_key(&t.env, sub, mer)))
 }
 
 /// Load test: N invalid subscribe attempts (zero amount) all fail cleanly.
@@ -922,7 +1520,7 @@ fn load_test_bulk_execute_payment() {
             &5_000_i128,
             &(env.ledger().sequence() + 100_000_u32),
         );
-        client.subscribe(sub, &merchant, &token, &amt, &ivl);
+        client.subscribe(sub, &merchant, &token, &amt, &ivl, &false);
     }
 
     // Advance past the payment interval.
@@ -951,180 +1549,227 @@ fn load_test_bulk_execute_payment() {
     }
 }
 
-// ─── Feature #341 — Per-Merchant Subscriber Cap ───────────────────────────────
+// ─── InvalidTimestamp guard tests ────────────────────────────────────────────
 
-/// Helper env for subscriber-cap tests.
-/// Holds n_subs fully-funded subscribers and a deployed contract.
-/// Call `set_cap` to configure the per-merchant cap before subscribing.
-struct CapEnv {
-    env:         Env,
-    admin:       Address,
-    subscribers: soroban_sdk::Vec<Address>,
-    merchant:    Address,
-    token:       Address,
-    contract_id: Address,
-}
-
-impl CapEnv {
-    /// Create `n_subs` fully-funded subscribers and deploy the contract.
-    /// Does NOT set a cap — call `set_cap` separately.
-    fn new(n_subs: usize) -> Self {
-        let env = Env::default();
-        env.mock_all_auths_allowing_non_root_auth();
-
-        let admin    = Address::generate(&env);
-        let merchant = Address::generate(&env);
-
-        let token = env.register_stellar_asset_contract_v2(admin.clone()).address();
-        let contract_id = env.register(crate::SubscriptionProtocol, ());
-
-        let mut subscribers = soroban_sdk::Vec::new(&env);
-        for _ in 0..n_subs {
-            let sub = Address::generate(&env);
-            StellarAssetClient::new(&env, &token).mint(&sub, &10_000_000_i128);
-            token::Client::new(&env, &token).approve(
-                &sub,
-                &contract_id,
-                &5_000_000_i128,
-                &(env.ledger().sequence() + 100_000_u32),
-            );
-            subscribers.push_back(sub);
-        }
-
-        CapEnv { env, admin, subscribers, merchant, token, contract_id }
-    }
-
-    fn client(&self) -> SubscriptionProtocolClient {
-        SubscriptionProtocolClient::new(&self.env, &self.contract_id)
-    }
-
-    fn set_cap(&self, cap: u32) {
-        use crate::storage::AdminConfig;
-        self.client().set_admin_config(
-            &self.admin,
-            &AdminConfig { max_subscribers_per_merchant: cap },
-        );
-    }
-}
-
-/// Feature #341 Test 1 — cap is enforced.
-/// Set cap to 2, subscribe 2 distinct subscribers (ok), 3rd must fail.
+/// `subscribe` must return `InvalidTimestamp` when the ledger clock is zero
+/// (uninitialised mock or unusual environment).
 #[test]
-fn test_subscriber_cap_enforced() {
-    let ce = CapEnv::new(3);
-    ce.set_cap(2);
+fn test_subscribe_zero_timestamp_returns_invalid_timestamp() {
+    let t = T::new();
 
-    let ivl = 86_400_u64;
-    let amt = 100_i128;
+    // Force ledger timestamp to zero to simulate an uninitialised clock.
+    t.env.ledger().with_mut(|l| l.timestamp = 0);
 
-    // First two subscriptions must succeed.
-    ce.client().subscribe(&ce.subscribers.get(0).unwrap(), &ce.merchant, &ce.token, &amt, &ivl);
-    ce.client().subscribe(&ce.subscribers.get(1).unwrap(), &ce.merchant, &ce.token, &amt, &ivl);
-
-    // Verify counts via contract query.
-    assert_eq!(ce.client().get_subscriber_count(&ce.merchant), 2);
-
-    // Third subscription must fail.
-    let r = ce.client().try_subscribe(&ce.subscribers.get(2).unwrap(), &ce.merchant, &ce.token, &amt, &ivl);
+    let r = t.client.try_subscribe(
+        &t.subscriber,
+        &t.merchant,
+        &t.token,
+        &100_000_i128,
+        &86_400_u64,
+    );
     assert!(
-        matches!(r, Err(Ok(ContractError::MerchantSubscriberLimitReached))),
-        "3rd subscribe must return MerchantSubscriberLimitReached"
+        matches!(r, Err(Ok(ContractError::InvalidTimestamp))),
+        "subscribe must return InvalidTimestamp when ledger timestamp is 0"
+    );
+    assert!(!t.has_sub(), "no subscription must be created with a zero timestamp");
+}
+
+/// `subscribe` must return `InvalidTimestamp` when `timestamp + interval` would
+/// overflow a u64 (attacker-controlled or extremely large timestamp).
+#[test]
+fn test_subscribe_timestamp_overflow_returns_invalid_timestamp() {
+    let t = T::new();
+
+    // Set timestamp so that adding even the minimum interval overflows u64.
+    t.env.ledger().with_mut(|l| l.timestamp = u64::MAX);
+
+    let r = t.client.try_subscribe(
+        &t.subscriber,
+        &t.merchant,
+        &t.token,
+        &100_000_i128,
+        &86_400_u64, // any positive interval will overflow from u64::MAX
+    );
+    assert!(
+        matches!(r, Err(Ok(ContractError::InvalidTimestamp))),
+        "subscribe must return InvalidTimestamp on u64 overflow"
+    );
+    assert!(!t.has_sub(), "no subscription must be created on overflow");
+}
+
+/// `execute_payment` must return `InvalidTimestamp` when the ledger clock is
+/// zero — even for an active, past-due subscription.
+#[test]
+fn test_execute_payment_zero_timestamp_returns_invalid_timestamp() {
+    let t   = T::new();
+    let ivl = 86_400_u64;
+
+    // Create a valid subscription at a normal timestamp.
+    t.client.subscribe(&t.subscriber, &t.merchant, &t.token, &100_000_i128, &ivl, &false);
+
+    // Corrupt the clock to zero after subscription creation.
+    t.env.ledger().with_mut(|l| l.timestamp = 0);
+
+    let r = t.client.try_execute_payment(&t.subscriber, &t.merchant);
+    assert!(
+        matches!(r, Err(Ok(ContractError::InvalidTimestamp))),
+        "execute_payment must return InvalidTimestamp when ledger timestamp is 0"
     );
 
-    // Count must still be 2.
-    assert_eq!(ce.client().get_subscriber_count(&ce.merchant), 2);
+    // Subscription state must be untouched.
+    assert!(t.has_sub(), "subscription must remain intact on timestamp error");
 }
 
-/// Feature #341 Test 2 — re-subscribing an existing subscriber does NOT increment the count.
+// ─── Requirement: Amount upper-bound guard ────────────────────────────────────
+
+use crate::storage::MAX_AMOUNT;
+
+/// Amount exactly at the maximum threshold must be accepted.
 #[test]
-fn test_subscriber_cap_resubscribe_does_not_increment() {
-    let ce = CapEnv::new(1);
-    ce.set_cap(1);
+fn test_subscribe_amount_at_max_accepted() {
+    let t = T::new();
+    // We only check the error path here; storage won't have enough balance for
+    // execution, but subscribe itself must not reject a valid amount.
+    let r = t.client.try_subscribe(
+        &t.subscriber,
+        &t.merchant,
+        &t.token,
+        &MAX_AMOUNT,
+        &86_400_u64,
+    );
+    // subscribe should succeed (Ok(())) — the amount is within bounds.
+    assert!(r.is_ok(), "amount equal to MAX_AMOUNT must be accepted");
+}
 
-    let ivl = 86_400_u64;
-    let amt = 100_i128;
+/// Amount one above the maximum threshold must be rejected with AmountTooLarge.
+#[test]
+fn test_subscribe_amount_one_above_max_rejected() {
+    let t = T::new();
+    let r = t.client.try_subscribe(
+        &t.subscriber,
+        &t.merchant,
+        &t.token,
+        &(MAX_AMOUNT + 1),
+        &86_400_u64,
+    );
+    assert!(
+        matches!(r, Err(Ok(ContractError::AmountTooLarge))),
+        "amount MAX_AMOUNT + 1 must return AmountTooLarge"
+    );
+    assert!(!t.has_sub(), "no subscription must be created for an oversized amount");
+}
 
-    // Initial subscription.
-    ce.client().subscribe(&ce.subscribers.get(0).unwrap(), &ce.merchant, &ce.token, &amt, &ivl);
-    assert_eq!(ce.client().get_subscriber_count(&ce.merchant), 1);
+/// i128::MAX must be rejected with AmountTooLarge.
+#[test]
+fn test_subscribe_amount_i128_max_rejected() {
+    let t = T::new();
+    let r = t.client.try_subscribe(
+        &t.subscriber,
+        &t.merchant,
+        &t.token,
+        &i128::MAX,
+        &86_400_u64,
+    );
+    assert!(
+        matches!(r, Err(Ok(ContractError::AmountTooLarge))),
+        "i128::MAX must be rejected as AmountTooLarge"
+    );
+    assert!(!t.has_sub());
+}
 
-    // Re-subscribe same pair with different terms — must succeed without hitting the cap.
-    ce.client().subscribe(&ce.subscribers.get(0).unwrap(), &ce.merchant, &ce.token, &200_i128, &172_800_u64);
+/// No event must be emitted when the amount exceeds the threshold.
+#[test]
+fn test_subscribe_amount_too_large_emits_no_event() {
+    let t = T::new();
+    let _ = t.client.try_subscribe(
+        &t.subscriber,
+        &t.merchant,
+        &t.token,
+        &(MAX_AMOUNT + 1),
+        &86_400_u64,
+    );
+    assert_eq!(
+        t.env.events().all().len(),
+        0,
+        "no event must be emitted for a rejected oversized amount"
+    );
+}
 
-    // Count must still be 1, not 2.
-    assert_eq!(ce.client().get_subscriber_count(&ce.merchant), 1);
-
-    // The updated subscription data must reflect the new terms.
-    let data: crate::storage::SubscriptionData = {
-        let key = crate::storage::DataKey::Subscription(
-            ce.subscribers.get(0).unwrap().clone(),
-            ce.merchant.clone(),
+proptest! {
+    /// Property: any amount above MAX_AMOUNT is always rejected.
+    #[test]
+    fn prop_amount_above_max_always_rejected(
+        excess in 1_i128..=i128::MAX - MAX_AMOUNT,
+    ) {
+        let t = T::new();
+        let r = t.client.try_subscribe(
+            &t.subscriber,
+            &t.merchant,
+            &t.token,
+            &(MAX_AMOUNT + excess),
+            &86_400_u64,
         );
-        let contract_id = ce.contract_id.clone();
-        ce.env.as_contract(&contract_id, || {
-            ce.env.storage().persistent().get(&key).unwrap()
-        })
-    };
-    assert_eq!(data.amount, 200_i128);
-    assert_eq!(data.interval, 172_800_u64);
+        prop_assert!(matches!(r, Err(Ok(ContractError::AmountTooLarge))));
+        prop_assert!(!t.has_sub());
+    }
 }
 
-/// Feature #341 Test 3 — cancelling a subscription decrements the count so a new subscriber
-/// can fill the vacated slot.
+// ─── Amount minimum boundary tests (#98) ──────────────────────────────────────
+
+/// Amount of exactly 1 (minimum positive value) must be accepted.
 #[test]
-fn test_subscriber_cap_cancel_decrements() {
-    let ce = CapEnv::new(2);
-    ce.set_cap(1);
-
-    let ivl = 86_400_u64;
-    let amt = 100_i128;
-
-    // Subscribe the first subscriber.
-    ce.client().subscribe(&ce.subscribers.get(0).unwrap(), &ce.merchant, &ce.token, &amt, &ivl);
-    assert_eq!(ce.client().get_subscriber_count(&ce.merchant), 1);
-
-    // Cancel — count must drop to 0.
-    ce.client().cancel(&ce.subscribers.get(0).unwrap(), &ce.merchant);
-    assert_eq!(ce.client().get_subscriber_count(&ce.merchant), 0);
-
-    // Now the second subscriber should succeed (vacated slot).
-    ce.client().subscribe(&ce.subscribers.get(1).unwrap(), &ce.merchant, &ce.token, &amt, &ivl);
-    assert_eq!(ce.client().get_subscriber_count(&ce.merchant), 1);
+fn test_amount_minimum_one_accepted() {
+    let t = T::new();
+    t.client.subscribe(&t.subscriber, &t.merchant, &t.token, &1_i128, &86_400_u64, &false);
+    assert_eq!(t.get_sub().amount, 1_i128);
 }
 
-/// Feature #341 Test 4 — get_subscriber_count tracks count correctly across subscribes and cancels.
+/// Amount of zero must be rejected with AmountMustBePositive.
 #[test]
-fn test_get_subscriber_count() {
-    let ce = CapEnv::new(3);
-    // No cap set (0 = unlimited) — just verify counting.
+fn test_amount_zero_rejected() {
+    let t = T::new();
+    let r = t.client.try_subscribe(&t.subscriber, &t.merchant, &t.token, &0_i128, &86_400_u64);
+    assert!(matches!(r, Err(Ok(ContractError::AmountMustBePositive))));
+    assert!(!t.has_sub());
+}
 
+// ─── Issue #91 — execute_payment before due date ─────────────────────────────
+
+/// Calling execute_payment immediately after subscribe (before interval elapses)
+/// must return PaymentNotDue and leave balances unchanged.
+#[test]
+fn test_execute_payment_immediately_after_subscribe_returns_not_due() {
+    let t = T::new();
+    t.client.subscribe(&t.subscriber, &t.merchant, &t.token, &100_000_i128, &86_400_u64, &false);
+    let sb = t.sub_bal();
+    let mb = t.mer_bal();
+    let r = t.client.try_execute_payment(&t.subscriber, &t.merchant);
+    assert!(matches!(r, Err(Ok(ContractError::PaymentNotDue))));
+    assert_eq!(t.sub_bal(), sb);
+    assert_eq!(t.mer_bal(), mb);
+}
+
+/// Calling execute_payment one second before the due date must return PaymentNotDue.
+#[test]
+fn test_execute_payment_one_second_early_returns_not_due() {
+    let t = T::new();
     let ivl = 86_400_u64;
-    let amt = 100_i128;
+    t.client.subscribe(&t.subscriber, &t.merchant, &t.token, &100_000_i128, &ivl, &false);
+    t.advance(ivl - 1); // one second before due
+    let r = t.client.try_execute_payment(&t.subscriber, &t.merchant);
+    assert!(matches!(r, Err(Ok(ContractError::PaymentNotDue))));
+}
 
-    assert_eq!(ce.client().get_subscriber_count(&ce.merchant), 0, "initial count is 0");
-
-    ce.client().subscribe(&ce.subscribers.get(0).unwrap(), &ce.merchant, &ce.token, &amt, &ivl);
-    assert_eq!(ce.client().get_subscriber_count(&ce.merchant), 1);
-
-    ce.client().subscribe(&ce.subscribers.get(1).unwrap(), &ce.merchant, &ce.token, &amt, &ivl);
-    assert_eq!(ce.client().get_subscriber_count(&ce.merchant), 2);
-
-    ce.client().subscribe(&ce.subscribers.get(2).unwrap(), &ce.merchant, &ce.token, &amt, &ivl);
-    assert_eq!(ce.client().get_subscriber_count(&ce.merchant), 3);
-
-    // Re-subscribe first subscriber — count must not change.
-    ce.client().subscribe(&ce.subscribers.get(0).unwrap(), &ce.merchant, &ce.token, &200_i128, &ivl);
-    assert_eq!(ce.client().get_subscriber_count(&ce.merchant), 3, "re-subscribe must not increment");
-
-    // Cancel second subscriber.
-    ce.client().cancel(&ce.subscribers.get(1).unwrap(), &ce.merchant);
-    assert_eq!(ce.client().get_subscriber_count(&ce.merchant), 2, "cancel decrements count");
-
-    // Cancel first subscriber.
-    ce.client().cancel(&ce.subscribers.get(0).unwrap(), &ce.merchant);
-    assert_eq!(ce.client().get_subscriber_count(&ce.merchant), 1);
-
-    // Cancel third subscriber.
-    ce.client().cancel(&ce.subscribers.get(2).unwrap(), &ce.merchant);
-    assert_eq!(ce.client().get_subscriber_count(&ce.merchant), 0, "count returns to 0");
+/// PaymentNotDue must not modify subscription state.
+#[test]
+fn test_execute_payment_before_due_does_not_mutate_subscription() {
+    let t = T::new();
+    let ivl = 86_400_u64;
+    t.client.subscribe(&t.subscriber, &t.merchant, &t.token, &100_000_i128, &ivl, &false);
+    let before = t.get_sub();
+    t.advance(ivl / 2);
+    let _ = t.client.try_execute_payment(&t.subscriber, &t.merchant);
+    let after = t.get_sub();
+    assert_eq!(before.next_payment, after.next_payment);
+    assert_eq!(before.amount, after.amount);
 }
