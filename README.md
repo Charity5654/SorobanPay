@@ -477,6 +477,46 @@ Success ──(click "Create another")──► Connected/idle
 
 ---
 
+## Keyboard shortcuts
+
+The frontend supports keyboard shortcuts for faster navigation and accessibility. Shortcuts are disabled when focus is inside any form field (`<input>`, `<textarea>`, `<select>`), so they never interfere with typing.
+
+### Reference
+
+| Key | Action | Category |
+|-----|--------|----------|
+| `?` | Open / close the keyboard shortcuts help modal | Interface |
+| `N` | Scroll to and focus the new subscription form | Actions |
+| `H` | Jump to the payment history section | Navigation |
+| `M` | Jump to the merchant portal section | Navigation |
+| `D` | Jump to the dashboard section | Navigation |
+| `Esc` | Close the shortcuts help modal | Interface |
+
+### Opening the help modal
+
+Three ways to access the shortcuts reference:
+
+1. **Keyboard:** Press `?` (Shift + /) from anywhere on the page.
+2. **Mouse / touch:** Click the `?` button fixed at the bottom-right corner of the screen.
+3. **Tab order:** The `?` button is in the page's normal tab sequence and can be activated with Enter or Space.
+
+### Accessibility
+
+- All interactive elements that have a corresponding shortcut carry an `aria-keyshortcuts` attribute (e.g., `aria-keyshortcuts="n"` on the Connect Wallet button).
+- The help modal uses `role="dialog"`, `aria-modal="true"`, and a labelled title for screen readers.
+- Focus is trapped inside the modal while it is open and restored to the previously focused element on close.
+- A visually-hidden `aria-live` region announces navigation actions to screen readers.
+
+### Implementation
+
+| File | Purpose |
+|------|---------|
+| `src/hooks/useKeyboardShortcuts.ts` | Registers hotkeys via `react-hotkeys-hook`, exports `SHORTCUT_DEFINITIONS` and `SECTION_IDS` |
+| `src/components/ShortcutsHelpModal.tsx` | Accessible modal component that renders the shortcuts reference |
+| `src/app/page.tsx` | Mounts the hook and modal; adds section landmark IDs and `aria-keyshortcuts` attributes |
+
+---
+
 ## Contract entry points
 
 | Function | Auth required | Description |
