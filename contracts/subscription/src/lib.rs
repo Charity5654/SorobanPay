@@ -7,15 +7,16 @@ mod storage;
 use soroban_sdk::{contract, contractimpl, symbol_short, token, Address, Env, Symbol, Vec};
 
 use crate::error::ContractError;
-use crate::storage::{DataKey, SubscriptionData, MAX_AMOUNT, MAX_TTL_LEDGERS, MIN_TTL_LEDGERS};
+use crate::storage::{
+    DataKey, SubscriptionData, CONTRACT_VERSION, CURRENT_SCHEMA_VERSION,
+    MAX_AMOUNT, MAX_TTL_LEDGERS, MIN_TTL_LEDGERS,
+};
 
 /// Maximum number of subscribers allowed in a single `batch_execute_payment` call.
-/// Keeps the transaction within Soroban's CPU instruction budget (~50 M instructions).
 pub const BATCH_MAX_SIZE: u32 = 50;
 
 // ─── Internal helpers ─────────────────────────────────────────────────────────
 
-/// Return the current ledger timestamp, or `InvalidTimestamp` if it is zero.
 #[inline]
 fn ledger_timestamp(env: &Env) -> Result<u64, ContractError> {
     let ts = env.ledger().timestamp();
@@ -25,7 +26,6 @@ fn ledger_timestamp(env: &Env) -> Result<u64, ContractError> {
     Ok(ts)
 }
 
-/// Add `interval` to `ts`, returning `InvalidTimestamp` on overflow.
 #[inline]
 fn checked_next_payment(ts: u64, interval: u64) -> Result<u64, ContractError> {
     ts.checked_add(interval).ok_or(ContractError::InvalidTimestamp)
@@ -38,15 +38,121 @@ pub struct SubscriptionProtocol;
 
 #[contractimpl]
 impl SubscriptionProtocol {
-    /// Return the contract semantic version string.
-    pub fn version(_env: Env) -> Symbol {
-        symbol_short!("1.0.0")
+    // =========================================================================
+    // Admin / Versioning
+    // =========================================================================
+
+    /// Initialise the contract by storing the admin address and initial schema version.
+    ///
+    /// Must be called once after deployment. Subsequent calls are rejected.
+    ///
+    /// # Parameters
+    /// - `admin`: Address authorised to call `migrate`.
+    ///
+    /// # Errors
+    /// None on first call. Panics if called more than once (admin key already set).
+    pub fn initialize(env: Env, admin: Address) {
+        // Reject re-initialisation.
+        if env.storage().instance().has(&DataKey::Admin) {
+            panic!("already initialized");
+        }
+        env.storage().instance().set(&DataKey::Admin, &admin);
+        env.storage()
+            .instance()
+            .set(&DataKey::SchemaVersion, &CURRENT_SCHEMA_VERSION);
     }
 
-    /// Return the contract name for identification.
-    pub fn contract_name(_env: Env) -> Symbol {
-        symbol_short!("SorobanPay")
+    /// Return the contract semantic version string (e.g. `"1.0.0"`).
+    ///
+    /// Read-only; no authorization required.
+    pub fn get_version(_env: Env) -> &'static str {
+        CONTRACT_VERSION
     }
+
+    /// Return the on-chain schema version stored by the last `migrate` call.
+    ///
+    /// Returns `0` if `initialize` has not been called yet.
+    pub fn get_schema_version(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::SchemaVersion)
+            .unwrap_or(0_u32)
+    }
+
+    /// Migrate the contract schema to `CURRENT_SCHEMA_VERSION`.
+    ///
+    /// Intended to be called immediately after a WASM upgrade
+    /// (`update_current_contract_wasm`) to apply any field back-fills or
+    /// storage layout changes needed by the new binary.
+    ///
+    /// # Authorization
+    /// Requires a valid signature from the admin address stored during `initialize`.
+    ///
+    /// # Behaviour
+    /// 1. Authenticates the caller against the stored admin.
+    /// 2. Reads the on-chain `SchemaVersion`.
+    /// 3. Returns `AlreadyMigrated` if already at `CURRENT_SCHEMA_VERSION`.
+    /// 4. Performs any version-specific data backfills (none for v1→v1).
+    /// 5. Updates `SchemaVersion` to `CURRENT_SCHEMA_VERSION`.
+    /// 6. Emits a `contract_migrated` event.
+    ///
+    /// # Errors
+    /// - `ContractError::NotInitialized`  — `initialize` was never called.
+    /// - `ContractError::NotAdmin`        — caller is not the stored admin.
+    /// - `ContractError::AlreadyMigrated` — schema is already current.
+    pub fn migrate(env: Env, admin: Address) -> Result<(), ContractError> {
+        // 1. Require auth from admin.
+        admin.require_auth();
+
+        // 2. Load stored admin and verify caller matches.
+        let stored_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(ContractError::NotInitialized)?;
+
+        if admin != stored_admin {
+            return Err(ContractError::NotAdmin);
+        }
+
+        // 3. Read current on-chain schema version.
+        let current_version: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::SchemaVersion)
+            .unwrap_or(0_u32);
+
+        // 4. Guard: reject if already migrated.
+        if current_version >= CURRENT_SCHEMA_VERSION {
+            return Err(ContractError::AlreadyMigrated);
+        }
+
+        // 5. Version-specific migration steps.
+        //    Schema v0 → v1: add `is_paused` field default.
+        //    Because Soroban deserialises via contracttype, any existing entries
+        //    written before `is_paused` was added will fail to deserialise.
+        //    Off-chain tooling should re-subscribe affected pairs to recreate
+        //    entries with the full struct. The migrate entry point documents
+        //    the version bump so off-chain tools can detect the state change.
+        //
+        //    Future migrations: add `else if current_version == N` blocks here.
+        // (No in-place storage iteration is possible on Soroban; per-entry
+        //  migration must be handled off-chain or lazily on first access.)
+
+        // 6. Bump schema version.
+        env.storage()
+            .instance()
+            .set(&DataKey::SchemaVersion, &CURRENT_SCHEMA_VERSION);
+
+        // 7. Emit migration event for off-chain indexers.
+        events::emit_contract_migrated(&env, &admin, CURRENT_SCHEMA_VERSION);
+
+        Ok(())
+    }
+
+    // =========================================================================
+    // Core subscription entry points
+    // =========================================================================
 
     /// Create or update a recurring payment subscription.
     ///
@@ -62,7 +168,6 @@ impl SubscriptionProtocol {
     ///
     /// # Errors
     /// - `ContractError::SelfSubscription`     — `subscriber == merchant`.
-    /// - `ContractError::InvalidTokenAddress`  — `token` is the contract's own address.
     /// - `ContractError::AmountMustBePositive` — `amount <= 0`.
     /// - `ContractError::AmountTooLarge`       — `amount > 10^18`.
     /// - `ContractError::IntervalTooShort`     — `interval < 86400`.
@@ -81,14 +186,12 @@ impl SubscriptionProtocol {
         if subscriber == merchant {
             return Err(ContractError::SelfSubscription);
         }
-
         if amount <= 0 {
             return Err(ContractError::AmountMustBePositive);
         }
         if amount > MAX_AMOUNT {
             return Err(ContractError::AmountTooLarge);
         }
-
         if interval < 86_400 {
             return Err(ContractError::IntervalTooShort);
         }
@@ -121,12 +224,6 @@ impl SubscriptionProtocol {
     ///
     /// # Authorization
     /// Requires a valid signature from `merchant`.
-    ///
-    /// # Errors
-    /// - `ContractError::NoActiveSubscription` — no subscription found.
-    /// - `ContractError::PaymentNotDue`        — interval has not elapsed.
-    /// - `ContractError::TransferFailed`       — insufficient subscriber balance.
-    /// - `ContractError::InvalidTimestamp`     — ledger timestamp is zero.
     pub fn execute_payment(
         env: Env,
         subscriber: Address,
@@ -168,60 +265,17 @@ impl SubscriptionProtocol {
 
     /// Collect payments from multiple subscribers in a single transaction.
     ///
-    /// This entry point allows a merchant to process up to [`BATCH_MAX_SIZE`] (50)
-    /// subscriber payments in one Soroban invocation, drastically reducing per-cycle
-    /// transaction fees and off-chain orchestration complexity.
-    ///
-    /// # Authorization
-    /// Requires a valid signature from `merchant` — authenticated **once** for the
-    /// entire batch.
-    ///
-    /// # Parameters
-    /// - `merchant`:    Account receiving all payments in the batch.
-    /// - `subscribers`: List of subscriber `Address` values to attempt payment for.
-    ///   Must be non-empty and at most [`BATCH_MAX_SIZE`] entries.
-    ///
-    /// # Returns
-    /// A `Vec<(Address, bool)>` where each tuple is `(subscriber, success)`:
-    /// - `true`  — payment was collected successfully.
-    /// - `false` — payment was skipped (not due, no subscription, or insufficient balance).
-    ///
-    /// The vector preserves the input order and always has the same length as
-    /// `subscribers`, giving callers an unambiguous per-subscriber outcome.
+    /// See full documentation on the `feature/344-batch-execute-payment` branch.
     ///
     /// # Hard Cap
-    /// If `subscribers.len() > BATCH_MAX_SIZE` (50), returns
-    /// `ContractError::BatchTooLarge` immediately without processing any payments.
-    /// This keeps the transaction within Soroban's CPU instruction budget.
-    ///
-    /// # Per-subscriber behaviour
-    /// For each subscriber the function:
-    /// 1. Looks up the subscription — skips (records `false`) if absent.
-    /// 2. Checks the time-lock — skips if payment is not yet due.
-    /// 3. Reads the subscriber's token balance — emits `payment_transfer_failure`
-    ///    and skips if insufficient.
-    /// 4. Executes the token transfer.
-    /// 5. Advances `next_payment`, persists the update, extends TTL.
-    /// 6. Emits `executed` and `payment_transfer_success` events.
-    ///
-    /// # Events
-    /// - `batch_execute_initiated` — emitted once at the start with the batch size.
-    /// - `executed` — emitted per successful payment.
-    /// - `payment_transfer_success` — emitted per successful payment.
-    /// - `payment_transfer_failure` — emitted per subscriber with insufficient balance.
-    ///
-    /// # Errors
-    /// - `ContractError::EmptyBatch`    — `subscribers` is empty.
-    /// - `ContractError::BatchTooLarge` — `subscribers.len() > BATCH_MAX_SIZE`.
+    /// At most [`BATCH_MAX_SIZE`] (50) subscribers per call.
     pub fn batch_execute_payment(
         env: Env,
         merchant: Address,
         subscribers: Vec<Address>,
     ) -> Result<Vec<(Address, bool)>, ContractError> {
-        // 1. Authenticate the merchant once for the entire batch.
         merchant.require_auth();
 
-        // 2. Validate batch bounds.
         if subscribers.is_empty() {
             return Err(ContractError::EmptyBatch);
         }
@@ -229,20 +283,15 @@ impl SubscriptionProtocol {
             return Err(ContractError::BatchTooLarge);
         }
 
-        // 3. Emit batch-start telemetry.
         events::emit_batch_execute_initiated(&env, &merchant, subscribers.len() as u32);
 
-        // 4. Obtain ledger timestamp once — avoids repeated host calls.
         let now = ledger_timestamp(&env)?;
-
-        // 5. Process each subscriber independently; collect outcomes.
         let mut results: Vec<(Address, bool)> = Vec::new(&env);
         let mut keys_to_extend: Vec<DataKey> = Vec::new(&env);
 
         for subscriber in subscribers.iter() {
             let key = DataKey::Subscription(subscriber.clone(), merchant.clone());
 
-            // 5a. Load subscription — skip silently if absent.
             let mut data: SubscriptionData = match env.storage().persistent().get(&key) {
                 Some(d) => d,
                 None => {
@@ -251,13 +300,11 @@ impl SubscriptionProtocol {
                 }
             };
 
-            // 5b. Enforce time-lock — skip if payment not yet due.
             if now < data.next_payment {
                 results.push_back((subscriber.clone(), false));
                 continue;
             }
 
-            // 5c. Check subscriber balance before attempting transfer.
             let token_client = token::Client::new(&env, &data.token);
             let balance = token_client.balance(&subscriber);
             if balance < data.amount {
@@ -266,22 +313,18 @@ impl SubscriptionProtocol {
                 continue;
             }
 
-            // 5d. Execute token transfer (subscriber → merchant).
             token_client.transfer(&subscriber, &merchant, &data.amount);
 
-            // 5e. Advance next_payment and persist.
             data.next_payment = now + data.interval;
             env.storage().persistent().set(&key, &data);
             keys_to_extend.push_back(key);
 
-            // 5f. Emit success events.
             events::emit_payment_transfer_success(&env, &subscriber, &merchant, data.amount);
             events::emit_executed(&env, &subscriber, &merchant, &data.token, data.amount);
 
             results.push_back((subscriber.clone(), true));
         }
 
-        // 6. Bulk extend TTL for all keys that had successful payments.
         for key in keys_to_extend.iter() {
             env.storage()
                 .persistent()
@@ -295,9 +338,6 @@ impl SubscriptionProtocol {
     ///
     /// # Authorization
     /// Requires a valid signature from `subscriber`.
-    ///
-    /// # Errors
-    /// - `ContractError::NoActiveSubscription` — no subscription found.
     pub fn cancel(
         env: Env,
         subscriber: Address,

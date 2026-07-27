@@ -113,3 +113,17 @@ pub fn emit_batch_execute_initiated(env: &Env, merchant: &Address, batch_size: u
         batch_size as i128,
     );
 }
+
+/// Emit the `contract_migrated` event after a schema migration completes successfully.
+///
+/// Topics:  (symbol("contract_migrated"), admin)
+/// Data:    new schema version (u32 as i128)
+pub fn emit_contract_migrated(env: &Env, admin: &Address, new_version: u32) {
+    env.events().publish(
+        (
+            Symbol::new(env, "contract_migrated"),
+            admin.clone(),
+        ),
+        new_version as i128,
+    );
+}
