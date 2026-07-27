@@ -20,4 +20,6 @@ pub enum ContractError {
     Unauthorized         = 6,
     /// `execute_payment` token transfer failed (insufficient balance or allowance)
     TransferFailed       = 7,
+    /// `subscribe` called when merchant has reached the maximum subscriber cap
+    MerchantSubscriberLimitReached = 13,
 }

@@ -7,7 +7,12 @@ mod storage;
 use soroban_sdk::{contract, contractimpl, token, Address, Env};
 
 use crate::error::ContractError;
-use crate::storage::{DataKey, SubscriptionData, MAX_TTL_LEDGERS, MIN_TTL_LEDGERS};
+use crate::storage::{
+    AdminConfig, DataKey, SubscriptionData,
+    get_admin_config, set_admin_config as storage_set_admin_config,
+    get_subscriber_count, set_subscriber_count,
+    MAX_TTL_LEDGERS, MIN_TTL_LEDGERS,
+};
 
 #[contract]
 pub struct SubscriptionProtocol;
@@ -27,9 +32,10 @@ impl SubscriptionProtocol {
     /// - `interval`:   Seconds between payments. Must be in [86400, 31536000].
     ///
     /// # Errors
-    /// - `ContractError::AmountMustBePositive` — if `amount <= 0`.
-    /// - `ContractError::IntervalTooShort`     — if `interval < 86400`.
-    /// - `ContractError::IntervalTooLong`      — if `interval > 31536000`.
+    /// - `ContractError::AmountMustBePositive`        — if `amount <= 0`.
+    /// - `ContractError::IntervalTooShort`            — if `interval < 86400`.
+    /// - `ContractError::IntervalTooLong`             — if `interval > 31536000`.
+    /// - `ContractError::MerchantSubscriberLimitReached` — if merchant's cap is full (new subs only).
     pub fn subscribe(
         env: Env,
         subscriber: Address,
@@ -54,7 +60,22 @@ impl SubscriptionProtocol {
             return Err(ContractError::IntervalTooLong);
         }
 
-        // 4. Build subscription record.
+        // 4. Cap enforcement — only for NEW subscriptions (re-subscribing does not increment).
+        let key = DataKey::Subscription(subscriber.clone(), merchant.clone());
+        let is_new = !env.storage().persistent().has(&key);
+
+        if is_new {
+            let count = get_subscriber_count(&env, &merchant);
+            // Check cap if configured (0 = unlimited).
+            let config = get_admin_config(&env);
+            if config.max_subscribers_per_merchant > 0 && count >= config.max_subscribers_per_merchant {
+                return Err(ContractError::MerchantSubscriberLimitReached);
+            }
+            // Always increment — tracks count regardless of cap setting.
+            set_subscriber_count(&env, &merchant, count + 1);
+        }
+
+        // 5. Build subscription record.
         let next_payment = env.ledger().timestamp() + interval;
         let data = SubscriptionData {
             token,
@@ -63,17 +84,16 @@ impl SubscriptionProtocol {
             next_payment,
         };
 
-        // 5. Persist subscription.
-        let key = DataKey::Subscription(subscriber.clone(), merchant.clone());
+        // 6. Persist subscription.
         env.storage().persistent().set(&key, &data);
 
-        // 6. Extend TTL to keep entry alive for up to MAX_TTL_LEDGERS.
+        // 7. Extend TTL to keep entry alive for up to MAX_TTL_LEDGERS.
         env.storage()
             .persistent()
             .extend_ttl(&key, MIN_TTL_LEDGERS, MAX_TTL_LEDGERS);
 
-        // 7. Emit event — after all state mutations have succeeded.
-        events::emit_subscribe(&env, &subscriber, &merchant, &token, amount);
+        // 8. Emit event — after all state mutations have succeeded.
+        events::emit_subscribe(&env, &subscriber, &merchant, &data.token, amount);
 
         Ok(())
     }
@@ -122,7 +142,7 @@ impl SubscriptionProtocol {
         //    Try to invoke the transfer. If it fails, emit a failure event and return an error.
         //    This graceful handling allows off-chain services to detect and reconcile failed payments.
         let token_client = token::Client::new(&env, &data.token);
-        
+
         // Check if subscriber has sufficient balance and allowance before transfer attempt
         let subscriber_balance = token_client.balance(&subscriber);
         if subscriber_balance < data.amount {
@@ -186,10 +206,39 @@ impl SubscriptionProtocol {
         // 3. Remove subscription from persistent storage.
         env.storage().persistent().remove(&key);
 
-        // 4. Emit event — after successful removal to signal off-chain services.
+        // 4. Decrement the merchant's subscriber count (saturating at zero).
+        let count = get_subscriber_count(&env, &merchant);
+        if count > 0 {
+            set_subscriber_count(&env, &merchant, count - 1);
+        }
+
+        // 5. Emit event — after successful removal to signal off-chain services.
         events::emit_cancel(&env, &subscriber, &merchant);
 
         Ok(())
+    }
+
+    /// Set the global admin configuration (e.g. per-merchant subscriber cap).
+    ///
+    /// # Authorization
+    /// Requires a valid signature from the `admin` account passed in.
+    ///
+    /// # Parameters
+    /// - `admin`:  Account authorizing the config change.
+    /// - `config`: New `AdminConfig` to apply.
+    pub fn set_admin_config(
+        env: Env,
+        admin: Address,
+        config: AdminConfig,
+    ) -> Result<(), ContractError> {
+        admin.require_auth();
+        storage_set_admin_config(&env, config);
+        Ok(())
+    }
+
+    /// Return the current active-subscriber count for a given merchant.
+    pub fn get_subscriber_count(env: Env, merchant: Address) -> u32 {
+        get_subscriber_count(&env, &merchant)
     }
 }
 
