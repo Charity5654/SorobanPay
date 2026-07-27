@@ -51,6 +51,19 @@ pub enum DataKey {
 }
 
 /// Persistent on-chain record for a subscription.
+///
+/// ## Schema versioning
+///
+/// The `ver` field starts at 1 for all new entries written by this version of the
+/// contract. Future migrations can inspect `ver` to decide whether to transform an
+/// entry before using it.
+///
+/// ## Backward compatibility
+///
+/// `grace_period`, `paused_until`, and `overdue_since` are `Option` fields so that
+/// old entries written without these fields (ver 0 / missing) deserialise correctly
+/// as `None`. Use the provided getter methods instead of direct field access to
+/// ensure default values are applied consistently.
 #[contracttype]
 #[derive(Clone, Debug)]
 pub struct SubscriptionData {
