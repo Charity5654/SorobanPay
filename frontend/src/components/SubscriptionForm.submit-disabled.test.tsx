@@ -14,7 +14,7 @@ jest.mock('@/constants/network', () => ({
 }));
 
 jest.mock('@/hooks/useWallet', () => ({
-  useWallet: () => ({ publicKey: 'GPUBKEY' }),
+  useWallet: () => ({ publicKey: 'GPUBKEY', isCheckingFreighter: false, freighterInstalled: true }),
 }));
 
 // Controllable pending promise keeps isSubmitting=true until resolved
@@ -36,41 +36,41 @@ function fillValidForm() {
   fireEvent.change(screen.getByLabelText(/amount/i), { target: { value: '100' } });
 }
 
+async function fillSubmitAndConfirm() {
+  fillValidForm();
+  fireEvent.submit(
+    screen.getByRole('button', { name: /authorize subscription/i }).closest('form')!,
+  );
+  // Wait for the confirmation modal and click Confirm
+  await waitFor(() => screen.getByRole('dialog'));
+  fireEvent.click(screen.getByRole('button', { name: /confirm & authorize/i }));
+}
+
 describe('SubscriptionForm – submit button disabled while submitting', () => {
   it('is enabled before any submission', () => {
     render(<SubscriptionForm />);
     expect(screen.getByRole('button', { name: /authorize subscription/i })).not.toBeDisabled();
   });
 
-  it('becomes disabled immediately after a valid submit', async () => {
+  it('becomes disabled (Submitting…) after confirming the modal', async () => {
     render(<SubscriptionForm />);
-    fillValidForm();
+    await fillSubmitAndConfirm();
 
-    act(() => {
-      fireEvent.submit(
-        screen.getByRole('button', { name: /authorize subscription/i }).closest('form')!,
-      );
-    });
-
-    await waitFor(() => {
-      const btn = screen.getByRole('button');
-      expect(btn).toBeDisabled();
-      expect(btn).toHaveTextContent(/submitting/i);
-    });
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /submitting/i })).toBeDisabled(),
+    );
   });
 
   it('is removed after the transaction completes (success card shown)', async () => {
     render(<SubscriptionForm />);
-    fillValidForm();
+    await fillSubmitAndConfirm();
 
-    act(() => {
-      fireEvent.submit(
-        screen.getByRole('button', { name: /authorize subscription/i }).closest('form')!,
-      );
-    });
+    // Wait for submitting state
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /submitting/i })).toBeDisabled(),
+    );
 
-    await waitFor(() => expect(screen.getByRole('button')).toBeDisabled());
-
+    // Resolve the transaction
     await act(async () => {
       resolveSubmit({ txHash: 'abc123' });
     });
