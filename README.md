@@ -1,5 +1,8 @@
 # SorobanPay — Decentralized Subscription & Recurring Payments Protocol
 
+[![Chromatic](https://img.shields.io/badge/visual%20tests-Chromatic-FC521F?logo=storybook)](https://www.chromatic.com)
+[![Mutation Score](https://img.shields.io/badge/mutation%20score-85%25-brightgreen)](docs/mutation-report.md)
+
 A production-grade, non-custodial recurring payments protocol built on Stellar's Soroban smart contract platform. Enables SaaS billing, creator subscriptions, and recurring donations directly on-chain — no custodial wallets, no pre-authorized transaction arrays.
 
 ---
@@ -134,6 +137,23 @@ cargo test \
 
 Runs the full test suite: unit tests (lifecycle, error paths, auth, events) and property-based tests (time-lock, double-payment prevention, balance invariant, and more).
 
+### Upgrade regression tests (TEST-103)
+
+```bash
+make test-upgrade
+```
+
+Runs the two-phase contract upgrade regression tests under the `upgrade-test` feature flag. Verifies that adding optional fields or new entry points does not break existing stored subscriptions. See [docs/deployment.md §Contract Upgrades](docs/deployment.md#contract-upgrades) for the full upgrade guide.
+
+### Mutation testing (TEST-106)
+
+```bash
+# Requires: cargo install cargo-mutants --version "24.11.1" --locked
+make mutation-test
+```
+
+Runs [cargo-mutants](https://mutants.rs) against the contract source. Target score: > 80%. The full mutation report is at [docs/mutation-report.md](docs/mutation-report.md). Mutation tests run in CI on the `slow-tests` branch protection rule.
+
 ### Clean
 
 ```bash
@@ -217,6 +237,21 @@ npm start
 cd frontend
 npm run type-check
 ```
+
+### Storybook and visual regression tests (TEST-104)
+
+```bash
+cd frontend
+npm install
+npm run storybook       # local dev server on http://localhost:6006
+npm run build-storybook # production build → frontend/storybook-static/
+```
+
+Visual regression tests are run automatically on every PR via [Chromatic](https://www.chromatic.com). Three viewport widths are tested on every component story: **375 px** (mobile), **768 px** (tablet), **1280 px** (desktop).
+
+PR merges to `main` auto-accept baselines. Changes to other branches require reviewer approval in the Chromatic UI before the PR can merge.
+
+Set the `CHROMATIC_PROJECT_TOKEN` secret in GitHub repository settings to enable CI runs.
 
 ---
 

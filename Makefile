@@ -10,7 +10,7 @@ ARTIFACT_PATH  = $(TARGET_DIR)/$(TARGET_TRIPLE)/$(PROFILE)/$(ARTIFACT_NAME).wasm
 
 CARGO_FLAGS   = --manifest-path $(CONTRACT_DIR)/Cargo.toml --target $(TARGET_TRIPLE) --$(PROFILE)
 
-.PHONY: build test clean
+.PHONY: build test test-upgrade mutation-test clean
 
 # build: Compile the contract to WASM using the current $(TARGET_TRIPLE) and $(PROFILE)
 # Override at the command line, e.g.:
@@ -28,6 +28,34 @@ build:
 test:
 	cargo test --manifest-path $(CONTRACT_DIR)/Cargo.toml
 
+# test-upgrade: Run contract upgrade regression tests (TEST-103)
+# Requires the `upgrade-test` feature flag.
+test-upgrade:
+	cargo test --manifest-path $(CONTRACT_DIR)/Cargo.toml \
+	           --features upgrade-test \
+	           -- upgrade
+
+# mutation-test: Run cargo-mutants against the contract source (TEST-106)
+# Requires: cargo install cargo-mutants
+# Outputs a summary to stdout; full report in mutants.out/
+# After running, generate the markdown report:
+#   make mutation-report
+mutation-test:
+	cargo mutants --manifest-path $(CONTRACT_DIR)/Cargo.toml \
+	              --output mutants.out \
+	              -- --all-features
+
+# mutation-report: Copy the last mutation run results into docs/mutation-report.md
+mutation-report: mutation-test
+	@mkdir -p docs
+	@echo "# Mutation Testing Report" > docs/mutation-report.md
+	@echo "" >> docs/mutation-report.md
+	@echo "Generated: $$(date -u '+%Y-%m-%dT%H:%M:%SZ')" >> docs/mutation-report.md
+	@echo "" >> docs/mutation-report.md
+	@cat mutants.out/caught.txt >> docs/mutation-report.md 2>/dev/null || true
+	@cat mutants.out/missed.txt >> docs/mutation-report.md 2>/dev/null || true
+
 # clean: Remove all build artifacts for the contract
 clean:
 	cargo clean --manifest-path $(CONTRACT_DIR)/Cargo.toml
+	@rm -rf mutants.out

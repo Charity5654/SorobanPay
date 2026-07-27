@@ -169,3 +169,6 @@ impl SubscriptionProtocol {
 
 #[cfg(test)]
 mod test;
+
+#[cfg(all(test, feature = "upgrade-test"))]
+mod test_upgrade;

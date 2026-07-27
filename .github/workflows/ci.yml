@@ -1,0 +1,135 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  # ── Contract unit + property + event tests ──────────────────────────────────
+  contract-tests:
+    name: Contract tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: contracts/subscription
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            contracts/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('contracts/subscription/Cargo.toml') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: Run contract tests (all features)
+        run: cargo test --all-features
+
+      - name: Run contract tests (no features, standard path)
+        run: cargo test
+
+  # ── Contract upgrade regression tests (TEST-103) ────────────────────────────
+  upgrade-tests:
+    name: Contract upgrade regression tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: contracts/subscription
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            contracts/target
+          key: ${{ runner.os }}-cargo-upgrade-${{ hashFiles('contracts/subscription/Cargo.toml') }}
+          restore-keys: ${{ runner.os }}-cargo-upgrade-
+
+      - name: Run upgrade regression tests
+        run: |
+          cargo test --features upgrade-test -- upgrade
+
+  # ── Frontend type-check and lint ─────────────────────────────────────────────
+  frontend:
+    name: Frontend type-check & lint
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type check
+        run: npm run type-check
+
+      - name: Lint
+        run: npm run lint
+
+  # ── Chromatic visual regression tests (TEST-104) ─────────────────────────────
+  chromatic:
+    name: Chromatic visual regression
+    runs-on: ubuntu-latest
+    needs: frontend
+    # Only run on PRs — visual review is a PR-time check
+    if: github.event_name == 'pull_request'
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # Required for Chromatic baseline comparison
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build Storybook
+        run: npm run build-storybook
+
+      - name: Run Chromatic
+        uses: chromaui/action@v11
+        with:
+          projectToken: ${{ secrets.CHROMATIC_PROJECT_TOKEN }}
+          workingDir: frontend
+          storybookBuildDir: storybook-static
+          # Auto-accept on main branch merges
+          autoAcceptChanges: "main"
+          # Block PR merge on unapproved visual changes
+          exitOnceUploaded: false
+          onlyChanged: true
