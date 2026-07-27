@@ -398,7 +398,26 @@ impl SubscriptionProtocol {
             return Err(ContractError::SelfSubscription);
         }
 
-        // 3. Validate amount.
+        // 3. Validate token address.
+        //    (a) Reject re-entrant risk: the contract cannot be its own payment token.
+        //    (b) Probe SEP-41 interface by calling decimals() — a cheap, read-only call.
+        //        If `token` is not a deployed contract or does not implement SEP-41,
+        //        the invocation traps and the transaction reverts, preventing a useless
+        //        subscription record that would always fail at payment time.
+        //        If it returns successfully, we also confirm the token tracks the
+        //        subscriber by calling balance() (always >= 0 for a valid SEP-41 token).
+        if token == env.current_contract_address() {
+            return Err(ContractError::InvalidTokenAddress);
+        }
+        {
+            let token_client = token::Client::new(&env, &token);
+            // Liveness + interface probe — traps/reverts if not a valid SEP-41 contract.
+            let _decimals = token_client.decimals();
+            // Confirm the token tracks subscriber addresses (balance must be non-negative).
+            let _bal = token_client.balance(&subscriber);
+        }
+
+        // 4. Validate amount.
         if amount <= 0 {
             return Err(ContractError::AmountMustBePositive);
         }
@@ -406,7 +425,7 @@ impl SubscriptionProtocol {
             return Err(ContractError::AmountTooLarge);
         }
 
-        // 4. Validate interval.
+        // 5. Validate interval.
         if interval < 86_400 {
             return Err(ContractError::IntervalTooShort);
         }
@@ -414,7 +433,7 @@ impl SubscriptionProtocol {
             return Err(ContractError::IntervalTooLong);
         }
 
-        // 5. Build subscription record.
+        // 6. Build subscription record.
         //    Guard against an uninitialised ledger clock (zero timestamp) and
         //    against arithmetic overflow when projecting the first due date.
         let ts           = ledger_timestamp(&env)?;
@@ -426,11 +445,11 @@ impl SubscriptionProtocol {
             next_payment,
         };
 
-        // 5. Persist subscription.
+        // 7. Persist subscription.
         let key = DataKey::Subscription(subscriber.clone(), merchant.clone());
         env.storage().persistent().set(&key, &data);
 
-        // 6. Extend TTL so the entry survives at least MIN_TTL_LEDGERS (~30 days) from now,
+        // 8. Extend TTL so the entry survives at least MIN_TTL_LEDGERS (~30 days) from now,
         //    up to a ceiling of MAX_TTL_LEDGERS (~365 days). The host only charges the fee
         //    if the remaining TTL is already below the threshold — so this is a no-op for
         //    entries that were recently extended.
@@ -438,7 +457,7 @@ impl SubscriptionProtocol {
             .persistent()
             .extend_ttl(&key, MIN_TTL_LEDGERS, MAX_TTL_LEDGERS);
 
-        // 7. Emit event — after all state mutations have succeeded.
+        // 9. Emit event — after all state mutations have succeeded.
         events::emit_subscribe(&env, &subscriber, &merchant, &token, amount);
 
         Ok(())

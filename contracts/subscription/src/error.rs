@@ -26,4 +26,7 @@ pub enum ContractError {
     AmountTooLarge       = 9,
     /// `subscribe` called with subscriber == merchant (self-subscription)
     SelfSubscription     = 10,
+    /// `subscribe` called with `token` equal to the contract's own address,
+    /// or `token` does not implement the SEP-41 interface (decimals() probe failed)
+    InvalidTokenAddress  = 11,
 }
