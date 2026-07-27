@@ -211,6 +211,23 @@ cargo test \
 
 Runs the full test suite: unit tests (lifecycle, error paths, auth, events) and property-based tests (time-lock, double-payment prevention, balance invariant, and more).
 
+### Upgrade regression tests (TEST-103)
+
+```bash
+make test-upgrade
+```
+
+Runs the two-phase contract upgrade regression tests under the `upgrade-test` feature flag. Verifies that adding optional fields or new entry points does not break existing stored subscriptions. See [docs/deployment.md §Contract Upgrades](docs/deployment.md#contract-upgrades) for the full upgrade guide.
+
+### Mutation testing (TEST-106)
+
+```bash
+# Requires: cargo install cargo-mutants --version "24.11.1" --locked
+make mutation-test
+```
+
+Runs [cargo-mutants](https://mutants.rs) against the contract source. Target score: > 80%. The full mutation report is at [docs/mutation-report.md](docs/mutation-report.md). Mutation tests run in CI on the `slow-tests` branch protection rule.
+
 ### Clean
 
 ```bash
