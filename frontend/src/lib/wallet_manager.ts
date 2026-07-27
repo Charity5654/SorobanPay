@@ -5,6 +5,7 @@
  * All @stellar/freighter-api calls are isolated here.
  *
  * Requirements: 9.1, 9.2, 9.3, 9.4
+ * FE-36: Firefox-compatible Freighter detection via polling loop.
  */
 
 import {
@@ -19,10 +20,41 @@ import {
 // ─── Freighter detection ──────────────────────────────────────────────────────
 
 /**
- * Returns true if the Freighter browser extension is installed and enabled.
- * Does NOT trigger any permission dialogs.
+ * Poll for the Freighter extension up to `timeoutMs` milliseconds, checking
+ * every `intervalMs`. Returns true as soon as Freighter responds, or false
+ * when the timeout is reached without a successful response.
+ *
+ * Firefox injects content scripts asynchronously, so `window.freighter` may
+ * not be defined at the initial React render. A polling loop allows the
+ * extension up to 3 seconds to appear before we conclude it is absent.
+ * On Chrome/Brave where Freighter is injected synchronously, the first poll
+ * succeeds immediately — the extra delay is zero.
+ *
+ * FE-36: https://github.com/Chrisland58/SorobanPay/issues/371
  */
-export async function detectFreighter(): Promise<boolean> {
+export async function detectFreighter(
+  timeoutMs = 3000,
+  intervalMs = 100,
+): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+
+  while (Date.now() < deadline) {
+    try {
+      const result = await isConnected();
+      if (result.isConnected === true) return true;
+    } catch {
+      // isConnected() throws when Freighter is absent — keep polling
+    }
+
+    // Wait one interval before the next attempt (unless we've hit the deadline)
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) break;
+    await new Promise<void>((resolve) =>
+      setTimeout(resolve, Math.min(intervalMs, remaining)),
+    );
+  }
+
+  // Last-ditch attempt at the very end of the polling window
   try {
     const result = await isConnected();
     return result.isConnected === true;
