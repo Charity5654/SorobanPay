@@ -853,11 +853,43 @@ The TTL constants assume a **5-second average ledger close time**, which is the 
 
 ## Security model
 
-- **Non-custodial**: The contract never holds token balances. Transfers go directly `subscriber → merchant` via SEP-41 `transfer`.
-- **Per-invocation auth**: Every entry point requires a fresh `require_auth()` signature — no stored sessions.
-- **Allowance model**: Subscribers grant a SEP-41 allowance to the contract. Revoking allowance via `token.approve(contract_id, 0)` prevents future payments regardless of on-chain subscription state.
-- **Time-lock**: Payment cannot be collected before `next_payment` — enforced on-chain by the Soroban ledger timestamp.
-- **TTL**: Subscriptions have a ~30-day minimum and ~365-day maximum TTL. Each successful payment resets the 365-day clock. Expired entries are garbage-collected by the Soroban host — they cannot be read or paid against. See [Storage TTL](#storage-ttl) for the full semantics.
+SorobanPay is designed around three core principles: non-custody, per-invocation authorization, and time-locked collection. This section summarises the on-chain security model. The full reference — including the authorization audit, circuit-breaker runbook, backend secrets management, and known limitations — is in [docs/security.md](docs/security.md).
+
+### Non-custodial design
+
+The contract never holds token balances. Every payment transfer goes directly `subscriber → merchant` via the SEP-41 `transfer()` call. There is no treasury address, no escrow wallet, and no contract-level balance to drain. A compromised contract instance cannot move tokens it does not hold.
+
+### Per-invocation authorization
+
+Every entry point calls `require_auth()` as its first statement — before any storage reads, logging, or cross-contract calls. The Soroban host, not application logic, enforces this: a missing or invalid signature aborts the entire transaction before any code executes.
+
+| Entry point | Who must authorize |
+|-------------|-------------------|
+| `subscribe` | subscriber |
+| `execute_payment` | merchant |
+| `batch_execute_payment` | merchant |
+| `cancel` | subscriber |
+| `get_subscription`, `get_version` | *(no auth — read-only)* |
+
+### Token allowance model (subscriber emergency stop)
+
+Subscribers grant a SEP-41 allowance to the contract address. The contract's `execute_payment` calls `token.transfer(subscriber, merchant, amount)` using that allowance. Revoking the allowance with `token.approve(contract_address, 0)` immediately prevents all future collections — regardless of whether the on-chain subscription record still exists. This gives subscribers a unilateral, no-contract-call emergency stop.
+
+### Time-lock enforcement
+
+`execute_payment` checks `now >= next_payment` using the Soroban ledger timestamp before attempting any transfer. The timestamp is set by network validators and cannot be manipulated by the transaction submitter. Merchants cannot collect payments early or double-collect within a billing window.
+
+### Storage TTL (automatic garbage collection)
+
+Subscription records are persistent storage entries with a TTL of ~30 days minimum and ~365 days maximum. Each successful payment resets the clock to the maximum. Entries that expire (after ~365 days of no successful payments) are garbage-collected by the Soroban host and cannot be paid against — stale, non-paying subscriptions do not accumulate on-chain indefinitely. See [Storage TTL](#storage-ttl) for full semantics.
+
+### Input validation
+
+`subscribe` validates all inputs before touching storage, including self-subscription prevention (`subscriber == merchant`), amount bounds (`0 < amount ≤ 10¹⁸`), interval bounds (`86400 ≤ interval ≤ 31536000`), and timestamp overflow guards. See [Error codes](#error-codes) for the full list.
+
+### Backend is read-only
+
+The optional off-chain backend polls `getEvents()` but never submits token transfers. If the backend is compromised, an attacker can read subscription state and payment history — they cannot move tokens or modify on-chain subscriptions.
 
 For guidance on storing backend secrets safely (database credentials, RPC API keys, webhook secrets), see [docs/security.md](docs/security.md).
 
@@ -940,6 +972,7 @@ npm run dev
 | [Storage TTL Management](docs/operations.md) | Detecting at-risk entries, extending TTL programmatically, alert thresholds |
 | [Network Configuration](docs/networks.md) | Testnet vs. mainnet side-by-side, common mistakes, switching guide |
 | [Backend API Cookbook](docs/api-cookbook.md) | 8 recipes: auth, subscriptions, webhooks, CSV export, MRR, TTL health |
+| [Release Process](docs/release-process.md) | Versioning rules, release note template, changelog process, step-by-step checklist |
 | [Changelog](CHANGELOG.md) | Version history following Keep a Changelog format |
 
 ---
