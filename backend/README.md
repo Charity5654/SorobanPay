@@ -35,14 +35,10 @@ npm install
 ```
 
 2. Configure environment variables:
-Copy `.env.example` to `.env` and update the values:
-```env
-DATABASE_URL="postgresql://user:password@localhost:5432/sorobanpay?schema=public"
-RPC_URL="https://soroban-testnet.stellar.org"
-NETWORK_PASSPHRASE="Test SDF Network ; September 2015"
-CONTRACT_ID="your-contract-id"
-PORT=3001
+```bash
+cp .env.example .env
 ```
+Edit `.env` and fill in the required values. All variables are documented with descriptions inside `.env.example`.
 
 3. Set up the database:
 ```bash
@@ -76,6 +72,22 @@ GET /api/summaries/:id
 - **Event Fetching**: Every 5 minutes
 - **Daily Summaries**: 1:00 AM every day
 - **Weekly Summaries**: 2:00 AM every Sunday
+
+## Troubleshooting
+
+If you encounter issues with the event indexer, webhooks, the payment scheduler, or the database, see the dedicated guide:
+
+**[docs/troubleshooting-backend.md](../docs/troubleshooting-backend.md)**
+
+Common issues covered:
+- Indexer lag / RPC rate limiting
+- Duplicate payment records
+- Webhooks not delivering
+- `401 Unauthorized` / `503` errors
+- Cancel events missing from the audit trail
+- Re-indexing from a specific ledger
+
+---
 
 ## Project Structure
 

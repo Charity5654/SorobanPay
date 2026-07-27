@@ -1,114 +1,227 @@
-import { SorobanRpc, xdr } from '@stellar/stellar-sdk';
+import { rpc, xdr } from '@stellar/stellar-sdk';
 import prisma from '../lib/prisma';
+import { AuditLogger } from './auditLogger';
+import { getTracer, withSpan, SpanKind } from '../lib/tracing';
+import { applyEvent } from './subscriptionStateService';
+import { sendPaymentFailureEmail, sendCancellationEmail } from './emailService';
+
+const auditLogger = new AuditLogger();
+const SUPPORTED_EVENT_TYPES = new Set(['subscribe', 'executed', 'payment_transfer_failure', 'cancel']);
+const STORED_EVENT_TYPES = new Set(['subscribe', 'executed']);
+
+const INDEXER_TRACER = 'sorobanpay.event-indexer';
+
+/** Extract symbol string from a decoded ScVal. */
+function scValToSymbol(val: xdr.ScVal): string | null {
+  try {
+    return val.sym().toString();
+  } catch {
+    return null;
+  }
+}
+
+/** Extract address string from a decoded ScVal. */
+function scValToAddress(val: xdr.ScVal): string | null {
+  try {
+    return val.address().toString();
+  } catch {
+    return null;
+  }
+}
+
+/** Extract amount string from a decoded ScVal. */
+function scValToAmount(val: xdr.ScVal): string | null {
+  try {
+    try {
+      return val.i128().toString();
+    } catch {
+      return val.u64().toString();
+    }
+  } catch {
+    return null;
+  }
+}
 
 export class EventIndexer {
   private rpcUrl: string;
   private contractId: string;
-  private server: SorobanRpc.Server;
+  private server: rpc.Server;
 
   constructor(rpcUrl: string, contractId: string) {
     this.rpcUrl = rpcUrl;
     this.contractId = contractId;
-    this.server = new SorobanRpc.Server(rpcUrl);
+    this.server = new rpc.Server(rpcUrl);
   }
 
+  /**
+   * Fetch events from Soroban RPC and store them.
+   * Wrapped in a root OTel span 'rpc.poll_cycle'.
+   */
   async fetchAndStoreEvents(startLedger?: number): Promise<void> {
+    await withSpan(
+      INDEXER_TRACER,
+      'rpc.poll_cycle',
+      async (pollSpan) => {
+        pollSpan.setAttributes({
+          'rpc.url': this.rpcUrl,
+          'contract.id': this.contractId,
+          'rpc.start_ledger': startLedger ?? 0,
+        });
+
+        try {
+          const filters: rpc.Api.EventFilter[] = [
+            { type: 'contract', contractIds: [this.contractId] },
+          ];
+
+          // startLedger is required when not using cursor pagination
+          const eventsRequest: rpc.Api.GetEventsRequest = {
+            filters,
+            startLedger: startLedger ?? 1,
+            limit: 100,
+          };
+
+          const eventsResponse = await this.server.getEvents(eventsRequest);
+          const events = eventsResponse.events ?? [];
+
+          pollSpan.setAttributes({ 'rpc.events_found': events.length });
+
+          if (events.length === 0) {
+            console.log('No new events found');
+            return;
+          }
+
+          console.log(`Found ${events.length} contract events`);
+
+          for (const event of events) {
+            await this.processEvent(event);
+          }
+
+          console.log('Events processed successfully');
+        } catch (error) {
+          console.error('Error fetching events:', error);
+          throw error;
+        }
+      },
+      { kind: SpanKind.CLIENT },
+    );
+  }
+
+  private async processEvent(event: rpc.Api.EventResponse): Promise<void> {
     try {
-      let events: SorobanRpc.GetEventsResponse = {
-        events: [],
-        latestLedger: 0,
-      };
-
-      // Fetch events for the contract
-      const eventsResponse = await this.server.getEvents({
-        startLedger: startLedger,
-        filters: [
-          {
-            type: 'contract',
-            contractIds: [this.contractId],
-          },
-        ],
-        limit: 100,
-      });
-
-      events = eventsResponse;
-
-      if (!events.events || events.events.length === 0) {
-        console.log('No new events found');
+      const topics = event.topic; // already decoded xdr.ScVal[]
+      if (!topics || topics.length < 2) {
         return;
       }
 
-      console.log(`Found ${events.events.length} events`);
+      // --- span: event.decode ---
+      let eventType: string | null = null;
+      let subscriber: string | null = null;
+      let merchant: string | null = null;
+      let token: string | null = null;
+      let amount: string | null = null;
 
-      // Process and store events
-      for (const event of events.events) {
-        await this.processEvent(event);
-      }
+      await withSpan(INDEXER_TRACER, 'event.decode', async (decodeSpan) => {
+        eventType = scValToSymbol(topics[0]);
 
-      console.log('Events processed successfully');
-    } catch (error) {
-      console.error('Error fetching events:', error);
-    }
-  }
+        if (!eventType || !SUPPORTED_EVENT_TYPES.has(eventType)) {
+          decodeSpan.setAttributes({ 'event.skipped': true, 'event.type': eventType ?? 'unknown' });
+          return;
+        }
 
-  private async processEvent(event: SorobanRpc.RawEvent): Promise<void> {
-    try {
-      // Parse the event topics and value
-      const topics = event.topic;
-      const value = event.value;
+        subscriber = topics[1] ? scValToAddress(topics[1]) : null;
+        merchant   = topics[2] ? scValToAddress(topics[2]) : null;
+        token      = topics[3] ? scValToAddress(topics[3]) : null;
+        // event.value is already a decoded xdr.ScVal
+        amount     = scValToAmount(event.value);
 
-      if (!topics || topics.length < 4) {
-        return; // Skip invalid events
-      }
-
-      const eventTypeSymbol = xdr.ScVal.fromXDR(topics[0], 'base64');
-      const eventType = eventTypeSymbol.sym().toString();
-
-      const subscriberScVal = xdr.ScVal.fromXDR(topics[1], 'base64');
-      const subscriber = subscriberScVal.address().toString();
-
-      const merchantScVal = xdr.ScVal.fromXDR(topics[2], 'base64');
-      const merchant = merchantScVal.address().toString();
-
-      const tokenScVal = xdr.ScVal.fromXDR(topics[3], 'base64');
-      const token = tokenScVal.address().toString();
-
-      const amountScVal = xdr.ScVal.fromXDR(value, 'base64');
-      let amount: string;
-      try {
-        amount = amountScVal.i128().toString();
-      } catch (e) {
-        // If it's not i128, try u64
-        amount = amountScVal.u64().toString();
-      }
-
-      // Check if event already exists
-      const existingEvent = await prisma.event.findFirst({
-        where: {
-          type: eventType,
-          subscriber: subscriber,
-          merchant: merchant,
-          token: token,
-          amount: amount,
-          ledgerTimestamp: BigInt(event.ledger),
-        },
+        decodeSpan.setAttributes({
+          'event.type': eventType,
+          'event.subscriber': subscriber ?? '',
+          'event.merchant': merchant ?? '',
+          'event.token': token ?? '',
+        });
       });
 
-      if (existingEvent) {
-        return; // Skip duplicate
+      if (!eventType || !SUPPORTED_EVENT_TYPES.has(eventType)) {
+        return;
       }
 
-      // Store the event
-      await prisma.event.create({
-        data: {
-          type: eventType,
-          subscriber: subscriber,
-          merchant: merchant,
-          token: token,
-          amount: amount,
-          ledgerTimestamp: BigInt(event.ledger),
-        },
+      if (!subscriber || !merchant) {
+        return;
+      }
+
+      if (!STORED_EVENT_TYPES.has(eventType)) {
+        return;
+      }
+
+      const ledgerTimestamp = BigInt(event.ledger);
+
+      // --- span: db.write_event ---
+      await withSpan(INDEXER_TRACER, 'db.write_event', async (dbSpan) => {
+        dbSpan.setAttributes({
+          'db.operation': 'upsert',
+          'db.table': 'Event',
+          'event.type': eventType!,
+        });
+
+        const existingEvent = await prisma.event.findFirst({
+          where: {
+            type: eventType!,
+            subscriber: subscriber!,
+            merchant: merchant!,
+            token: token ?? '',
+            amount: amount ?? '',
+            ledgerTimestamp,
+          },
+        });
+
+        if (existingEvent) {
+          dbSpan.setAttributes({ 'db.duplicate': true });
+          return;
+        }
+
+        await prisma.event.create({
+          data: {
+            type: eventType!,
+            subscriber: subscriber!,
+            merchant: merchant!,
+            token: token ?? '',
+            amount: amount ?? '',
+            ledgerTimestamp,
+          },
+        });
+
+        dbSpan.setAttributes({ 'db.rows_written': 1 });
       });
+
+      // Post-store: update state machine
+      await applyEvent(subscriber, merchant, eventType as any, { amount: amount ?? '0' });
+
+      // Post-store: audit log for executed payments
+      if (eventType === 'executed') {
+        await auditLogger.logPayment({
+          eventType,
+          subscriber,
+          merchant,
+          token: token ?? '',
+          amount: amount ?? '',
+          transactionHash: event.id,
+          ledger: ledgerTimestamp,
+        });
+      }
+
+      // Post-store: email notifications
+      if (eventType === 'payment_transfer_failure') {
+        await sendPaymentFailureEmail(subscriber, merchant, amount ?? '0', token ?? '').catch(
+          (err) => console.error('[email] Failed to send payment failure email:', err),
+        );
+      }
+
+      if (eventType === 'cancel') {
+        await sendCancellationEmail(subscriber, merchant).catch(
+          (err) => console.error('[email] Failed to send cancellation email:', err),
+        );
+      }
 
       console.log(`Stored event: ${eventType} for merchant ${merchant}`);
     } catch (error) {

@@ -55,7 +55,10 @@ describe('SubscriptionForm – accessibility', () => {
     await waitFor(() => {
       expect(screen.getByLabelText(/merchant address/i)).toHaveAttribute('aria-invalid', 'true');
     });
-    expect(screen.getByLabelText(/merchant address/i)).toHaveAttribute('aria-describedby', 'err-merchant');
+    // aria-describedby includes both the help text id and the error id
+    expect(
+      screen.getByLabelText(/merchant address/i).getAttribute('aria-describedby'),
+    ).toContain('err-merchant');
   });
 
   it('error messages carry role="alert"', async () => {

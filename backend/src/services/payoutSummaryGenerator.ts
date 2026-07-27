@@ -1,4 +1,6 @@
 import prisma from '../lib/prisma';
+import logger from '../lib/logger';
+import { redactAddress } from '../lib/logger';
 
 export class PayoutSummaryGenerator {
   async generateDailySummaries(date?: Date): Promise<void> {
@@ -55,7 +57,7 @@ export class PayoutSummaryGenerator {
       });
 
       if (events.length === 0) {
-        console.log('No events found for the period');
+        logger.debug({ event: 'summaries.no_events_for_period', type });
         return;
       }
 
@@ -104,7 +106,7 @@ export class PayoutSummaryGenerator {
                 paymentCount: merchantEvents.length,
               },
             });
-            console.log(`Updated ${type} summary for merchant ${merchant}`);
+            logger.info({ event: 'summaries.updated', type, merchant: redactAddress(merchant) });
           } else {
             // Create new summary
             await prisma.payoutSummary.create({
@@ -118,12 +120,12 @@ export class PayoutSummaryGenerator {
                 currency: token,
               },
             });
-            console.log(`Created ${type} summary for merchant ${merchant}`);
+            logger.info({ event: 'summaries.created', type, merchant: redactAddress(merchant) });
           }
         }
       }
     } catch (error) {
-      console.error('Error generating summaries:', error);
+      logger.error({ event: 'summaries.error', err: error });
     }
   }
 }
