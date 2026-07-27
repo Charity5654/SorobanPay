@@ -730,7 +730,8 @@ impl SubscriptionProtocol {
         env.storage().persistent().remove(&key);
 
         // 4. Emit event — after successful removal to signal off-chain services.
-        events::emit_cancel(&env, &subscriber, &merchant);
+        //    Reason 1 = subscriber_voluntary: the subscriber initiated this cancellation.
+        events::emit_cancel(&env, &subscriber, &merchant, 1u32);
 
         Ok(())
     }
