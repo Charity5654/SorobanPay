@@ -113,3 +113,31 @@ pub fn emit_batch_execute_initiated(env: &Env, merchant: &Address, batch_size: u
         batch_size as i128,
     );
 }
+
+/// Emit the `contract_paused` event when an admin pauses the contract.
+///
+/// Topics:  (symbol("contract_paused"), admin)
+/// Data:    empty (unit type ())
+pub fn emit_contract_paused(env: &Env, admin: &Address) {
+    env.events().publish(
+        (
+            Symbol::new(env, "contract_paused"),
+            admin.clone(),
+        ),
+        (),
+    );
+}
+
+/// Emit the `contract_unpaused` event when an admin resumes the contract.
+///
+/// Topics:  (symbol("contract_unpaused"), admin)
+/// Data:    empty (unit type ())
+pub fn emit_contract_unpaused(env: &Env, admin: &Address) {
+    env.events().publish(
+        (
+            Symbol::new(env, "contract_unpaused"),
+            admin.clone(),
+        ),
+        (),
+    );
+}

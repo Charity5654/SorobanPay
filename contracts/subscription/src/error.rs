@@ -30,4 +30,10 @@ pub enum ContractError {
     InvalidTokenAddress  = 11,
     /// `execute_payment_batch` called with an empty payments vector
     EmptyBatch           = 12,
+    /// `pause_contract` / `unpause_contract` called before `initialize`
+    NotInitialized       = 13,
+    /// `initialize` called on an already-initialized contract
+    AlreadyInitialized   = 14,
+    /// State-mutating entry point called while the contract is paused
+    ContractPaused       = 16,
 }

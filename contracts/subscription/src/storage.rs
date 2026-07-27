@@ -1,4 +1,4 @@
-use soroban_sdk::{contracttype, Address};
+use soroban_sdk::{contracttype, Address, Env};
 
 // ==================== Version Metadata ====================
 /// Contract semantic version: MAJOR.MINOR.PATCH
@@ -15,11 +15,26 @@ pub const CONTRACT_NAME: &str = "SorobanPay-SubscriptionProtocol";
 
 // ==================== Storage & Data Structures ====================
 
-/// Composite storage key uniquely identifying a subscription.
-/// One entry per (subscriber, merchant) pair.
+/// Composite storage key uniquely identifying a subscription or admin config.
 #[contracttype]
 pub enum DataKey {
+    /// One entry per (subscriber, merchant) pair.
     Subscription(Address, Address),
+    /// Singleton entry holding the admin address and contract pause state.
+    AdminConfig,
+}
+
+/// Singleton record holding the admin address and the protocol-wide pause flag.
+///
+/// Stored under `DataKey::AdminConfig` in persistent storage.
+/// Created by `initialize()` and mutated only by `pause_contract()` / `unpause_contract()`.
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct AdminConfig {
+    /// The address that is allowed to pause and unpause the contract.
+    pub admin:  Address,
+    /// When `true`, all state-mutating entry points return `ContractPaused`.
+    pub paused: bool,
 }
 
 /// Persistent on-chain record for a subscription.
@@ -56,3 +71,18 @@ pub const MIN_TTL_LEDGERS: u32 = 30 * 24 * 60 * 60 / 5;
 /// Stale subscriptions that go a full year without a successful payment will
 /// expire and be garbage-collected by the Soroban host automatically.
 pub const MAX_TTL_LEDGERS: u32 = 365 * 24 * 60 * 60 / 5;
+
+// ==================== AdminConfig Helpers ====================
+
+/// Store `AdminConfig` in persistent storage and extend its TTL to the maximum.
+pub fn set_admin_config(env: &Env, config: &AdminConfig) {
+    env.storage().persistent().set(&DataKey::AdminConfig, config);
+    env.storage()
+        .persistent()
+        .extend_ttl(&DataKey::AdminConfig, MIN_TTL_LEDGERS, MAX_TTL_LEDGERS);
+}
+
+/// Load `AdminConfig` from persistent storage, returning `None` if not yet initialised.
+pub fn get_admin_config(env: &Env) -> Option<AdminConfig> {
+    env.storage().persistent().get(&DataKey::AdminConfig)
+}

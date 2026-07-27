@@ -7,7 +7,10 @@ mod storage;
 use soroban_sdk::{contract, contractimpl, token, Address, Env, Symbol};
 
 use crate::error::ContractError;
-use crate::storage::{DataKey, SubscriptionData, MAX_AMOUNT, MAX_TTL_LEDGERS, MIN_TTL_LEDGERS};
+use crate::storage::{
+    get_admin_config, set_admin_config, AdminConfig, DataKey, SubscriptionData, MAX_AMOUNT,
+    MAX_TTL_LEDGERS, MIN_TTL_LEDGERS,
+};
 
 // ─── Internal helpers ─────────────────────────────────────────────────────────
 
@@ -334,6 +337,97 @@ pub struct SubscriptionProtocol;
 
 #[contractimpl]
 impl SubscriptionProtocol {
+    // ─── Admin / Pause ────────────────────────────────────────────────────────
+
+    /// Initialise the contract with an admin address.
+    ///
+    /// Must be called exactly once after deployment.  All subsequent calls return
+    /// `ContractError::AlreadyInitialized`.
+    ///
+    /// The admin address is the only account authorised to call `pause_contract`
+    /// and `unpause_contract`.  There is no admin-transfer mechanism in this
+    /// version — choose the admin address carefully at deployment time.
+    ///
+    /// # Authorization
+    /// Requires a valid signature from `admin`.
+    ///
+    /// # Errors
+    /// - `ContractError::AlreadyInitialized` — if called a second time.
+    pub fn initialize(env: Env, admin: Address) -> Result<(), ContractError> {
+        // Ensure we are not reinitialising.
+        if get_admin_config(&env).is_some() {
+            return Err(ContractError::AlreadyInitialized);
+        }
+
+        // Admin must sign the initialisation transaction.
+        admin.require_auth();
+
+        let config = AdminConfig { admin: admin.clone(), paused: false };
+        set_admin_config(&env, &config);
+
+        Ok(())
+    }
+
+    /// Pause the contract — all state-mutating entry points will return
+    /// `ContractError::ContractPaused` until `unpause_contract` is called.
+    ///
+    /// Emits a `contract_paused` event on success.  Calling this on an already-
+    /// paused contract is a no-op (returns `Ok(())`).
+    ///
+    /// # Authorization
+    /// Requires a valid signature from the admin address stored in `AdminConfig`.
+    ///
+    /// # Errors
+    /// - `ContractError::NotInitialized` — if `initialize` has not been called yet.
+    pub fn pause_contract(env: Env) -> Result<(), ContractError> {
+        let mut config = get_admin_config(&env).ok_or(ContractError::NotInitialized)?;
+
+        // Only the admin may pause.
+        config.admin.require_auth();
+
+        if !config.paused {
+            config.paused = true;
+            set_admin_config(&env, &config);
+            events::emit_contract_paused(&env, &config.admin);
+        }
+
+        Ok(())
+    }
+
+    /// Resume the contract — all entry points return to normal operation.
+    ///
+    /// Emits a `contract_unpaused` event on success.  Calling this on an already-
+    /// running contract is a no-op (returns `Ok(())`).
+    ///
+    /// # Authorization
+    /// Requires a valid signature from the admin address stored in `AdminConfig`.
+    ///
+    /// # Errors
+    /// - `ContractError::NotInitialized` — if `initialize` has not been called yet.
+    pub fn unpause_contract(env: Env) -> Result<(), ContractError> {
+        let mut config = get_admin_config(&env).ok_or(ContractError::NotInitialized)?;
+
+        // Only the admin may unpause.
+        config.admin.require_auth();
+
+        if config.paused {
+            config.paused = false;
+            set_admin_config(&env, &config);
+            events::emit_contract_unpaused(&env, &config.admin);
+        }
+
+        Ok(())
+    }
+
+    /// Return `true` if the contract is currently paused.
+    ///
+    /// Read-only — no authorization required, unaffected by pause state.
+    pub fn is_paused(env: Env) -> bool {
+        get_admin_config(&env).map(|c| c.paused).unwrap_or(false)
+    }
+
+    // ─── Read-only views ──────────────────────────────────────────────────────
+
     /// Return the contract version as a string.
     ///
     /// This entry point enables off-chain systems to verify the deployed contract variant
@@ -393,7 +487,14 @@ impl SubscriptionProtocol {
         // 1. Authorization — must be first, before any state reads.
         subscriber.require_auth();
 
-        // 2. Reject self-subscriptions.
+        // 2. Pause guard — check before any state mutation.
+        if let Some(cfg) = get_admin_config(&env) {
+            if cfg.paused {
+                return Err(ContractError::ContractPaused);
+            }
+        }
+
+        // 3. Reject self-subscriptions.
         if subscriber == merchant {
             return Err(ContractError::SelfSubscription);
         }
@@ -424,6 +525,7 @@ impl SubscriptionProtocol {
             amount,
             interval,
             next_payment,
+            is_paused: false,
         };
 
         // 5. Persist subscription.
@@ -496,7 +598,14 @@ impl SubscriptionProtocol {
         // 1. Authorization — merchant triggers collection.
         merchant.require_auth();
 
-        // 2. Load subscription — return error if absent.
+        // 2. Pause guard — check before any state mutation.
+        if let Some(cfg) = get_admin_config(&env) {
+            if cfg.paused {
+                return Err(ContractError::ContractPaused);
+            }
+        }
+
+        // 3. Load subscription — return error if absent.
         let key = DataKey::Subscription(subscriber.clone(), merchant.clone());
         let mut data: SubscriptionData = env
             .storage()
@@ -633,7 +742,14 @@ impl SubscriptionProtocol {
         // 1. Authorization — merchant triggers collection for all payments.
         merchant.require_auth();
 
-        // 2. Validate batch is non-empty.
+        // 2. Pause guard — check before any state mutation.
+        if let Some(cfg) = get_admin_config(&env) {
+            if cfg.paused {
+                return Err(ContractError::ContractPaused);
+            }
+        }
+
+        // 3. Validate batch is non-empty.
         if payments.is_empty() {
             return Err(ContractError::EmptyBatch);
         }
@@ -720,7 +836,14 @@ impl SubscriptionProtocol {
         // 1. Authorization.
         subscriber.require_auth();
 
-        // 2. Verify subscription exists before removing.
+        // 2. Pause guard — check before any state mutation.
+        if let Some(cfg) = get_admin_config(&env) {
+            if cfg.paused {
+                return Err(ContractError::ContractPaused);
+            }
+        }
+
+        // 3. Verify subscription exists before removing.
         let key = DataKey::Subscription(subscriber.clone(), merchant.clone());
         if !env.storage().persistent().has(&key) {
             return Err(ContractError::NoActiveSubscription);
