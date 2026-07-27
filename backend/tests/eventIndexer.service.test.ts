@@ -1,6 +1,22 @@
 import { MockRpcServer } from './helpers/mockRpcServer';
 import { InMemoryPrismaClient } from './helpers/inMemoryDb';
 
+// Mock pino-based logger (pino is not installed in the test environment)
+jest.mock('../src/lib/logger', () => ({
+  __esModule: true,
+  default: {
+    info: jest.fn(),
+    warn: jest.fn(),
+    error: jest.fn(),
+    debug: jest.fn(),
+  },
+}));
+
+// Mock retryQueue so bullmq/ioredis are never loaded during this test suite
+jest.mock('../src/services/retryQueue', () => ({
+  scheduleRetries: jest.fn().mockResolvedValue(undefined),
+}));
+
 jest.mock('@stellar/stellar-sdk', () => {
   class MockScVal {
     constructor(private value: unknown) {}

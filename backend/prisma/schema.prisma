@@ -97,3 +97,29 @@ model NotificationPreference {
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 }
+
+// Payment retry tracking table.
+// Each row represents a single scheduled retry attempt for a failed payment.
+// Status lifecycle: PENDING → PROCESSING → SUCCEEDED | FAILED | CANCELLED
+model PaymentRetry {
+  id            Int       @id @default(autoincrement())
+  subscriber    String
+  merchant      String
+  token         String    @default("")
+  amount        String    @default("0")
+  /// 1-based attempt counter (1 = first retry, up to MAX_RETRY_ATTEMPTS).
+  attemptNumber Int
+  scheduledAt   DateTime
+  executedAt    DateTime?
+  /// PENDING | PROCESSING | SUCCEEDED | FAILED | CANCELLED
+  status        String    @default("PENDING")
+  errorMessage  String?
+  /// BullMQ job ID — used to cancel the queued job on DELETE.
+  jobId         String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@unique([subscriber, merchant, attemptNumber], name: "subscriber_merchant_attempt")
+  @@index([subscriber, merchant])
+  @@index([status, scheduledAt])
+}

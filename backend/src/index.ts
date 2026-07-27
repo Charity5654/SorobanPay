@@ -26,6 +26,8 @@ import versionRouter from './routes/version';
 import { buildHealthRouter } from './routes/health';
 import { reconcile } from './services/reconciler';
 import { PrismaSubscriptionDB, fetchChainEventsFromDB } from './services/reconciler';
+import retriesRouter from './routes/retries';
+import { initRetryQueue, closeRetryQueue } from './services/retryQueue';
 
 // ─── Config ─────────────────────────────────────────────────────────────────
 const config = validateConfig();
@@ -48,6 +50,7 @@ app.use('/health', buildHealthRouter(rpcUrl, contractId));
 
 // ─── Versioned routes — /api/v1/ ─────────────────────────────────────────────
 app.use('/api/v1/subscriptions', subscriptionsRouter);
+app.use('/api/v1/subscriptions/:subscriber/:merchant/retries', retriesRouter);
 app.use('/api/v1/webhooks',      webhooksRouter);
 app.use('/api/v1/summaries',     summariesRouter);
 app.use('/api/v1/reconcile',     reconcileRouter);
@@ -56,6 +59,7 @@ app.use('/api/v1/notifications', notificationsRouter);  // BE-68
 // ─── Backward-compatible aliases — /api/ (no version prefix) ─────────────────
 // These keep existing integrations working and forward to v1 handlers.
 app.use('/api/subscriptions', subscriptionsRouter);
+app.use('/api/subscriptions/:subscriber/:merchant/retries', retriesRouter);
 app.use('/api/webhooks',      webhooksRouter);
 app.use('/api/summaries',     summariesRouter);
 app.use('/api/reconcile',     reconcileRouter);
@@ -121,8 +125,31 @@ app.listen(PORT, () => {
   if (!operatorSecret) {
     console.warn('[scheduler] OPERATOR_SECRET not set — payment scheduler disabled.');
   }
+
+  // Initialise BullMQ payment retry queue if REDIS_URL is configured
+  const redisUrl = process.env.REDIS_URL;
+  if (redisUrl) {
+    initRetryQueue(redisUrl);
+    console.log('[retry] Payment retry queue initialised.');
+  } else {
+    console.warn('[retry] REDIS_URL not set — payment retry queue disabled.');
+  }
+
   // Initial event fetch on startup
   eventIndexer.fetchAndStoreEvents();
+});
+
+// ─── Graceful shutdown ────────────────────────────────────────────────────────
+process.on('SIGTERM', async () => {
+  console.log('[server] SIGTERM received — shutting down gracefully...');
+  await closeRetryQueue();
+  process.exit(0);
+});
+
+process.on('SIGINT', async () => {
+  console.log('[server] SIGINT received — shutting down gracefully...');
+  await closeRetryQueue();
+  process.exit(0);
 });
 
 export default app;

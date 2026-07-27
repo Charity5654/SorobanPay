@@ -4,6 +4,7 @@ import { AuditLogger } from './auditLogger';
 import { getTracer, withSpan, SpanKind } from '../lib/tracing';
 import { applyEvent } from './subscriptionStateService';
 import { sendPaymentFailureEmail, sendCancellationEmail } from './emailService';
+import { scheduleRetries } from './retryQueue';
 
 const auditLogger = new AuditLogger();
 const SUPPORTED_EVENT_TYPES = new Set(['subscribe', 'executed', 'payment_transfer_failure', 'cancel']);
@@ -214,6 +215,11 @@ export class EventIndexer {
       if (eventType === 'payment_transfer_failure') {
         await sendPaymentFailureEmail(subscriber, merchant, amount ?? '0', token ?? '').catch(
           (err) => console.error('[email] Failed to send payment failure email:', err),
+        );
+
+        // Schedule automated payment retries via BullMQ
+        await scheduleRetries(subscriber, merchant, amount ?? '0', token ?? '').catch(
+          (err) => console.error('[retry] Failed to schedule payment retries:', err),
         );
       }
 
