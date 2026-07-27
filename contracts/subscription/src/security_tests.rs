@@ -542,8 +542,7 @@ mod security_tests {
         );
         // No storage entry should exist for (subscriber, subscriber)
         let exists = s.env.storage().persistent().has(&DataKey::Subscription(
-            s.subscriber.clone(),
-            s.subscriber.clone(),
+            crate::storage::subscription_key(&s.env, &s.subscriber, &s.subscriber),
         ));
         assert!(!exists, "self-subscription must not create any storage entry");
     }

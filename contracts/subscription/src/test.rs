@@ -8,7 +8,7 @@ use soroban_sdk::{
 
 use crate::{
     error::ContractError,
-    storage::{DataKey, SubscriptionData},
+    storage::{subscription_key, DataKey, SubscriptionData},
     SubscriptionProtocol, SubscriptionProtocolClient,
 };
 
@@ -68,14 +68,14 @@ impl T {
         self.env
             .storage()
             .persistent()
-            .has(&DataKey::Subscription(self.subscriber.clone(), self.merchant.clone()))
+            .has(&DataKey::Subscription(subscription_key(&self.env, &self.subscriber, &self.merchant)))
     }
 
     fn get_sub(&self) -> SubscriptionData {
         self.env
             .storage()
             .persistent()
-            .get(&DataKey::Subscription(self.subscriber.clone(), self.merchant.clone()))
+            .get(&DataKey::Subscription(subscription_key(&self.env, &self.subscriber, &self.merchant)))
             .unwrap()
     }
 }
@@ -1425,7 +1425,7 @@ fn load_test_bulk_subscribe_distinct_pairs() {
 
     // Verify every subscription was persisted correctly.
     for sub in &subscribers {
-        let key = DataKey::Subscription(sub.clone(), merchant.clone());
+        let key = DataKey::Subscription(subscription_key(&env, sub, &merchant));
         let data: SubscriptionData = env.storage().persistent().get(&key).unwrap();
         assert_eq!(data.amount,   amt);
         assert_eq!(data.interval, ivl);
@@ -1465,7 +1465,7 @@ fn env_has_sub(t: &T, sub: &Address, mer: &Address) -> bool {
     t.env
         .storage()
         .persistent()
-        .has(&DataKey::Subscription(sub.clone(), mer.clone()))
+        .has(&DataKey::Subscription(subscription_key(&t.env, sub, mer)))
 }
 
 /// Load test: N invalid subscribe attempts (zero amount) all fail cleanly.
