@@ -1,7 +1,6 @@
 use soroban_sdk::contracterror;
 
 /// Contract error codes — stable u32 values safe to return across invocation boundaries.
-/// These are surfaced to callers via the Stellar RPC error response.
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 #[repr(u32)]
@@ -16,11 +15,11 @@ pub enum ContractError {
     NoActiveSubscription = 4,
     /// `execute_payment` called before next_payment timestamp has elapsed
     PaymentNotDue        = 5,
-    /// Authorization check failed (supplementary; require_auth() panics directly)
+    /// Authorization check failed
     Unauthorized         = 6,
     /// `execute_payment` token transfer failed (insufficient balance or allowance)
     TransferFailed       = 7,
-    /// ledger timestamp is zero or would overflow when computing next_payment
+    /// Ledger timestamp is zero or would overflow when computing next_payment
     InvalidTimestamp     = 8,
     /// `subscribe` called with amount exceeding the safe maximum threshold
     AmountTooLarge       = 9,
@@ -28,6 +27,8 @@ pub enum ContractError {
     SelfSubscription     = 10,
     /// `subscribe` called with `token` equal to the contract's own address
     InvalidTokenAddress  = 11,
-    /// `execute_payment_batch` called with an empty payments vector
+    /// `batch_execute_payment` called with an empty subscribers vector
     EmptyBatch           = 12,
+    /// `batch_execute_payment` called with more than BATCH_MAX_SIZE (50) subscribers
+    BatchTooLarge        = 13,
 }
