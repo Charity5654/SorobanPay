@@ -58,6 +58,8 @@ import {
   NETWORK_NAME,
   RPC_URL,
 } from "@/constants/network";
+import { TokenCombobox } from "@/components/TokenCombobox";
+import { getKnownTokens } from "@/constants/known-tokens";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -1071,7 +1073,7 @@ export default function SubscriptionForm({ initialValues }: SubscriptionFormProp
             )}
           </div>
 
-          {/* Token address */}
+          {/* Token contract address — combobox with known-token autocomplete */}
           <div>
             <label
               htmlFor="tokenAddress"
@@ -1080,27 +1082,20 @@ export default function SubscriptionForm({ initialValues }: SubscriptionFormProp
               Token contract address{requiredMark}
               <span className="sr-only"> (required)</span>
             </label>
-            <input
+            <TokenCombobox
               id="tokenAddress"
-              type="text"
-              placeholder="e.g. CXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
-              autoComplete="off"
               value={tokenAddress}
-              onChange={(e) => setTokenAddress(e.target.value)}
+              onChange={setTokenAddress}
               disabled={isSubmitting}
-              required
-              aria-required="true"
-              aria-describedby={`help-token${fieldErrors.tokenAddress ? " err-token" : ""}`}
-              aria-invalid={!!fieldErrors.tokenAddress}
-              className={fieldClass(!!fieldErrors.tokenAddress)}
+              hasError={!!fieldErrors.tokenAddress}
+              tokens={getKnownTokens(NETWORK_NAME)}
+              ariaDescribedBy={`help-token${fieldErrors.tokenAddress ? " err-token" : ""}`}
             />
             <p id="help-token" className={hintCls}>
-              The SEP-41 token contract address — starts with{" "}
+              Search by symbol (e.g. <code className="bg-gray-800 px-1 rounded text-gray-200 text-xs">USDC</code>)
+              or paste a full SEP-41 contract address (starts with{" "}
               <code className="bg-gray-800 px-1 rounded text-gray-200 text-xs">C</code>,
-              56 characters. Example (testnet USDC):{" "}
-              <code className="bg-gray-800 px-1 rounded text-gray-200 text-xs font-mono">
-                CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA
-              </code>
+              56 characters). Token list is network-aware ({NETWORK_NAME}).
             </p>
             {fieldErrors.tokenAddress && (
               <p
