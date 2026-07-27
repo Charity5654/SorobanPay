@@ -86,6 +86,26 @@ model Subscription {
   @@unique([subscriber, merchant], name: "subscriber_merchant")
 }
 
+// Payment retry tracking (automated retry system)
+model PaymentRetry {
+  id            Int       @id @default(autoincrement())
+  subscriber    String
+  merchant      String
+  amount        String    @default("0")
+  token         String    @default("")
+  attemptNumber Int
+  status        String    @default("pending") // pending | succeeded | failed | cancelled
+  scheduledAt   DateTime
+  attemptedAt   DateTime?
+  error         String?
+  jobId         String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@index([subscriber, merchant])
+  @@index([status, scheduledAt])
+}
+
 // BE-68: Email notification preferences
 model NotificationPreference {
   id           Int      @id @default(autoincrement())
