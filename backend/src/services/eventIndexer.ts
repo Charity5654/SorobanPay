@@ -4,6 +4,7 @@ import { AuditLogger } from './auditLogger';
 import { getTracer, withSpan, SpanKind } from '../lib/tracing';
 import { applyEvent } from './subscriptionStateService';
 import { sendPaymentFailureEmail, sendCancellationEmail } from './emailService';
+import type { RetryScheduler } from './retryScheduler';
 
 const auditLogger = new AuditLogger();
 const SUPPORTED_EVENT_TYPES = new Set(['subscribe', 'executed', 'payment_transfer_failure', 'cancel']);
@@ -46,11 +47,17 @@ export class EventIndexer {
   private rpcUrl: string;
   private contractId: string;
   private server: rpc.Server;
+  private retryScheduler: RetryScheduler | null = null;
 
   constructor(rpcUrl: string, contractId: string) {
     this.rpcUrl = rpcUrl;
     this.contractId = contractId;
     this.server = new rpc.Server(rpcUrl);
+  }
+
+  /** Inject a RetryScheduler after construction (avoids circular imports). */
+  setRetryScheduler(scheduler: RetryScheduler): void {
+    this.retryScheduler = scheduler;
   }
 
   /**
@@ -215,6 +222,15 @@ export class EventIndexer {
         await sendPaymentFailureEmail(subscriber, merchant, amount ?? '0', token ?? '').catch(
           (err) => console.error('[email] Failed to send payment failure email:', err),
         );
+
+        // Schedule automated payment retries
+        if (this.retryScheduler) {
+          await this.retryScheduler
+            .scheduleRetries(subscriber, merchant, amount ?? '0', token ?? '')
+            .catch((err) =>
+              console.error('[retry] Failed to schedule retries:', err),
+            );
+        }
       }
 
       if (eventType === 'cancel') {

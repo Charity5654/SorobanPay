@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import prisma from '../lib/prisma';
 import { getSubscriptionStatus } from '../services/subscriptionStateService';
+import { retryQueue } from '../services/retryQueue';
 
 const router = Router();
 
@@ -88,6 +89,78 @@ router.get('/merchant/:merchantAddress/payments', async (req: Request, res: Resp
     res.json(payments);
   } catch (error) {
     res.status(500).json({ error: 'Failed to fetch payments' });
+  }
+});
+
+// ─── Retry routes ─────────────────────────────────────────────────────────────
+
+/**
+ * GET /:subscriber/:merchant/retries
+ *
+ * Returns the list of retry attempts for a (subscriber, merchant) pair.
+ * Each item includes: id, attemptNumber, status, scheduledAt, executedAt, error.
+ *
+ * Response 200:
+ *   {
+ *     subscriber: string,
+ *     merchant: string,
+ *     retries: RetryJob[]
+ *   }
+ */
+router.get('/:subscriber/:merchant/retries', async (req: Request, res: Response) => {
+  try {
+    const subscriber = req.params.subscriber as string;
+    const merchant = req.params.merchant as string;
+
+    if (!subscriber || !merchant) {
+      res.status(400).json({ error: 'subscriber and merchant path params are required' });
+      return;
+    }
+
+    const retries = await retryQueue.getRetries(subscriber, merchant);
+
+    res.json({
+      subscriber,
+      merchant,
+      retries: retries.map((r) => ({
+        id: r.id,
+        attemptNumber: r.attemptNumber,
+        status: r.status,
+        scheduledAt: r.scheduledAt,
+        executedAt: r.executedAt,
+        error: r.error,
+        createdAt: r.createdAt,
+      })),
+    });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to fetch retry attempts' });
+  }
+});
+
+/**
+ * DELETE /:subscriber/:merchant/retries
+ *
+ * Cancels all pending retry attempts for a (subscriber, merchant) pair.
+ * Already-completed or failed attempts are unaffected.
+ *
+ * Response 200:
+ *   { cancelled: number }
+ */
+router.delete('/:subscriber/:merchant/retries', async (req: Request, res: Response) => {
+  try {
+    const subscriber = req.params.subscriber as string;
+    const merchant = req.params.merchant as string;
+
+    if (!subscriber || !merchant) {
+      res.status(400).json({ error: 'subscriber and merchant path params are required' });
+      return;
+    }
+
+    const cancelled = await retryQueue.cancelAll(subscriber, merchant);
+
+    res.json({ cancelled });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to cancel retry attempts' });
   }
 });
 
