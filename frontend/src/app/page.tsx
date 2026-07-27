@@ -18,6 +18,7 @@
  */
 
 import { useState, useEffect, useRef } from 'react';
+import Link from 'next/link';
 import SubscriptionForm from '@/components/SubscriptionForm';
 import OnboardingGuide from '@/components/OnboardingGuide';
 import ShortcutsHelpModal from '@/components/ShortcutsHelpModal';
@@ -198,11 +199,11 @@ export default function Home() {
       {/* Accessible live region for screen-reader announcements */}
       <LiveRegion />
 
-      {/* Wallet section */}
-      <div className="w-full max-w-lg mb-6">
-
       {/* Fixed ? trigger button */}
       <ShortcutsTriggerButton onClick={openHelp} />
+
+      {/* Shortcuts help modal */}
+      <ShortcutsHelpModal isOpen={isHelpOpen} onClose={closeHelp} />
 
       <main className="min-h-screen flex flex-col items-center px-4 py-12">
         {/* Onboarding guide */}
@@ -224,7 +225,7 @@ export default function Home() {
           </p>
         </div>
 
-        {/* Wallet section */}
+        {/* ── Wallet section ──────────────────────────────────────────────── */}
         <div className="w-full max-w-lg mb-6">
           <OnboardingCard freighterInstalled={freighterInstalled} />
 
@@ -349,62 +350,57 @@ export default function Home() {
 
         {/* ── Payment history section ─────────────────────────────────────── */}
         {/* id is referenced by the H shortcut in useKeyboardShortcuts */}
-        {publicKey && (
-          <section
-            id={SECTION_IDS.paymentHistory}
-            aria-label="Payment history"
-            className="w-full max-w-lg mt-6"
-            tabIndex={-1}
-          >
-            <div className="rounded-2xl border border-dashed border-gray-700 bg-gray-900/30 p-6 text-center space-y-3">
-              <p className="text-2xl" aria-hidden="true">📋</p>
-              <p className="text-gray-300 font-semibold text-sm">Payment History</p>
-              <p className="text-gray-500 text-xs leading-relaxed max-w-xs mx-auto">
-                Executed payments and subscription activity will appear here once
-                on-chain event indexing is available. Payments are recorded as{' '}
-                <code className="bg-gray-800 px-1 rounded text-gray-400 text-xs">executed</code>{' '}
-                events on the Soroban ledger.
-              </p>
-              <span className="inline-block mt-1 px-3 py-1 rounded-full bg-gray-800 text-gray-600 text-xs font-medium border border-gray-700">
-                Coming soon
-              </span>
+        <section
+          id={SECTION_IDS.paymentHistory}
+          aria-label="Payment history"
+          className="w-full max-w-lg mt-6"
+          tabIndex={-1}
+        >
+          <div className="rounded-2xl border border-gray-700 bg-gray-900/30 p-6 space-y-3">
+            <div className="flex items-center justify-between gap-4">
+              <div className="flex items-center gap-3">
+                <span className="text-2xl" aria-hidden="true">📋</span>
+                <p className="text-gray-300 font-semibold text-sm">Payment History</p>
+              </div>
+              {publicKey && (
+                <Link
+                  href="/history"
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-gray-700 bg-gray-800 px-3 py-1.5 text-xs font-medium text-gray-300 hover:bg-gray-700 hover:text-white transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400"
+                  aria-label="View full payment history"
+                >
+                  View all <span aria-hidden="true">→</span>
+                </Link>
+              )}
             </div>
-          </section>
-        )}
+            <p className="text-gray-500 text-xs leading-relaxed max-w-xs">
+              View your executed payments and subscription activity on the dedicated{' '}
+              <Link
+                href="/history"
+                className="text-blue-400 hover:text-blue-300 underline underline-offset-2 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400 rounded"
+              >
+                payment history page
+              </Link>
+              . Payments are recorded as{' '}
+              <code className="bg-gray-800 px-1 rounded text-gray-400 text-xs">executed</code>{' '}
+              events on the Soroban ledger and polled from the RPC in real time.
+            </p>
+          </div>
+        </section>
 
-      {/* Subscription form — only rendered when wallet is connected (Req 9.5) */}
-      {publicKey ? (
-        <SubscriptionForm />
-      ) : (
-        <div className="w-full max-w-lg rounded-2xl border border-gray-800 bg-gray-900/40 p-8 text-center space-y-3">
-          <p className="text-2xl" aria-hidden="true">🔒</p>
-          <p className="text-gray-300 font-semibold text-sm">Connect your wallet to get started</p>
-          <p className="text-gray-500 text-xs leading-relaxed">
-            Install{' '}
-            <a
-              href="https://www.freighter.app"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="underline text-blue-400 hover:text-blue-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400 rounded"
-            >
-              Freighter
-            </a>{' '}
-            and click <strong className="text-gray-300">Connect Freighter Wallet</strong> above.
-            Then set <code className="bg-gray-800 px-1 rounded text-yellow-300 text-xs">NEXT_PUBLIC_CONTRACT_ID</code> in{' '}
-            <code className="bg-gray-800 px-1 rounded text-gray-300 text-xs">frontend/.env.local</code> if you haven&apos;t deployed yet.
-            See the <a href="https://github.com/Chrisland58/SorobanPay#quick-start-testnet-demo--5-minutes" target="_blank" rel="noopener noreferrer" className="underline text-blue-400 hover:text-blue-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400 rounded">Quick Start guide</a>.
-          </p>
-        </div>
-      )}
-
-      {/* Subscription history placeholder */}
-      {publicKey && (
-        <div className="w-full max-w-lg mt-6">
-          <div className="rounded-2xl border border-dashed border-gray-700 bg-gray-900/30 p-6 text-center space-y-3">
-            <p className="text-2xl" aria-hidden="true">📋</p>
-            <p className="text-gray-300 font-semibold text-sm">Payment History</p>
+        {/* ── Merchant portal section (coming soon) ───────────────────────── */}
+        {/* id is referenced by the M shortcut in useKeyboardShortcuts */}
+        <section
+          id={SECTION_IDS.merchantPortal}
+          aria-label="Merchant portal"
+          className="w-full max-w-lg mt-6"
+          tabIndex={-1}
+        >
+          <div className="rounded-2xl border border-dashed border-gray-700 bg-gray-900/20 p-6 text-center space-y-3">
+            <p className="text-2xl" aria-hidden="true">🏪</p>
+            <p className="text-gray-300 font-semibold text-sm">Merchant Portal</p>
             <p className="text-gray-500 text-xs leading-relaxed max-w-xs mx-auto">
-              Trigger <code className="bg-gray-800 px-1 rounded text-gray-400 text-xs">execute_payment</code>,
+              Trigger{' '}
+              <code className="bg-gray-800 px-1 rounded text-gray-400 text-xs">execute_payment</code>,
               view active subscriptions, and review revenue analytics.
             </p>
             <span className="inline-block mt-1 px-3 py-1 rounded-full bg-gray-800 text-gray-600 text-xs font-medium border border-gray-700">
