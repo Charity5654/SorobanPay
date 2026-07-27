@@ -83,6 +83,32 @@ pub fn emit_executed(env: &Env, subscriber: &Address, merchant: &Address, token:
     );
 }
 
+/// Emit the `updated` event after a subscription has been updated in-place.
+///
+/// Off-chain indexers receive both old and new values in a single event, enabling
+/// accurate audit trails without requiring a cancel + subscribe correlation.
+///
+/// Topics:  (symbol("updated"), subscriber, merchant)
+/// Data:    (old_amount: i128, new_amount: i128, old_interval: u64, new_interval: u64)
+pub fn emit_updated(
+    env: &Env,
+    subscriber: &Address,
+    merchant: &Address,
+    old_amount: i128,
+    new_amount: i128,
+    old_interval: u64,
+    new_interval: u64,
+) {
+    env.events().publish(
+        (
+            Symbol::new(env, "updated"),
+            subscriber.clone(),
+            merchant.clone(),
+        ),
+        (old_amount, new_amount, old_interval, new_interval),
+    );
+}
+
 /// Emit the `cancel` event after a subscription has been successfully cancelled and removed.
 ///
 /// Topics:  (symbol("cancel"), subscriber, merchant)
