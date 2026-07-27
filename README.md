@@ -16,7 +16,7 @@ SorobanPay
 ├── deploy/deploy.sh          Automated testnet/mainnet deployment
 ├── frontend/                 Next.js 14 TypeScript frontend
 ├── backend/audit-trail/      Backend cancellation audit trail design
-└── Makefile                  Build, test, and clean targets
+└── Makefile                  Build, test, lint, and clean targets
 ```
 
 **Three layers:**
@@ -151,6 +151,41 @@ Open http://localhost:3000 in a browser with the [Freighter extension](https://w
 
 ## Smart Contract
 
+Run `make help` to print all available targets with descriptions:
+
+```
+$ make help
+
+SorobanPay — available make targets
+------------------------------------
+  help                       Print all available targets with descriptions
+  build                      Compile the contract to WASM (uses TARGET_TRIPLE and PROFILE)
+  test                       Run contract unit and property tests on the native host (not WASM)
+  lint                       Check formatting (rustfmt --check) and run Clippy on the contract
+  coverage                   Run contract tests with llvm-cov; enforce COVERAGE_THRESHOLD
+  clean                      Remove all contract build artifacts from contracts/target/
+  test-frontend              Run the Next.js Jest test suite (unit + coverage)
+  test-frontend-coverage     Run the Next.js Jest suite with coverage report
+
+Override variables:
+  TARGET_TRIPLE=<triple>   Rust compilation target  (default: wasm32-unknown-unknown)
+  PROFILE=<debug|release>  Cargo profile            (default: release)
+  COVERAGE_THRESHOLD=<n>   Min line-coverage %      (default: 95)
+```
+
+### Target reference
+
+| Target | Description |
+|--------|-------------|
+| `make help` | Print all targets with descriptions |
+| `make build` | Compile contract to WASM |
+| `make test` | Run contract unit and property tests |
+| `make lint` | Check formatting and run Clippy |
+| `make coverage` | Run tests with llvm-cov; enforce coverage threshold |
+| `make clean` | Remove build artifacts |
+| `make test-frontend` | Run the Next.js Jest test suite |
+| `make test-frontend-coverage` | Run Jest with coverage report |
+
 ### Build
 
 ```bash
@@ -235,6 +270,31 @@ make clean
 ```
 
 Removes all build artifacts from `contracts/target/`.
+
+### Lint
+
+```bash
+make lint
+```
+
+Runs two checks in sequence:
+
+1. **`rustfmt --check`** — verifies that every source file in `contracts/subscription/` is formatted according to the project's `rustfmt.toml`. Exits non-zero if any file would be reformatted; run `cargo fmt --manifest-path contracts/subscription/Cargo.toml` to fix.
+2. **`cargo clippy -D warnings`** — runs the Clippy linter across all targets. All Clippy warnings are promoted to errors, so CI fails on any new lint finding.
+
+**Prerequisites:**
+
+```bash
+rustup component add rustfmt clippy
+```
+
+Both components are included in the default `rustup` installation; the command above is a no-op if they are already present.
+
+**Fix formatting issues before committing:**
+
+```bash
+cargo fmt --manifest-path contracts/subscription/Cargo.toml
+```
 
 ---
 
@@ -958,7 +1018,7 @@ npm run dev
 1. Create a feature branch: `git checkout -b fix/issue-number` or `git checkout -b feature/description`
 2. Write tests for new functionality
 3. Ensure all tests pass: `make test` (contract) and `npm run type-check` (frontend)
-4. Run linters: `next lint` (frontend)
+4. Run linters: `make lint` (contract) and `next lint` (frontend)
 5. Commit with clear, descriptive messages
 6. Push your branch and open a pull request
 
