@@ -58,8 +58,8 @@ import {
   NETWORK_NAME,
   RPC_URL,
 } from "@/constants/network";
-
-// ─── Types ────────────────────────────────────────────────────────────────────
+import { mapError } from "@/lib/errors";
+import { useToast } from "@/components/Toast";// ─── Types ────────────────────────────────────────────────────────────────────
 
 interface SuccessData {
   txHash: string;
@@ -830,6 +830,7 @@ export interface SubscriptionFormProps {
 
 export default function SubscriptionForm({ initialValues }: SubscriptionFormProps = {}) {
   const { publicKey, isCheckingFreighter, freighterInstalled } = useWallet();
+  const { showToast } = useToast();
 
   // All hooks must be declared before any early return (rules-of-hooks)
   const [merchantAddress, setMerchantAddress] = useState(initialValues?.merchantAddress ?? '');
@@ -924,7 +925,15 @@ export default function SubscriptionForm({ initialValues }: SubscriptionFormProp
         issuedAt: new Date().toISOString(),
       });
     } catch (err) {
+      const mapped = mapError(err);
       setTxError(classifyError(err));
+      // Also show a toast notification (UX-113)
+      showToast({
+        variant: 'error',
+        message: mapped.message,
+        action: mapped.action,
+        docsUrl: mapped.docsUrl,
+      });
     } finally {
       setIsSubmitting(false);
     }
