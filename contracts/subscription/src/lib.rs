@@ -165,14 +165,30 @@ impl SubscriptionProtocol {
     /// - `token`:      SEP-41 token contract address.
     /// - `amount`:     Payment amount per interval. Must be > 0 and <= 10^18.
     /// - `interval`:   Seconds between payments. Must be in [86400, 31536000].
+    /// - `strict`:     When `true`, rejects the subscription if the subscriber's
+    ///                 current SEP-41 allowance for this contract is less than
+    ///                 `amount`.  When `false`, a `low_allowance` warning event
+    ///                 is emitted instead, and the subscription is still stored.
+    ///
+    /// # Allowance Validation
+    /// After all parameter checks pass, the contract calls
+    /// `token.allowance(subscriber, contract_address)`.
+    /// - `allowance >= amount` → no action (subscription proceeds normally).
+    /// - `allowance < amount && strict == false` → emits `low_allowance` warning;
+    ///   subscription is stored and the subscriber is responsible for setting a
+    ///   sufficient allowance before the first payment is due.
+    /// - `allowance < amount && strict == true` → returns
+    ///   `ContractError::InsufficientAllowance` and the subscription is **not**
+    ///   stored, preventing guaranteed payment failures.
     ///
     /// # Errors
-    /// - `ContractError::SelfSubscription`     — `subscriber == merchant`.
-    /// - `ContractError::AmountMustBePositive` — `amount <= 0`.
-    /// - `ContractError::AmountTooLarge`       — `amount > 10^18`.
-    /// - `ContractError::IntervalTooShort`     — `interval < 86400`.
-    /// - `ContractError::IntervalTooLong`      — `interval > 31536000`.
-    /// - `ContractError::InvalidTimestamp`     — ledger timestamp is zero or overflows.
+    /// - `ContractError::SelfSubscription`       — `subscriber == merchant`.
+    /// - `ContractError::AmountMustBePositive`   — `amount <= 0`.
+    /// - `ContractError::AmountTooLarge`         — `amount > 10^18`.
+    /// - `ContractError::IntervalTooShort`       — `interval < 86400`.
+    /// - `ContractError::IntervalTooLong`        — `interval > 31536000`.
+    /// - `ContractError::InvalidTimestamp`       — ledger timestamp is zero or overflows.
+    /// - `ContractError::InsufficientAllowance`  — `strict == true` and `allowance < amount`.
     pub fn subscribe(
         env: Env,
         subscriber: Address,
@@ -180,18 +196,25 @@ impl SubscriptionProtocol {
         token: Address,
         amount: i128,
         interval: u64,
+        strict: bool,
     ) -> Result<(), ContractError> {
+        // 1. Auth.
         subscriber.require_auth();
 
+        // 2. Self-subscription guard.
         if subscriber == merchant {
             return Err(ContractError::SelfSubscription);
         }
+
+        // 3. Amount bounds.
         if amount <= 0 {
             return Err(ContractError::AmountMustBePositive);
         }
         if amount > MAX_AMOUNT {
             return Err(ContractError::AmountTooLarge);
         }
+
+        // 4. Interval bounds.
         if interval < 86_400 {
             return Err(ContractError::IntervalTooShort);
         }
@@ -199,6 +222,33 @@ impl SubscriptionProtocol {
             return Err(ContractError::IntervalTooLong);
         }
 
+        // 5. Allowance validation.
+        //    Query the subscriber's current allowance for this contract so we can
+        //    detect "no allowance set" situations early, before the first payment.
+        let contract_address = env.current_contract_address();
+        let token_client = token::Client::new(&env, &token);
+        let allowance = token_client.allowance(&subscriber, &contract_address);
+
+        if allowance < amount {
+            if strict {
+                // Strict mode: reject the subscription to prevent wasted storage rent
+                // on non-viable records that will fail on the first execute_payment.
+                return Err(ContractError::InsufficientAllowance);
+            } else {
+                // Permissive mode: warn off-chain consumers so they can prompt the
+                // subscriber to approve a sufficient allowance before payment is due.
+                events::emit_low_allowance(
+                    &env,
+                    &subscriber,
+                    &merchant,
+                    &token,
+                    allowance,
+                    amount,
+                );
+            }
+        }
+
+        // 6. Build and persist subscription record.
         let ts = ledger_timestamp(&env)?;
         let next_payment = checked_next_payment(ts, interval)?;
         let data = SubscriptionData {
@@ -215,6 +265,7 @@ impl SubscriptionProtocol {
             .persistent()
             .extend_ttl(&key, MIN_TTL_LEDGERS, MAX_TTL_LEDGERS);
 
+        // 7. Emit subscription event.
         events::emit_subscribe(&env, &subscriber, &merchant, &token, amount);
 
         Ok(())
