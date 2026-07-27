@@ -560,7 +560,10 @@ impl SubscriptionProtocol {
         //   This preserves the schedule but may cause "double-billing" if a late
         //   payment is followed immediately by another due payment.
         //
-        data.next_payment = now + data.interval;
+        // Use checked_add to guard against overflow when now is near u64::MAX.
+        // An overflow here would wrap next_payment to a past timestamp and allow
+        // immediate re-collection — InvalidTimestamp is the correct sentinel error.
+        data.next_payment = checked_next_payment(now, data.interval)?;
 
         // 6. Persist updated subscription.
         env.storage().persistent().set(&key, &data);
@@ -681,7 +684,13 @@ impl SubscriptionProtocol {
             );
 
             // 5e. Transfer succeeded — advance next_payment and record key for TTL extension.
-            data.next_payment = now + data.interval;
+            //     Use checked_add to guard against overflow when `now` is near u64::MAX.
+            //     In a batch context we cannot propagate an error for one entry without
+            //     aborting the whole batch, so we skip the entry instead of corrupting state.
+            let Some(next_payment) = now.checked_add(data.interval) else {
+                continue;
+            };
+            data.next_payment = next_payment;
             env.storage().persistent().set(&key, &data);
             keys_to_extend.push_back(key);
 
