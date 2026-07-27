@@ -54,22 +54,38 @@ model WebhookEndpoint {
   merchant  String
   url       String
   active    Boolean  @default(true)
+  secret    String?  // HMAC-SHA256 signing secret; null = unsigned
   createdAt DateTime @default(now())
+
+  deliveries WebhookDelivery[]
 
   @@unique([merchant, url])
 }
 
 model WebhookDelivery {
-  id         Int      @id @default(autoincrement())
-  url        String
-  merchant   String
-  event      String
-  payload    String
-  statusCode Int
-  attempt    Int
-  success    Boolean
-  error      String?
-  createdAt  DateTime @default(now())
+  id          Int      @id @default(autoincrement())
+  /// Stable event identifier — sha256(txHash + eventIndex).
+  /// Constant across all retry attempts for the same event.
+  /// Merchants use this as their idempotency key.
+  eventId     String
+  /// UUID v4 unique per delivery attempt (changes on every retry).
+  deliveryId  String   @unique @default(uuid())
+  url         String
+  merchant    String
+  event       String
+  payload     String
+  statusCode  Int
+  attempt     Int
+  success     Boolean
+  error       String?
+  createdAt   DateTime @default(now())
+
+  endpointId  Int?
+  endpoint    WebhookEndpoint? @relation(fields: [endpointId], references: [id])
+
+  @@index([eventId])
+  @@index([merchant, createdAt])
+  @@index([merchant, success, createdAt])
 }
 
 // BE-67: Subscription lifecycle state machine persistence

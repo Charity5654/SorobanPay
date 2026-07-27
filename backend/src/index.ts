@@ -23,11 +23,11 @@ import subscriptionsRouter from './routes/subscriptions';
 import webhooksRouter from './routes/webhooks';
 import notificationsRouter from './routes/notifications';
 import versionRouter from './routes/version';
+import adminRouter from './routes/admin';
 import { buildHealthRouter } from './routes/health';
 import { reconcile } from './services/reconciler';
 import { PrismaSubscriptionDB, fetchChainEventsFromDB } from './services/reconciler';
-import retriesRouter from './routes/retries';
-import { initRetryQueue, closeRetryQueue } from './services/retryQueue';
+import { getPrometheusMetrics } from './services/metricsService';
 
 // ─── Config ─────────────────────────────────────────────────────────────────
 const config = validateConfig();
@@ -55,6 +55,16 @@ app.use('/api/v1/webhooks',      webhooksRouter);
 app.use('/api/v1/summaries',     summariesRouter);
 app.use('/api/v1/reconcile',     reconcileRouter);
 app.use('/api/v1/notifications', notificationsRouter);  // BE-68
+app.use('/api/v1/admin',         adminRouter);          // BE-75: admin dashboard
+
+// ─── Prometheus metrics (unauthenticated — restrict to internal network) ─────
+// Expose at GET /metrics for Prometheus scraping.
+// In production, protect this path at the reverse-proxy level (e.g. allow only
+// the Prometheus server IP).
+app.get('/metrics', (_req, res) => {
+  res.set('Content-Type', 'text/plain; version=0.0.4');
+  res.send(getPrometheusMetrics());
+});
 
 // ─── Backward-compatible aliases — /api/ (no version prefix) ─────────────────
 // These keep existing integrations working and forward to v1 handlers.

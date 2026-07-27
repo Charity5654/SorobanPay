@@ -137,6 +137,7 @@ mod security_tests {
             &s.token,
             &1_000_i128,
             &86_400_u64,
+            &false,
         );
     }
 
@@ -149,6 +150,7 @@ mod security_tests {
         let s = SecEnv::new_with_mock_auth();
         s.client.subscribe(
             &s.subscriber, &s.merchant, &s.token, &1_000_i128, &86_400_u64,
+            &false,
         );
 
         // Now remove mock_all_auths and try to cancel as attacker.
@@ -159,6 +161,7 @@ mod security_tests {
         s2.env.mock_all_auths(); // set up subscription first
         s2.client.subscribe(
             &s2.subscriber, &s2.merchant, &s2.token, &1_000_i128, &86_400_u64,
+            &false,
         );
         // Reset auths so no one is authorized
         // Simulate attacker cancel attempt by providing wrong address auth
@@ -186,6 +189,7 @@ mod security_tests {
         s.env.mock_all_auths();
         s.client.subscribe(
             &s.subscriber, &s.merchant, &s.token, &1_000_i128, &86_400_u64,
+            &false,
         );
         s.advance(86_400 + 1);
 
@@ -220,6 +224,7 @@ mod security_tests {
             &s.token,
             &1_000_i128,
             &86_400_u64,
+            &false,
         );
     }
 
@@ -232,6 +237,7 @@ mod security_tests {
         s.env.mock_all_auths();
         s.client.subscribe(
             &s.subscriber, &s.merchant, &s.token, &1_000_i128, &86_400_u64,
+            &false,
         );
         s.advance(86_400 + 1);
 
@@ -248,6 +254,7 @@ mod security_tests {
         s.env.mock_all_auths();
         s.client.subscribe(
             &s.subscriber, &s.merchant, &s.token, &1_000_i128, &86_400_u64,
+            &false,
         );
 
         // Remove all auth mocks
@@ -272,6 +279,7 @@ mod security_tests {
         s.env.mock_all_auths();
         s.client.subscribe(
             &s.subscriber, &s.merchant, &s.token, &1_000_i128, &86_400_u64,
+            &false,
         );
         s.advance(86_400 + 1);
 
@@ -298,6 +306,7 @@ mod security_tests {
         s.env.mock_all_auths();
         s.client.subscribe(
             &s.subscriber, &s.merchant, &s.token, &1_000_i128, &86_400_u64,
+            &false,
         );
 
         // Only authorize merchant for cancel — should fail because subscriber auth is needed.
@@ -341,6 +350,7 @@ mod security_tests {
         // subscriber.require_auth() fails — merchant cannot authorize on subscriber's behalf.
         s.client.subscribe(
             &s.subscriber, &s.merchant, &s.token, &1_000_i128, &86_400_u64,
+            &false,
         );
     }
 
@@ -361,7 +371,7 @@ mod security_tests {
         let interval = 86_400_u64;
 
         // Create subscription
-        s.client.subscribe(&s.subscriber, &s.merchant, &s.token, &amount, &interval);
+        s.client.subscribe(&s.subscriber, &s.merchant, &s.token, &amount, &interval, &false);
 
         // Advance clock past first due time
         s.advance(interval + 1);
@@ -395,7 +405,7 @@ mod security_tests {
         let amount = 500_000_i128;
         let interval = 86_400_u64;
 
-        s.client.subscribe(&s.subscriber, &s.merchant, &s.token, &amount, &interval);
+        s.client.subscribe(&s.subscriber, &s.merchant, &s.token, &amount, &interval, &false);
         s.advance(interval + 1);
 
         // Cancel subscription
@@ -427,6 +437,7 @@ mod security_tests {
         let s = SecEnv::new_with_mock_auth();
         s.client.subscribe(
             &s.subscriber, &s.merchant, &s.token, &1_000_i128, &86_400_u64,
+            &false,
         );
 
         // First cancel — must succeed
@@ -451,7 +462,7 @@ mod security_tests {
         let amount = 500_000_i128;
         let interval = 86_400_u64;
 
-        s.client.subscribe(&s.subscriber, &s.merchant, &s.token, &amount, &interval);
+        s.client.subscribe(&s.subscriber, &s.merchant, &s.token, &amount, &interval, &false);
 
         // First billing cycle
         s.advance(interval + 1);
@@ -490,6 +501,7 @@ mod security_tests {
             &s.token,
             &1_000_i128,
             &86_400_u64,
+            &false,
         );
         assert!(
             matches!(result, Err(Ok(ContractError::SelfSubscription))),
@@ -526,11 +538,11 @@ mod security_tests {
             &s.token,
             &1_000_i128,
             &86_400_u64,
+            &false,
         );
         // No storage entry should exist for (subscriber, subscriber)
         let exists = s.env.storage().persistent().has(&DataKey::Subscription(
-            s.subscriber.clone(),
-            s.subscriber.clone(),
+            crate::storage::subscription_key(&s.env, &s.subscriber, &s.subscriber),
         ));
         assert!(!exists, "self-subscription must not create any storage entry");
     }
@@ -569,6 +581,7 @@ mod security_tests {
         // Must succeed when and only when subscriber is authorized.
         let result = s.client.try_subscribe(
             &s.subscriber, &s.merchant, &s.token, &1_000_i128, &86_400_u64,
+            &false,
         );
         assert!(
             result.is_ok(),
@@ -588,6 +601,7 @@ mod security_tests {
         s.env.mock_all_auths();
         s.client.subscribe(
             &s.subscriber, &s.merchant, &s.token, &1_000_i128, &86_400_u64,
+            &false,
         );
         s.advance(86_400 + 1);
 
@@ -618,6 +632,7 @@ mod security_tests {
         s.env.mock_all_auths();
         s.client.subscribe(
             &s.subscriber, &s.merchant, &s.token, &1_000_i128, &86_400_u64,
+            &false,
         );
 
         // Authorize only subscriber (correct party) for cancel
@@ -651,6 +666,7 @@ mod security_tests {
         let s = SecEnv::new_with_mock_auth();
         s.client.subscribe(
             &s.subscriber, &s.merchant, &s.token, &500_000_i128, &86_400_u64,
+            &false,
         );
 
         // No clock advance — payment is not yet due.
@@ -674,6 +690,7 @@ mod security_tests {
         let interval = 86_400_u64;
         s.client.subscribe(
             &s.subscriber, &s.merchant, &s.token, &500_000_i128, &interval,
+            &false,
         );
 
         // Advance only half the interval
