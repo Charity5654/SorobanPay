@@ -61,6 +61,10 @@ impl SubscriptionProtocol {
             amount,
             interval,
             next_payment,
+            ver:          1,
+            grace_period: None,
+            paused_until: None,
+            overdue_since: None,
         };
 
         // 5. Persist subscription.
@@ -73,7 +77,7 @@ impl SubscriptionProtocol {
             .extend_ttl(&key, MIN_TTL_LEDGERS, MAX_TTL_LEDGERS);
 
         // 7. Emit event — after all state mutations have succeeded.
-        events::emit_subscribe(&env, &subscriber, &merchant, &token, amount);
+        events::emit_subscribe(&env, &subscriber, &merchant, &data.token, amount);
 
         Ok(())
     }
