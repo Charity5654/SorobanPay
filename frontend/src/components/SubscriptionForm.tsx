@@ -35,6 +35,7 @@
 import { useState, useEffect, useCallback, type FormEvent } from "react";
 import { useWallet } from "@/hooks/useWallet";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
+import { downloadReceipt, type ReceiptData } from "@/components/SubscriptionReceipt";
 import { ShareQRCode } from "@/components/ShareQRCode";
 import {
   getPersistedFormData,
@@ -63,9 +64,11 @@ import {
 interface SuccessData {
   txHash: string;
   merchant: string;
+  subscriber: string;
   token: string;
   amount: string;
   interval: string;
+  issuedAt: string;
 }
 
 // ─── Shared input className (larger py for ≥48px touch target on mobile) ─────
@@ -347,6 +350,32 @@ function SuccessCard({
   onReset: () => void;
 }) {
   const days = Math.round(Number(data.interval) / 86400);
+  const [isDownloading, setIsDownloading] = useState(false);
+  const [downloadError, setDownloadError] = useState<string | null>(null);
+
+  const handleDownloadReceipt = useCallback(async () => {
+    setIsDownloading(true);
+    setDownloadError(null);
+    try {
+      const receiptData: ReceiptData = {
+        txHash: data.txHash,
+        merchant: data.merchant,
+        subscriber: data.subscriber,
+        token: data.token,
+        amount: data.amount,
+        interval: data.interval,
+        issuedAt: data.issuedAt,
+      };
+      await downloadReceipt(receiptData);
+    } catch (err) {
+      setDownloadError(
+        err instanceof Error ? err.message : "Failed to generate receipt PDF.",
+      );
+    } finally {
+      setIsDownloading(false);
+    }
+  }, [data]);
+
   return (
     <div
       role="alert"
@@ -409,14 +438,83 @@ function SuccessCard({
         </ul>
       </div>
 
-      <button
-        onClick={onReset}
-        className="w-full rounded-lg border-2 border-green-600/70 text-green-300 hover:bg-green-900/40 active:bg-green-900/60
-                   py-3 text-sm font-semibold transition-all duration-150 min-h-[48px] hover:shadow-lg
-                   focus:outline-none focus-visible:ring-2 focus-visible:ring-green-400 focus-visible:ring-offset-2 focus-visible:ring-offset-gray-900"
-      >
-        Create Another Subscription
-      </button>
+      {/* Download receipt error */}
+      {downloadError && (
+        <div role="alert" className="rounded-lg bg-red-900/40 border border-red-600/50 px-3 py-2 text-xs text-red-300">
+          Receipt generation failed: {downloadError}
+        </div>
+      )}
+
+      {/* Action buttons */}
+      <div className="flex flex-col sm:flex-row gap-3">
+        {/* Download Receipt button — Issue #379 */}
+        <button
+          type="button"
+          onClick={handleDownloadReceipt}
+          disabled={isDownloading}
+          aria-label="Download subscription receipt as PDF"
+          className="flex-1 flex items-center justify-center gap-2 rounded-lg
+                     bg-green-700 hover:bg-green-600 active:bg-green-800
+                     disabled:opacity-50 disabled:cursor-not-allowed
+                     py-3 text-sm font-semibold text-white transition-all duration-150
+                     min-h-[48px] hover:shadow-lg
+                     focus:outline-none focus-visible:ring-2 focus-visible:ring-green-400
+                     focus-visible:ring-offset-2 focus-visible:ring-offset-gray-900"
+        >
+          {isDownloading ? (
+            <>
+              <svg
+                className="animate-spin h-4 w-4 text-white"
+                xmlns="http://www.w3.org/2000/svg"
+                fill="none"
+                viewBox="0 0 24 24"
+                aria-hidden="true"
+              >
+                <circle
+                  className="opacity-25"
+                  cx="12"
+                  cy="12"
+                  r="10"
+                  stroke="currentColor"
+                  strokeWidth="4"
+                />
+                <path
+                  className="opacity-75"
+                  fill="currentColor"
+                  d="M4 12a8 8 0 018-8v8H4z"
+                />
+              </svg>
+              Generating PDF…
+            </>
+          ) : (
+            <>
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                className="h-4 w-4"
+                viewBox="0 0 20 20"
+                fill="currentColor"
+                aria-hidden="true"
+              >
+                <path
+                  fillRule="evenodd"
+                  d="M3 17a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm3.293-7.707a1 1 0 011.414 0L9 10.586V3a1 1 0 112 0v7.586l1.293-1.293a1 1 0 111.414 1.414l-3 3a1 1 0 01-1.414 0l-3-3a1 1 0 010-1.414z"
+                  clipRule="evenodd"
+                />
+              </svg>
+              Download Receipt
+            </>
+          )}
+        </button>
+
+        <button
+          onClick={onReset}
+          className="flex-1 rounded-lg border-2 border-green-600/70 text-green-300 hover:bg-green-900/40 active:bg-green-900/60
+                     py-3 text-sm font-semibold transition-all duration-150 min-h-[48px] hover:shadow-lg
+                     focus:outline-none focus-visible:ring-2 focus-visible:ring-green-400 focus-visible:ring-offset-2 focus-visible:ring-offset-gray-900"
+        >
+          Create Another Subscription
+        </button>
+      </div>
     </div>
   );
 }
@@ -819,9 +917,11 @@ export default function SubscriptionForm({ initialValues }: SubscriptionFormProp
       setSuccessData({
         txHash: result.txHash,
         merchant: merchantAddress.trim(),
+        subscriber: publicKey,
         token: tokenAddress.trim(),
         amount,
         interval,
+        issuedAt: new Date().toISOString(),
       });
     } catch (err) {
       setTxError(classifyError(err));
