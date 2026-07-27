@@ -7,13 +7,89 @@ mod storage;
 use soroban_sdk::{contract, contractimpl, token, Address, Env};
 
 use crate::error::ContractError;
-use crate::storage::{DataKey, SubscriptionData, MAX_TTL_LEDGERS, MIN_TTL_LEDGERS};
+use crate::storage::{
+    AdminConfig, DataKey, SubscriptionData,
+    get_admin, set_admin,
+    get_admin_config, set_admin_config as storage_set_admin_config,
+    is_merchant_approved, add_merchant_to_allowlist, remove_merchant_from_allowlist,
+    MAX_TTL_LEDGERS, MIN_TTL_LEDGERS,
+};
 
 #[contract]
 pub struct SubscriptionProtocol;
 
 #[contractimpl]
 impl SubscriptionProtocol {
+    /// Initialise the contract by setting the admin address.
+    ///
+    /// Can only be called once. Subsequent calls return `ContractError::Unauthorized`.
+    pub fn init(env: Env, admin: Address) -> Result<(), ContractError> {
+        if get_admin(&env).is_some() {
+            return Err(ContractError::Unauthorized);
+        }
+        set_admin(&env, &admin);
+        Ok(())
+    }
+
+    /// Update the global admin configuration.
+    ///
+    /// # Authorization
+    /// Requires auth from the stored admin address.
+    pub fn set_admin_config(
+        env: Env,
+        admin: Address,
+        config: AdminConfig,
+    ) -> Result<(), ContractError> {
+        admin.require_auth();
+        let stored = get_admin(&env).ok_or(ContractError::Unauthorized)?;
+        if admin != stored {
+            return Err(ContractError::Unauthorized);
+        }
+        storage_set_admin_config(&env, config);
+        Ok(())
+    }
+
+    /// Add a merchant to the allowlist.
+    ///
+    /// # Authorization
+    /// Requires auth from the stored admin address.
+    pub fn add_merchant(
+        env: Env,
+        admin: Address,
+        merchant: Address,
+    ) -> Result<(), ContractError> {
+        admin.require_auth();
+        let stored = get_admin(&env).ok_or(ContractError::Unauthorized)?;
+        if admin != stored {
+            return Err(ContractError::Unauthorized);
+        }
+        add_merchant_to_allowlist(&env, &merchant);
+        Ok(())
+    }
+
+    /// Remove a merchant from the allowlist.
+    ///
+    /// # Authorization
+    /// Requires auth from the stored admin address.
+    pub fn remove_merchant(
+        env: Env,
+        admin: Address,
+        merchant: Address,
+    ) -> Result<(), ContractError> {
+        admin.require_auth();
+        let stored = get_admin(&env).ok_or(ContractError::Unauthorized)?;
+        if admin != stored {
+            return Err(ContractError::Unauthorized);
+        }
+        remove_merchant_from_allowlist(&env, &merchant);
+        Ok(())
+    }
+
+    /// Query whether a merchant is on the allowlist.
+    pub fn is_merchant_approved(env: Env, merchant: Address) -> bool {
+        is_merchant_approved(&env, &merchant)
+    }
+
     /// Create or update a recurring payment subscription.
     ///
     /// # Authorization
@@ -27,9 +103,10 @@ impl SubscriptionProtocol {
     /// - `interval`:   Seconds between payments. Must be in [86400, 31536000].
     ///
     /// # Errors
-    /// - `ContractError::AmountMustBePositive` — if `amount <= 0`.
-    /// - `ContractError::IntervalTooShort`     — if `interval < 86400`.
-    /// - `ContractError::IntervalTooLong`      — if `interval > 31536000`.
+    /// - `ContractError::AmountMustBePositive`  — if `amount <= 0`.
+    /// - `ContractError::IntervalTooShort`      — if `interval < 86400`.
+    /// - `ContractError::IntervalTooLong`       — if `interval > 31536000`.
+    /// - `ContractError::MerchantNotApproved`   — if allowlist is enabled and merchant is not listed.
     pub fn subscribe(
         env: Env,
         subscriber: Address,
@@ -54,7 +131,13 @@ impl SubscriptionProtocol {
             return Err(ContractError::IntervalTooLong);
         }
 
-        // 4. Build subscription record.
+        // 4. Allowlist check — only when require_merchant_approval is enabled.
+        let config = get_admin_config(&env);
+        if config.require_merchant_approval && !is_merchant_approved(&env, &merchant) {
+            return Err(ContractError::MerchantNotApproved);
+        }
+
+        // 5. Build subscription record.
         let next_payment = env.ledger().timestamp() + interval;
         let data = SubscriptionData {
             token,
@@ -63,17 +146,17 @@ impl SubscriptionProtocol {
             next_payment,
         };
 
-        // 5. Persist subscription.
+        // 6. Persist subscription.
         let key = DataKey::Subscription(subscriber.clone(), merchant.clone());
         env.storage().persistent().set(&key, &data);
 
-        // 6. Extend TTL to keep entry alive for up to MAX_TTL_LEDGERS.
+        // 7. Extend TTL to keep entry alive for up to MAX_TTL_LEDGERS.
         env.storage()
             .persistent()
             .extend_ttl(&key, MIN_TTL_LEDGERS, MAX_TTL_LEDGERS);
 
-        // 7. Emit event — after all state mutations have succeeded.
-        events::emit_subscribe(&env, &subscriber, &merchant, &token, amount);
+        // 8. Emit event — after all state mutations have succeeded.
+        events::emit_subscribe(&env, &subscriber, &merchant, &data.token, amount);
 
         Ok(())
     }
@@ -86,16 +169,7 @@ impl SubscriptionProtocol {
     /// # Errors
     /// - `ContractError::NoActiveSubscription` — if no subscription exists for the pair.
     /// - `ContractError::PaymentNotDue`        — if the payment interval has not elapsed.
-    /// - `ContractError::TransferFailed`       — if the token transfer fails (insufficient balance or allowance).
-    ///
-    /// # Events
-    /// Emits one of the following events (mutually exclusive):
-    /// - `payment_transfer_success` — if the token transfer completes successfully. State is updated.
-    /// - `payment_transfer_failure` — if the token transfer fails. Subscription state remains unchanged
-    ///                                 and eligible for retry.
-    ///
-    /// This dual-event pattern provides richer telemetry for off-chain services to distinguish
-    /// successful collection attempts from failures, enabling improved backend reconciliation.
+    /// - `ContractError::TransferFailed`       — if the token transfer fails (insufficient balance).
     pub fn execute_payment(
         env: Env,
         subscriber: Address,
@@ -118,40 +192,29 @@ impl SubscriptionProtocol {
             return Err(ContractError::PaymentNotDue);
         }
 
-        // 4. Attempt token transfer (subscriber → merchant).
-        //    Try to invoke the transfer. If it fails, emit a failure event and return an error.
-        //    This graceful handling allows off-chain services to detect and reconcile failed payments.
+        // 4. Balance guard before transfer attempt.
         let token_client = token::Client::new(&env, &data.token);
-        
-        // Check if subscriber has sufficient balance and allowance before transfer attempt
         let subscriber_balance = token_client.balance(&subscriber);
         if subscriber_balance < data.amount {
-            // Insufficient balance — emit failure event and return error
             events::emit_payment_transfer_failure(&env, &subscriber, &merchant, data.amount);
             return Err(ContractError::TransferFailed);
         }
 
-        // Execute the transfer. Given Soroban's all-or-nothing semantics, if this succeeds,
-        // we proceed with state updates. If it panics (e.g., allowance revoked mid-call),
-        // the transaction reverts entirely.
-        token_client.transfer(
-            &subscriber,
-            &merchant,
-            &data.amount,
-        );
+        // 5. Execute transfer (subscriber → merchant).
+        token_client.transfer(&subscriber, &merchant, &data.amount);
 
-        // 5. Transfer succeeded — advance next_payment using the `now` captured at invocation start.
+        // 6. Advance next_payment.
         data.next_payment = now + data.interval;
 
-        // 6. Persist updated subscription.
+        // 7. Persist updated subscription.
         env.storage().persistent().set(&key, &data);
 
-        // 7. Extend TTL.
+        // 8. Extend TTL.
         env.storage()
             .persistent()
             .extend_ttl(&key, MIN_TTL_LEDGERS, MAX_TTL_LEDGERS);
 
-        // 8. Emit event — after all mutations and transfer have succeeded.
+        // 9. Emit success event.
         events::emit_executed(&env, &subscriber, &merchant, &data.token, data.amount);
 
         Ok(())
@@ -164,11 +227,6 @@ impl SubscriptionProtocol {
     ///
     /// # Errors
     /// - `ContractError::NoActiveSubscription` — if no subscription exists for the pair.
-    ///
-    /// # Notes
-    /// Emits a `cancel` event after successful removal to signal off-chain services
-    /// that the subscription has ended. This provides a reliable and explicit signal
-    /// for event indexing, rather than relying on the absence of future payments.
     pub fn cancel(
         env: Env,
         subscriber: Address,
@@ -186,7 +244,7 @@ impl SubscriptionProtocol {
         // 3. Remove subscription from persistent storage.
         env.storage().persistent().remove(&key);
 
-        // 4. Emit event — after successful removal to signal off-chain services.
+        // 4. Emit event.
         events::emit_cancel(&env, &subscriber, &merchant);
 
         Ok(())

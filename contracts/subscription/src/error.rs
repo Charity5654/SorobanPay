@@ -20,4 +20,6 @@ pub enum ContractError {
     Unauthorized         = 6,
     /// `execute_payment` token transfer failed (insufficient balance or allowance)
     TransferFailed       = 7,
+    /// `subscribe` called for a merchant not on the allowlist when approval is required
+    MerchantNotApproved  = 15,
 }
