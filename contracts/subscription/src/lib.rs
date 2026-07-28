@@ -8,7 +8,7 @@ use soroban_sdk::{contract, contractimpl, symbol_short, token, Address, BytesN, 
 
 use crate::error::ContractError;
 use crate::storage::{
-    subscription_key, DataKey, SubscriptionData, CONTRACT_VERSION, CURRENT_SCHEMA_VERSION,
+    subscription_key, AdminConfig, DataKey, SubscriptionData, CONTRACT_VERSION, CURRENT_SCHEMA_VERSION,
     MAX_AMOUNT, MAX_TTL_LEDGERS, MIN_TTL_LEDGERS,
 };
 
@@ -86,6 +86,23 @@ impl SubscriptionProtocol {
         env.storage()
             .instance()
             .set(&DataKey::SchemaVersion, &CURRENT_SCHEMA_VERSION);
+        env.storage().instance().set(&DataKey::AdminConfig, &AdminConfig { admin, max_amount: MAX_AMOUNT });
+    }
+
+    pub fn init(env: Env, admin: Address) { Self::initialize(env, admin) }
+
+    pub fn get_config(env: Env) -> Result<AdminConfig, ContractError> {
+        env.storage().instance().get(&DataKey::AdminConfig).ok_or(ContractError::NotInitialized)
+    }
+
+    pub fn set_max_amount(env: Env, admin: Address, new_max: i128) -> Result<(), ContractError> {
+        admin.require_auth();
+        if new_max <= 0 || new_max > MAX_AMOUNT { return Err(ContractError::AmountTooLarge); }
+        let mut config: AdminConfig = Self::get_config(env.clone())?;
+        if config.admin != admin { return Err(ContractError::NotAdmin); }
+        config.max_amount = new_max;
+        env.storage().instance().set(&DataKey::AdminConfig, &config);
+        Ok(())
     }
 
     /// Return the contract semantic version string (e.g. `"1.0.0"`).
@@ -204,6 +221,7 @@ impl SubscriptionProtocol {
         amount: i128,
         interval: u64,
         strict: bool,
+        grace_period: Option<u64>,
     ) -> Result<(), ContractError> {
         subscriber.require_auth();
 
@@ -215,6 +233,9 @@ impl SubscriptionProtocol {
         }
         if amount > MAX_AMOUNT {
             return Err(ContractError::AmountTooLarge);
+        }
+        if let Some(config) = env.storage().instance().get::<_, AdminConfig>(&DataKey::AdminConfig) {
+            if amount > config.max_amount { return Err(ContractError::AmountExceedsLimit); }
         }
         if interval < 86_400 {
             return Err(ContractError::IntervalTooShort);
@@ -244,6 +265,9 @@ impl SubscriptionProtocol {
             interval,
             next_payment,
             is_paused: false,
+            grace_period: grace_period.unwrap_or(0),
+            overdue_since: None,
+            payment_nonce: 0,
         };
 
         // Compact key (#347): sha256(subscriber_xdr ++ merchant_xdr).
@@ -289,20 +313,38 @@ impl SubscriptionProtocol {
         let token_client = token::Client::new(&env, &data.token);
         let subscriber_balance = token_client.balance(&subscriber);
         if subscriber_balance < data.amount {
-            events::emit_payment_transfer_failure(&env, &subscriber, &merchant, data.amount);
+            let overdue_since = data.overdue_since.unwrap_or(now);
+            data.overdue_since = Some(overdue_since);
+            env.storage().persistent().set(&key, &data);
+            events::emit_payment_transfer_failure(&env, &subscriber, &merchant, data.amount, overdue_since);
             return Err(ContractError::TransferFailed);
         }
 
         token_client.transfer(&subscriber, &merchant, &data.amount);
 
         data.next_payment = now + data.interval;
+        data.overdue_since = None;
+        data.payment_nonce = data.payment_nonce.checked_add(1).ok_or(ContractError::InvalidTimestamp)?;
         env.storage().persistent().set(&key, &data);
         env.storage()
             .persistent()
             .extend_ttl(&key, MIN_TTL_LEDGERS, MAX_TTL_LEDGERS);
 
-        events::emit_executed(&env, &subscriber, &merchant, &data.token, data.amount);
+        events::emit_executed(&env, &subscriber, &merchant, &data.token, data.amount, data.payment_nonce);
 
+        Ok(())
+    }
+
+    pub fn expire_subscription(env: Env, subscriber: Address, merchant: Address) -> Result<(), ContractError> {
+        let hash = subscription_key(&env, &subscriber, &merchant);
+        let key = DataKey::Subscription(hash.clone());
+        let data: SubscriptionData = env.storage().persistent().get(&key).ok_or(ContractError::NoActiveSubscription)?;
+        let overdue_since = data.overdue_since.ok_or(ContractError::GracePeriodActive)?;
+        let now = ledger_timestamp(&env)?;
+        if now <= overdue_since.checked_add(data.grace_period).ok_or(ContractError::InvalidTimestamp)? { return Err(ContractError::GracePeriodActive); }
+        env.storage().persistent().remove(&key);
+        index_remove(&env, &merchant, &hash);
+        events::emit_expired(&env, &subscriber, &merchant);
         Ok(())
     }
 
@@ -352,7 +394,10 @@ impl SubscriptionProtocol {
             let token_client = token::Client::new(&env, &data.token);
             let balance = token_client.balance(&subscriber);
             if balance < data.amount {
-                events::emit_payment_transfer_failure(&env, &subscriber, &merchant, data.amount);
+                let overdue_since = data.overdue_since.unwrap_or(now);
+                data.overdue_since = Some(overdue_since);
+                env.storage().persistent().set(&key, &data);
+                events::emit_payment_transfer_failure(&env, &subscriber, &merchant, data.amount, overdue_since);
                 results.push_back((subscriber.clone(), false));
                 continue;
             }
@@ -360,11 +405,13 @@ impl SubscriptionProtocol {
             token_client.transfer(&subscriber, &merchant, &data.amount);
 
             data.next_payment = now + data.interval;
+            data.overdue_since = None;
+            data.payment_nonce = data.payment_nonce.checked_add(1).ok_or(ContractError::InvalidTimestamp)?;
             env.storage().persistent().set(&key, &data);
             keys_to_extend.push_back(key);
 
             events::emit_payment_transfer_success(&env, &subscriber, &merchant, data.amount);
-            events::emit_executed(&env, &subscriber, &merchant, &data.token, data.amount);
+            events::emit_executed(&env, &subscriber, &merchant, &data.token, data.amount, data.payment_nonce);
 
             results.push_back((subscriber.clone(), true));
         }
