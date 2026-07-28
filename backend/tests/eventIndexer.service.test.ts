@@ -1,6 +1,18 @@
 import { MockRpcServer } from './helpers/mockRpcServer';
 import { InMemoryPrismaClient } from './helpers/inMemoryDb';
 
+// ─── Mock logger (prevents pino-pretty transitive load in test env) ───────────
+jest.mock('../src/lib/logger', () => ({
+  __esModule: true,
+  default: { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() },
+  logger:  { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() },
+}));
+
+// ─── Mock retryQueue (prevents Redis/BullMQ from loading in unit tests) ──────
+jest.mock('../src/services/retryQueue', () => ({
+  enqueueRetries: jest.fn().mockResolvedValue([]),
+}));
+
 jest.mock('@stellar/stellar-sdk', () => {
   class MockScVal {
     constructor(private value: unknown) {}

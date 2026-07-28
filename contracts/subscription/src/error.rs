@@ -27,6 +27,8 @@ pub enum ContractError {
     SelfSubscription      = 10,
     /// `subscribe` called with `token` equal to the contract's own address
     InvalidTokenAddress   = 11,
+    AmountExceedsLimit    = 18,
+    GracePeriodActive     = 19,
     /// `batch_execute_payment` called with an empty subscribers vector
     EmptyBatch            = 12,
     /// `batch_execute_payment` called with more than BATCH_MAX_SIZE (50) subscribers
