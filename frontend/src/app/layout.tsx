@@ -3,8 +3,10 @@ import type { ReactNode } from 'react';
 import { NextIntlClientProvider } from 'next-intl';
 import { getMessages } from 'next-intl/server';
 import { WalletProvider } from '@/context/WalletContext';
+import { NotificationProvider } from '@/context/NotificationContext';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
 import { LanguageSelector } from '@/components/LanguageSelector';
+import NotificationCenter from '@/components/NotificationCenter';
 import './globals.css';
 
 export const metadata: Metadata = {
@@ -38,11 +40,14 @@ export default async function RootLayout({
         <ErrorBoundary name="RootLayout">
           <NextIntlClientProvider messages={messages}>
             <WalletProvider>
-              {/* Language switcher — fixed to top-right corner */}
-              <div className="fixed top-4 right-4 z-50">
-                <LanguageSelector />
-              </div>
-              {children}
+              <NotificationProvider>
+                {/* Top-right header controls */}
+                <div className="fixed top-4 right-4 z-50 flex items-center gap-3">
+                  <NotificationCenter />
+                  <LanguageSelector />
+                </div>
+                {children}
+              </NotificationProvider>
             </WalletProvider>
           </NextIntlClientProvider>
         </ErrorBoundary>
