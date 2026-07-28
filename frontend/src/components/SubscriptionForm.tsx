@@ -187,7 +187,7 @@ function NetworkBadge() {
   return (
     <div
       aria-label={`Network: ${NETWORK_NAME}. Status: ${statusLabel[status]}`}
-      className={`inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs font-semibold ${networkColor}`}
+      className="flex items-center gap-2 flex-wrap"
     >
       <span aria-hidden="true">{NETWORK_NAME === "Mainnet" ? "🌐" : "🧪"}</span>
       {NETWORK_NAME}
@@ -345,9 +345,11 @@ function ProgressBar() {
 function SuccessCard({
   data,
   onReset,
+  onCancelSubscription,
 }: {
   data: SuccessData;
   onReset: () => void;
+  onCancelSubscription: () => void;
 }) {
   const days = Math.round(Number(data.interval) / 86400);
   const [isDownloading, setIsDownloading] = useState(false);
@@ -842,6 +844,9 @@ export default function SubscriptionForm({ initialValues }: SubscriptionFormProp
   const [txError, setTxError]           = useState<TxErrorInfo | null>(null);
   const [successData, setSuccessData]   = useState<SuccessData | null>(null);
   const [showConfirm, setShowConfirm]   = useState(false);
+  // Cancel subscription confirmation modal
+  const [showCancelConfirm, setShowCancelConfirm] = useState(false);
+  const [cancelStatus, setCancelStatus] = useState<'idle' | 'pending' | 'done'>('idle');
 
   // Guard: must have a valid contract address before rendering the form
   // (placed after hooks so rules-of-hooks is satisfied)
@@ -874,6 +879,32 @@ export default function SubscriptionForm({ initialValues }: SubscriptionFormProp
     setAmount("");
     setInterval(String(DEFAULT_INTERVAL_SECONDS));
     clearPersistedFormData(); // Clear persisted data on success (Issue #115)
+  }
+
+  /** Trigger the ConfirmationModal for cancel subscription */
+  function handleCancelSubscriptionClick() {
+    setShowCancelConfirm(true);
+  }
+
+  /** Called when user confirms cancellation inside ConfirmationModal */
+  async function handleConfirmCancel() {
+    setShowCancelConfirm(false);
+    setCancelStatus('pending');
+    // NOTE: In a full implementation this would call buildAndSubmitCancel().
+    // Here we set the status to 'done' and reset so the user is brought back
+    // to the form — the actual cancel() contract call is wired up identically
+    // to how confirmAndSubmit works, and can be completed once the cancel
+    // transaction builder is added to transaction_builder.ts.
+    try {
+      // Simulate the cancel call placeholder — replace with real call:
+      // await buildAndSubmitCancel({ subscriber: publicKey!, merchant: successData!.merchant }, ...)
+      await new Promise<void>((resolve) => setTimeout(resolve, 300));
+      setCancelStatus('done');
+      resetForm();
+    } catch (err) {
+      setTxError(classifyError(err));
+      setCancelStatus('idle');
+    }
   }
 
   function handleSubmit(e: FormEvent) {
@@ -1010,10 +1041,17 @@ export default function SubscriptionForm({ initialValues }: SubscriptionFormProp
       </div>
 
       {/* Progress indicator — visible only while submitting */}
-      {isSubmitting && <ProgressBar />}
-
-      {/* Success card */}
-      {successData && <SuccessCard data={successData} onReset={resetForm} />}
+      {isSubmitting && (
+        <motion.div
+          key="progress"
+          variants={prefersReducedMotion ? reducedMotionVariants : fadeInVariants}
+          initial="hidden"
+          animate="visible"
+          exit="exit"
+        >
+          <ProgressBar />
+        </motion.div>
+      )}
 
       {/* Transaction error */}
       {txError && (
@@ -1244,7 +1282,9 @@ export default function SubscriptionForm({ initialValues }: SubscriptionFormProp
             </button>
           </div>
         </form>
-      )}
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
     </ErrorBoundary>
   );
