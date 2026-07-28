@@ -18,6 +18,7 @@
  */
 
 import { useState, useEffect, useRef } from 'react';
+import Link from 'next/link';
 import SubscriptionForm from '@/components/SubscriptionForm';
 import OnboardingGuide from '@/components/OnboardingGuide';
 import ShortcutsHelpModal from '@/components/ShortcutsHelpModal';
@@ -198,9 +199,6 @@ export default function Home() {
       {/* Accessible live region for screen-reader announcements */}
       <LiveRegion />
 
-      {/* Wallet section */}
-      <div className="w-full max-w-lg mb-6">
-
       {/* Fixed ? trigger button */}
       <ShortcutsTriggerButton onClick={openHelp} />
 
@@ -222,6 +220,23 @@ export default function Home() {
             </kbd>{' '}
             for keyboard shortcuts
           </p>
+          {/* Dashboard navigation link */}
+          <div className="mt-4">
+            <Link
+              href="/dashboard"
+              aria-keyshortcuts="d"
+              className="
+                inline-flex items-center gap-1.5 rounded-lg border border-gray-700
+                bg-gray-900/60 px-4 py-2 text-xs font-semibold text-gray-300
+                hover:border-gray-600 hover:text-white transition-colors
+                focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400
+              "
+              aria-label="Go to subscriber dashboard to view active subscriptions"
+            >
+              <span aria-hidden="true">📊</span>
+              My Subscriptions
+            </Link>
+          </div>
         </div>
 
         {/* Wallet section */}
@@ -372,48 +387,7 @@ export default function Home() {
           </section>
         )}
 
-      {/* Subscription form — only rendered when wallet is connected (Req 9.5) */}
-      {publicKey ? (
-        <SubscriptionForm />
-      ) : (
-        <div className="w-full max-w-lg rounded-2xl border border-gray-800 bg-gray-900/40 p-8 text-center space-y-3">
-          <p className="text-2xl" aria-hidden="true">🔒</p>
-          <p className="text-gray-300 font-semibold text-sm">Connect your wallet to get started</p>
-          <p className="text-gray-500 text-xs leading-relaxed">
-            Install{' '}
-            <a
-              href="https://www.freighter.app"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="underline text-blue-400 hover:text-blue-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400 rounded"
-            >
-              Freighter
-            </a>{' '}
-            and click <strong className="text-gray-300">Connect Freighter Wallet</strong> above.
-            Then set <code className="bg-gray-800 px-1 rounded text-yellow-300 text-xs">NEXT_PUBLIC_CONTRACT_ID</code> in{' '}
-            <code className="bg-gray-800 px-1 rounded text-gray-300 text-xs">frontend/.env.local</code> if you haven&apos;t deployed yet.
-            See the <a href="https://github.com/Chrisland58/SorobanPay#quick-start-testnet-demo--5-minutes" target="_blank" rel="noopener noreferrer" className="underline text-blue-400 hover:text-blue-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400 rounded">Quick Start guide</a>.
-          </p>
-        </div>
-      )}
-
-      {/* Subscription history placeholder */}
-      {publicKey && (
-        <div className="w-full max-w-lg mt-6">
-          <div className="rounded-2xl border border-dashed border-gray-700 bg-gray-900/30 p-6 text-center space-y-3">
-            <p className="text-2xl" aria-hidden="true">📋</p>
-            <p className="text-gray-300 font-semibold text-sm">Payment History</p>
-            <p className="text-gray-500 text-xs leading-relaxed max-w-xs mx-auto">
-              Trigger <code className="bg-gray-800 px-1 rounded text-gray-400 text-xs">execute_payment</code>,
-              view active subscriptions, and review revenue analytics.
-            </p>
-            <span className="inline-block mt-1 px-3 py-1 rounded-full bg-gray-800 text-gray-600 text-xs font-medium border border-gray-700">
-              Coming soon
-            </span>
-          </div>
-        </section>
-
-        {/* ── Dashboard section (coming soon) ─────────────────────────────── */}
+        {/* ── Dashboard section ───────────────────────────────────────────── */}
         {/* id is referenced by the D shortcut in useKeyboardShortcuts */}
         <section
           id={SECTION_IDS.dashboard}
@@ -421,19 +395,30 @@ export default function Home() {
           className="w-full max-w-lg mt-6 mb-16"
           tabIndex={-1}
         >
-          <div className="rounded-2xl border border-dashed border-gray-700 bg-gray-900/20 p-6 text-center space-y-3">
+          <div className="rounded-2xl border border-gray-700 bg-gray-900/30 p-6 text-center space-y-3">
             <p className="text-2xl" aria-hidden="true">📊</p>
-            <p className="text-gray-300 font-semibold text-sm">Dashboard</p>
+            <p className="text-gray-300 font-semibold text-sm">Subscriber Dashboard</p>
             <p className="text-gray-500 text-xs leading-relaxed max-w-xs mx-auto">
-              Overview of your subscription portfolio, payment timelines, and
-              account health metrics.
+              View all your active subscriptions, see next payment dates, and cancel
+              individual subscriptions.
             </p>
-            <span className="inline-block mt-1 px-3 py-1 rounded-full bg-gray-800 text-gray-600 text-xs font-medium border border-gray-700">
-              Coming soon
-            </span>
+            <Link
+              href="/dashboard"
+              className="
+                inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-4 py-2
+                text-xs font-semibold text-white hover:bg-blue-500 transition-colors
+                focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400
+              "
+              aria-label="Open subscriber dashboard"
+            >
+              Open Dashboard
+            </Link>
           </div>
         </section>
       </main>
+
+      {/* Keyboard shortcuts help modal */}
+      <ShortcutsHelpModal isOpen={isHelpOpen} onClose={closeHelp} />
     </>
   );
 }
