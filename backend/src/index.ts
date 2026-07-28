@@ -15,6 +15,8 @@ import { validateConfig } from './lib/config';
 import { EventIndexer } from './services/eventIndexer';
 import { PayoutSummaryGenerator } from './services/payoutSummaryGenerator';
 import { PaymentScheduler } from './services/paymentScheduler';
+import { createRetryScheduler } from './services/retryScheduler';
+import { retryQueue } from './services/retryQueue';
 import { apiLimiter } from './middleware/rateLimiter';
 import { versionMiddleware } from './middleware/versioning';
 import summariesRouter from './routes/summaries';
@@ -23,9 +25,13 @@ import subscriptionsRouter from './routes/subscriptions';
 import webhooksRouter from './routes/webhooks';
 import notificationsRouter from './routes/notifications';
 import versionRouter from './routes/version';
+import adminRouter from './routes/admin';
+import authRouter from './routes/auth';                        // BE-55: merchant auth
 import { buildHealthRouter } from './routes/health';
+import { requireMerchant } from './middleware/merchantAuth';  // BE-55: JWT guard
 import { reconcile } from './services/reconciler';
 import { PrismaSubscriptionDB, fetchChainEventsFromDB } from './services/reconciler';
+import { getPrometheusMetrics } from './services/metricsService';
 
 // ─── Config ─────────────────────────────────────────────────────────────────
 const config = validateConfig();
@@ -47,11 +53,22 @@ app.use('/', versionRouter);
 app.use('/health', buildHealthRouter(rpcUrl, contractId));
 
 // ─── Versioned routes — /api/v1/ ─────────────────────────────────────────────
-app.use('/api/v1/subscriptions', subscriptionsRouter);
+app.use('/api/v1/auth',          authRouter);                             // BE-55: unauthenticated
+app.use('/api/v1/subscriptions', requireMerchant, subscriptionsRouter);  // BE-55: protected
 app.use('/api/v1/webhooks',      webhooksRouter);
 app.use('/api/v1/summaries',     summariesRouter);
 app.use('/api/v1/reconcile',     reconcileRouter);
 app.use('/api/v1/notifications', notificationsRouter);  // BE-68
+app.use('/api/v1/admin',         adminRouter);          // BE-75: admin dashboard
+
+// ─── Prometheus metrics (unauthenticated — restrict to internal network) ─────
+// Expose at GET /metrics for Prometheus scraping.
+// In production, protect this path at the reverse-proxy level (e.g. allow only
+// the Prometheus server IP).
+app.get('/metrics', (_req, res) => {
+  res.set('Content-Type', 'text/plain; version=0.0.4');
+  res.send(getPrometheusMetrics());
+});
 
 // ─── Backward-compatible aliases — /api/ (no version prefix) ─────────────────
 // These keep existing integrations working and forward to v1 handlers.
@@ -74,6 +91,15 @@ const paymentScheduler = operatorSecret
   ? new PaymentScheduler(rpcUrl, contractId, operatorSecret, networkPassphrase)
   : null;
 
+// ─── Retry infrastructure ─────────────────────────────────────────────────────
+const retryScheduler = createRetryScheduler(rpcUrl, contractId, operatorSecret, networkPassphrase);
+if (retryScheduler) {
+  // Inject into eventIndexer so payment_transfer_failure events trigger retries
+  eventIndexer.setRetryScheduler(retryScheduler);
+} else {
+  console.warn('[retry] OPERATOR_SECRET not set — automated payment retries disabled.');
+}
+
 // ─── Cron jobs ───────────────────────────────────────────────────────────────
 // Fetch events every 5 minutes
 cron.schedule('*/5 * * * *', async () => {
@@ -85,6 +111,11 @@ cron.schedule('*/5 * * * *', async () => {
 cron.schedule('* * * * *', async () => {
   if (!paymentScheduler) return;
   await paymentScheduler.processDuePayments();
+});
+
+// Process due retry jobs every minute
+cron.schedule('* * * * *', async () => {
+  await retryQueue.processDueJobs();
 });
 
 // Generate daily summaries at 1 AM every day
@@ -121,8 +152,20 @@ app.listen(PORT, () => {
   if (!operatorSecret) {
     console.warn('[scheduler] OPERATOR_SECRET not set — payment scheduler disabled.');
   }
+  // Start BullMQ retry worker (requires REDIS_URL)
+  try {
+    startRetryWorker();
+  } catch (err) {
+    console.warn('[retryWorker] Could not start retry worker (Redis unavailable?):', err);
+  }
   // Initial event fetch on startup
   eventIndexer.fetchAndStoreEvents();
+});
+
+// Graceful shutdown
+process.on('SIGTERM', async () => {
+  await shutdownRetryWorker();
+  process.exit(0);
 });
 
 export default app;

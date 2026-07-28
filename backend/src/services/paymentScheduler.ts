@@ -118,7 +118,7 @@ export class PaymentScheduler {
   }
 
   /** Build, simulate, and submit an execute_payment transaction. */
-  private async executePayment(subscriber: string, merchant: string): Promise<string> {
+  async executePayment(subscriber: string, merchant: string): Promise<string> {
     const account = await this.server.getAccount(this.operatorKeypair.publicKey());
     const contract = new Contract(this.contractId);
 
