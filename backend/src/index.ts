@@ -24,7 +24,9 @@ import webhooksRouter from './routes/webhooks';
 import notificationsRouter from './routes/notifications';
 import versionRouter from './routes/version';
 import adminRouter from './routes/admin';
+import authRouter from './routes/auth';                        // BE-55: merchant auth
 import { buildHealthRouter } from './routes/health';
+import { requireMerchant } from './middleware/merchantAuth';  // BE-55: JWT guard
 import { reconcile } from './services/reconciler';
 import { PrismaSubscriptionDB, fetchChainEventsFromDB } from './services/reconciler';
 import { getPrometheusMetrics } from './services/metricsService';
@@ -49,7 +51,8 @@ app.use('/', versionRouter);
 app.use('/health', buildHealthRouter(rpcUrl, contractId));
 
 // ─── Versioned routes — /api/v1/ ─────────────────────────────────────────────
-app.use('/api/v1/subscriptions', subscriptionsRouter);
+app.use('/api/v1/auth',          authRouter);                             // BE-55: unauthenticated
+app.use('/api/v1/subscriptions', requireMerchant, subscriptionsRouter);  // BE-55: protected
 app.use('/api/v1/webhooks',      webhooksRouter);
 app.use('/api/v1/summaries',     summariesRouter);
 app.use('/api/v1/reconcile',     reconcileRouter);
