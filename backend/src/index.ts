@@ -15,6 +15,8 @@ import { validateConfig } from './lib/config';
 import { EventIndexer } from './services/eventIndexer';
 import { PayoutSummaryGenerator } from './services/payoutSummaryGenerator';
 import { PaymentScheduler } from './services/paymentScheduler';
+import { createRetryScheduler } from './services/retryScheduler';
+import { retryQueue } from './services/retryQueue';
 import { apiLimiter } from './middleware/rateLimiter';
 import { versionMiddleware } from './middleware/versioning';
 import summariesRouter from './routes/summaries';
@@ -89,6 +91,15 @@ const paymentScheduler = operatorSecret
   ? new PaymentScheduler(rpcUrl, contractId, operatorSecret, networkPassphrase)
   : null;
 
+// ─── Retry infrastructure ─────────────────────────────────────────────────────
+const retryScheduler = createRetryScheduler(rpcUrl, contractId, operatorSecret, networkPassphrase);
+if (retryScheduler) {
+  // Inject into eventIndexer so payment_transfer_failure events trigger retries
+  eventIndexer.setRetryScheduler(retryScheduler);
+} else {
+  console.warn('[retry] OPERATOR_SECRET not set — automated payment retries disabled.');
+}
+
 // ─── Cron jobs ───────────────────────────────────────────────────────────────
 // Fetch events every 5 minutes
 cron.schedule('*/5 * * * *', async () => {
@@ -100,6 +111,11 @@ cron.schedule('*/5 * * * *', async () => {
 cron.schedule('* * * * *', async () => {
   if (!paymentScheduler) return;
   await paymentScheduler.processDuePayments();
+});
+
+// Process due retry jobs every minute
+cron.schedule('* * * * *', async () => {
+  await retryQueue.processDueJobs();
 });
 
 // Generate daily summaries at 1 AM every day

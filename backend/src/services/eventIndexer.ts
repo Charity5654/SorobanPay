@@ -52,11 +52,17 @@ export class EventIndexer {
   private rpcUrl: string;
   private contractId: string;
   private server: rpc.Server;
+  private retryScheduler: RetryScheduler | null = null;
 
   constructor(rpcUrl: string, contractId: string) {
     this.rpcUrl = rpcUrl;
     this.contractId = contractId;
     this.server = new rpc.Server(rpcUrl);
+  }
+
+  /** Inject a RetryScheduler after construction (avoids circular imports). */
+  setRetryScheduler(scheduler: RetryScheduler): void {
+    this.retryScheduler = scheduler;
   }
 
   /**
