@@ -1199,6 +1199,7 @@ npm run dev
 | [Network Configuration](docs/networks.md) | Testnet vs. mainnet side-by-side, common mistakes, switching guide |
 | [Backend API Cookbook](docs/api-cookbook.md) | 8 recipes: auth, subscriptions, webhooks, CSV export, MRR, TTL health |
 | [Release Process](docs/release-process.md) | Versioning rules, release note template, changelog process, step-by-step checklist |
+| [Freighter Troubleshooting](docs/freighter-troubleshooting.md) | Connection issues, signing failures, rejected transactions, contract errors, diagnostic checklist |
 | [Changelog](CHANGELOG.md) | Version history following Keep a Changelog format |
 
 ---
