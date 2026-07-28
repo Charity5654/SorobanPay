@@ -133,8 +133,20 @@ app.listen(PORT, () => {
   if (!operatorSecret) {
     console.warn('[scheduler] OPERATOR_SECRET not set — payment scheduler disabled.');
   }
+  // Start BullMQ retry worker (requires REDIS_URL)
+  try {
+    startRetryWorker();
+  } catch (err) {
+    console.warn('[retryWorker] Could not start retry worker (Redis unavailable?):', err);
+  }
   // Initial event fetch on startup
   eventIndexer.fetchAndStoreEvents();
+});
+
+// Graceful shutdown
+process.on('SIGTERM', async () => {
+  await shutdownRetryWorker();
+  process.exit(0);
 });
 
 export default app;

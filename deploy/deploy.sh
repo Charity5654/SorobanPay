@@ -4,20 +4,59 @@
 # =============================================================================
 # Usage:
 #   bash deploy/deploy.sh
-#   STELLAR_NETWORK=mainnet bash deploy/deploy.sh
+#   STELLAR_NETWORK=mainnet STELLAR_IDENTITY=my-id bash deploy/deploy.sh
 #
-# Environment variables:
-#   STELLAR_NETWORK   "testnet" (default) or "mainnet"
-#   STELLAR_IDENTITY  Stellar CLI identity alias (default: "alice")
+# ─── Environment variables ───────────────────────────────────────────────────
 #
-# Output:
-#   stdout — deployed contract address (and nothing else)
-#   stderr — all diagnostic messages and error details
-#   exit 0 — deployment succeeded
-#   exit 1 — any failure (build, deploy, invalid env)
+#   STELLAR_NETWORK   (optional) Target Stellar network.
+#                     Allowed values: "testnet" (default) | "mainnet"
+#                     Controls the RPC endpoint and network passphrase that
+#                     the script selects automatically — you do not need to
+#                     set RPC_URL or PASSPHRASE directly.
+#                     Example:
+#                       STELLAR_NETWORK=mainnet bash deploy/deploy.sh
 #
-# Artifacts written (relative to repo root):
-#   deploy/deployments.json — deployment manifest updated with new entry
+#   STELLAR_IDENTITY  (optional) Stellar CLI identity alias used to sign and
+#                     pay fees for the deploy transaction.
+#                     Default: "alice"
+#                     Must already be registered with `stellar keys generate`
+#                     and funded before running this script.
+#                     Example:
+#                       STELLAR_IDENTITY=my-mainnet-id bash deploy/deploy.sh
+#
+# ─── Derived variables (set internally — do not set these yourself) ──────────
+#
+#   RPC_URL           Soroban RPC endpoint, derived from STELLAR_NETWORK:
+#                       testnet → https://soroban-testnet.stellar.org
+#                       mainnet → https://mainnet.stellar.validationcloud.io/v1/<key>
+#
+#   PASSPHRASE        Stellar network passphrase, derived from STELLAR_NETWORK:
+#                       testnet → "Test SDF Network ; September 2015"
+#                       mainnet → "Public Global Stellar Network ; September 2015"
+#
+# ─── Output ──────────────────────────────────────────────────────────────────
+#
+#   stdout — deployed contract address only (nothing else).
+#            Capture with: CONTRACT_ID=$(bash deploy/deploy.sh)
+#   stderr — all diagnostic messages and error details.
+#   exit 0 — deployment succeeded.
+#   exit 1 — any failure (invalid STELLAR_NETWORK, build error, deploy error).
+#
+# ─── Examples ────────────────────────────────────────────────────────────────
+#
+#   # Testnet (default)
+#   bash deploy/deploy.sh
+#
+#   # Testnet — capture contract address
+#   CONTRACT_ID=$(bash deploy/deploy.sh)
+#   echo "Deployed: $CONTRACT_ID"
+#
+#   # Mainnet — explicit identity
+#   STELLAR_NETWORK=mainnet STELLAR_IDENTITY=my-mainnet-id bash deploy/deploy.sh
+#
+#   # Mainnet — capture contract address
+#   CONTRACT_ID=$(STELLAR_NETWORK=mainnet STELLAR_IDENTITY=my-mainnet-id bash deploy/deploy.sh)
+#
 # =============================================================================
 set -euo pipefail
 

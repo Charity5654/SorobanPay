@@ -6,6 +6,8 @@
 
 A production-grade, non-custodial recurring payments protocol built on Stellar's Soroban smart contract platform. Enables SaaS billing, creator subscriptions, and recurring donations directly on-chain — no custodial wallets, no pre-authorized transaction arrays.
 
+Deploy with `init(admin)` before creating subscriptions. The admin can set a per-deployment amount cap with `set_max_amount`; subscriptions above it return `AmountExceedsLimit` (error 18). `subscribe` accepts an optional grace period; failed collections record `overdue_since`, and anyone can call `expire_subscription` after the grace period.
+
 ---
 
 ## Architecture
@@ -16,7 +18,7 @@ SorobanPay
 ├── deploy/deploy.sh          Automated testnet/mainnet deployment
 ├── frontend/                 Next.js 14 TypeScript frontend
 ├── backend/audit-trail/      Backend cancellation audit trail design
-└── Makefile                  Build, test, and clean targets
+└── Makefile                  Build, test, lint, and clean targets
 ```
 
 **Three layers:**
@@ -151,6 +153,41 @@ Open http://localhost:3000 in a browser with the [Freighter extension](https://w
 
 ## Smart Contract
 
+Run `make help` to print all available targets with descriptions:
+
+```
+$ make help
+
+SorobanPay — available make targets
+------------------------------------
+  help                       Print all available targets with descriptions
+  build                      Compile the contract to WASM (uses TARGET_TRIPLE and PROFILE)
+  test                       Run contract unit and property tests on the native host (not WASM)
+  lint                       Check formatting (rustfmt --check) and run Clippy on the contract
+  coverage                   Run contract tests with llvm-cov; enforce COVERAGE_THRESHOLD
+  clean                      Remove all contract build artifacts from contracts/target/
+  test-frontend              Run the Next.js Jest test suite (unit + coverage)
+  test-frontend-coverage     Run the Next.js Jest suite with coverage report
+
+Override variables:
+  TARGET_TRIPLE=<triple>   Rust compilation target  (default: wasm32-unknown-unknown)
+  PROFILE=<debug|release>  Cargo profile            (default: release)
+  COVERAGE_THRESHOLD=<n>   Min line-coverage %      (default: 95)
+```
+
+### Target reference
+
+| Target | Description |
+|--------|-------------|
+| `make help` | Print all targets with descriptions |
+| `make build` | Compile contract to WASM |
+| `make test` | Run contract unit and property tests |
+| `make lint` | Check formatting and run Clippy |
+| `make coverage` | Run tests with llvm-cov; enforce coverage threshold |
+| `make clean` | Remove build artifacts |
+| `make test-frontend` | Run the Next.js Jest test suite |
+| `make test-frontend-coverage` | Run Jest with coverage report |
+
 ### Build
 
 ```bash
@@ -211,6 +248,23 @@ cargo test \
 
 Runs the full test suite: unit tests (lifecycle, error paths, auth, events) and property-based tests (time-lock, double-payment prevention, balance invariant, and more).
 
+### Upgrade regression tests (TEST-103)
+
+```bash
+make test-upgrade
+```
+
+Runs the two-phase contract upgrade regression tests under the `upgrade-test` feature flag. Verifies that adding optional fields or new entry points does not break existing stored subscriptions. See [docs/deployment.md §Contract Upgrades](docs/deployment.md#contract-upgrades) for the full upgrade guide.
+
+### Mutation testing (TEST-106)
+
+```bash
+# Requires: cargo install cargo-mutants --version "24.11.1" --locked
+make mutation-test
+```
+
+Runs [cargo-mutants](https://mutants.rs) against the contract source. Target score: > 80%. The full mutation report is at [docs/mutation-report.md](docs/mutation-report.md). Mutation tests run in CI on the `slow-tests` branch protection rule.
+
 ### Clean
 
 ```bash
@@ -218,6 +272,31 @@ make clean
 ```
 
 Removes all build artifacts from `contracts/target/`.
+
+### Lint
+
+```bash
+make lint
+```
+
+Runs two checks in sequence:
+
+1. **`rustfmt --check`** — verifies that every source file in `contracts/subscription/` is formatted according to the project's `rustfmt.toml`. Exits non-zero if any file would be reformatted; run `cargo fmt --manifest-path contracts/subscription/Cargo.toml` to fix.
+2. **`cargo clippy -D warnings`** — runs the Clippy linter across all targets. All Clippy warnings are promoted to errors, so CI fails on any new lint finding.
+
+**Prerequisites:**
+
+```bash
+rustup component add rustfmt clippy
+```
+
+Both components are included in the default `rustup` installation; the command above is a no-op if they are already present.
+
+**Fix formatting issues before committing:**
+
+```bash
+cargo fmt --manifest-path contracts/subscription/Cargo.toml
+```
 
 ---
 
@@ -853,11 +932,43 @@ The TTL constants assume a **5-second average ledger close time**, which is the 
 
 ## Security model
 
-- **Non-custodial**: The contract never holds token balances. Transfers go directly `subscriber → merchant` via SEP-41 `transfer`.
-- **Per-invocation auth**: Every entry point requires a fresh `require_auth()` signature — no stored sessions.
-- **Allowance model**: Subscribers grant a SEP-41 allowance to the contract. Revoking allowance via `token.approve(contract_id, 0)` prevents future payments regardless of on-chain subscription state.
-- **Time-lock**: Payment cannot be collected before `next_payment` — enforced on-chain by the Soroban ledger timestamp.
-- **TTL**: Subscriptions have a ~30-day minimum and ~365-day maximum TTL. Each successful payment resets the 365-day clock. Expired entries are garbage-collected by the Soroban host — they cannot be read or paid against. See [Storage TTL](#storage-ttl) for the full semantics.
+SorobanPay is designed around three core principles: non-custody, per-invocation authorization, and time-locked collection. This section summarises the on-chain security model. The full reference — including the authorization audit, circuit-breaker runbook, backend secrets management, and known limitations — is in [docs/security.md](docs/security.md).
+
+### Non-custodial design
+
+The contract never holds token balances. Every payment transfer goes directly `subscriber → merchant` via the SEP-41 `transfer()` call. There is no treasury address, no escrow wallet, and no contract-level balance to drain. A compromised contract instance cannot move tokens it does not hold.
+
+### Per-invocation authorization
+
+Every entry point calls `require_auth()` as its first statement — before any storage reads, logging, or cross-contract calls. The Soroban host, not application logic, enforces this: a missing or invalid signature aborts the entire transaction before any code executes.
+
+| Entry point | Who must authorize |
+|-------------|-------------------|
+| `subscribe` | subscriber |
+| `execute_payment` | merchant |
+| `batch_execute_payment` | merchant |
+| `cancel` | subscriber |
+| `get_subscription`, `get_version` | *(no auth — read-only)* |
+
+### Token allowance model (subscriber emergency stop)
+
+Subscribers grant a SEP-41 allowance to the contract address. The contract's `execute_payment` calls `token.transfer(subscriber, merchant, amount)` using that allowance. Revoking the allowance with `token.approve(contract_address, 0)` immediately prevents all future collections — regardless of whether the on-chain subscription record still exists. This gives subscribers a unilateral, no-contract-call emergency stop.
+
+### Time-lock enforcement
+
+`execute_payment` checks `now >= next_payment` using the Soroban ledger timestamp before attempting any transfer. The timestamp is set by network validators and cannot be manipulated by the transaction submitter. Merchants cannot collect payments early or double-collect within a billing window.
+
+### Storage TTL (automatic garbage collection)
+
+Subscription records are persistent storage entries with a TTL of ~30 days minimum and ~365 days maximum. Each successful payment resets the clock to the maximum. Entries that expire (after ~365 days of no successful payments) are garbage-collected by the Soroban host and cannot be paid against — stale, non-paying subscriptions do not accumulate on-chain indefinitely. See [Storage TTL](#storage-ttl) for full semantics.
+
+### Input validation
+
+`subscribe` validates all inputs before touching storage, including self-subscription prevention (`subscriber == merchant`), amount bounds (`0 < amount ≤ 10¹⁸`), interval bounds (`86400 ≤ interval ≤ 31536000`), and timestamp overflow guards. See [Error codes](#error-codes) for the full list.
+
+### Backend is read-only
+
+The optional off-chain backend polls `getEvents()` but never submits token transfers. If the backend is compromised, an attacker can read subscription state and payment history — they cannot move tokens or modify on-chain subscriptions.
 
 For guidance on storing backend secrets safely (database credentials, RPC API keys, webhook secrets), see [docs/security.md](docs/security.md).
 
@@ -909,7 +1020,7 @@ npm run dev
 1. Create a feature branch: `git checkout -b fix/issue-number` or `git checkout -b feature/description`
 2. Write tests for new functionality
 3. Ensure all tests pass: `make test` (contract) and `npm run type-check` (frontend)
-4. Run linters: `next lint` (frontend)
+4. Run linters: `make lint` (contract) and `next lint` (frontend)
 5. Commit with clear, descriptive messages
 6. Push your branch and open a pull request
 
@@ -940,6 +1051,7 @@ npm run dev
 | [Storage TTL Management](docs/operations.md) | Detecting at-risk entries, extending TTL programmatically, alert thresholds |
 | [Network Configuration](docs/networks.md) | Testnet vs. mainnet side-by-side, common mistakes, switching guide |
 | [Backend API Cookbook](docs/api-cookbook.md) | 8 recipes: auth, subscriptions, webhooks, CSV export, MRR, TTL health |
+| [Release Process](docs/release-process.md) | Versioning rules, release note template, changelog process, step-by-step checklist |
 | [Changelog](CHANGELOG.md) | Version history following Keep a Changelog format |
 
 ---
