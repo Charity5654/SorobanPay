@@ -223,6 +223,54 @@ jobs:
         run: npm run type-check
         working-directory: frontend
 
+  # TEST-109: Frontend quality gate — type checking, linting, formatting, production build
+  frontend-quality:
+    name: "[TEST-109] Frontend quality (type-check, lint, format, build)"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+        working-directory: frontend
+
+      - name: TypeScript type check (fail on errors)
+        # Runs tsc --noEmit; any type error causes a non-zero exit → CI fails.
+        run: npm run type-check
+        working-directory: frontend
+
+      - name: ESLint (zero warnings tolerance)
+        # --max-warnings 0 means even a single lint warning fails the job.
+        # This prevents warning debt from accumulating silently.
+        run: npm run lint
+        working-directory: frontend
+
+      - name: Prettier format check
+        # Ensures all committed code is consistently formatted.
+        # Run `npm run format` locally to auto-fix any failures.
+        run: npm run format:check
+        working-directory: frontend
+
+      - name: Production build
+        # Verifies that the app compiles to a production bundle without errors.
+        # Next.js build errors (e.g. missing env vars handled at build time) are
+        # caught here before they reach deployment.
+        run: npm run build
+        working-directory: frontend
+        env:
+          # Provide placeholder values so Next.js build doesn't abort on
+          # missing required public env vars.
+          NEXT_PUBLIC_CONTRACT_ID: "CPLACEHOLDERCONTRACTID000000000000000000000000000000000"
+          NEXT_PUBLIC_RPC_URL: "https://soroban-testnet.stellar.org"
+          NEXT_PUBLIC_NETWORK_PASSPHRASE: "Test SDF Network ; September 2015"
+
   # TEST-102: k6 load tests — runs weekly against staging environment
   load-test:
     name: "[TEST-102] k6 load tests"
