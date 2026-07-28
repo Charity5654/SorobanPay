@@ -5,6 +5,7 @@ import { getMessages } from 'next-intl/server';
 import { WalletProvider } from '@/context/WalletContext';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
 import { LanguageSelector } from '@/components/LanguageSelector';
+import { ToastProvider } from '@/components/Toast';
 import './globals.css';
 
 export const metadata: Metadata = {
@@ -38,11 +39,13 @@ export default async function RootLayout({
         <ErrorBoundary name="RootLayout">
           <NextIntlClientProvider messages={messages}>
             <WalletProvider>
-              {/* Language switcher — fixed to top-right corner */}
-              <div className="fixed top-4 right-4 z-50">
-                <LanguageSelector />
-              </div>
-              {children}
+              <ToastProvider>
+                {/* Language switcher — fixed to top-right corner */}
+                <div className="fixed top-4 right-4 z-50">
+                  <LanguageSelector />
+                </div>
+                {children}
+              </ToastProvider>
             </WalletProvider>
           </NextIntlClientProvider>
         </ErrorBoundary>
