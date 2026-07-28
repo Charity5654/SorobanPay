@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * page.tsx — Home page
+ * page.tsx — Home page (Dashboard)
  *
  * Renders the wallet connect/disconnect button and the subscription form.
  * Includes an onboarding guide for first-time users and global keyboard
@@ -372,7 +372,7 @@ export default function Home() {
           </section>
         )}
 
-      {/* Subscription form — only rendered when wallet is connected (Req 9.5) */}
+      {/* Subscription form — only rendered when wallet is connected */}
       {publicKey ? (
         <SubscriptionForm />
       ) : (

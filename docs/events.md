@@ -23,7 +23,8 @@ Complete reference for all events emitted by `SubscriptionProtocol`, including X
 | Event | Emitted by | Topics | Data | Condition |
 |-------|-----------|--------|------|-----------|
 | `subscribe` | `subscribe()` | `(sym, subscriber, merchant, token)` | `i128` amount | Always on success |
-| `executed` | `execute_payment()`, `batch_execute_payment()` | `(sym, subscriber, merchant, token)` | `i128` amount | Successful transfer |
+| `executed` | `execute_payment()`, `batch_execute_payment()` | `(sym, subscriber, merchant, token)` | `(i128 amount, u64 nonce)` | Successful transfer |
+| `expired` | `expire_subscription()` | `(sym, subscriber, merchant)` | `()` | Grace period elapsed |
 | `payment_transfer_failure` | `execute_payment()`, `batch_execute_payment()` | `(sym, subscriber, merchant)` | `i128` amount attempted | Insufficient subscriber balance |
 | `payment_transfer_success` | `batch_execute_payment()` | `(sym, subscriber, merchant)` | `i128` amount | Batch payment succeeded |
 | `cancel` | `cancel()` | `(sym, subscriber, merchant)` | `()` unit | Always on success |
@@ -78,7 +79,7 @@ Emitted when `execute_payment()` or `batch_execute_payment()` successfully trans
 
 | ScVal type | Value |
 |-----------|-------|
-| `SCV_I128` | `amount` — amount transferred |
+| `SCV_VEC` | `[amount, nonce]` — amount transferred and monotonic replay-protection nonce |
 
 ---
 
