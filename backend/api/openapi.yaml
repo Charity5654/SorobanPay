@@ -1,0 +1,632 @@
+openapi: 3.0.3
+info:
+  title: SorobanPay Backend API
+  description: |
+    REST API for the SorobanPay recurring-payment protocol.
+
+    Merchants authenticate via a SEP-10 style challenge-response flow:
+    1. `GET /api/v1/auth/challenge?account=G…` — obtain unsigned challenge XDR
+    2. Sign the returned transaction with Freighter (or your private key)
+    3. `POST /api/v1/auth/token { transaction: "<signed-XDR>" }` — exchange for JWT
+    4. Include `Authorization: Bearer <token>` on all protected endpoints
+
+    Rate limit: **100 requests / minute per IP** (HTTP 429 on breach).
+  version: 1.0.0
+  contact:
+    name: SorobanPay
+    url: https://github.com/Chrisland58/SorobanPay
+
+servers:
+  - url: http://localhost:3001
+    description: Local development
+  - url: https://api.sorobanpay.example.com
+    description: Production (placeholder)
+
+# ─── Security ──────────────────────────────────────────────────────────────────
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        JWT issued by `POST /api/v1/auth/token`. Include as `Authorization: Bearer <token>`.
+        Tokens expire after 24 hours.
+
+  schemas:
+    # ── Shared primitives ──────────────────────────────────────────────────────
+    Address:
+      type: string
+      pattern: "^G[A-Z2-7]{55}$"
+      example: "GABC1234MERCHANT5678EXAMPLE000000000000000000000000000XYZ"
+
+    IsoDate:
+      type: string
+      format: date
+      example: "2024-01-15"
+
+    # ── Subscription ──────────────────────────────────────────────────────────
+    Subscription:
+      type: object
+      required: [subscriber, merchant, token, amount, status]
+      properties:
+        subscriber:
+          $ref: "#/components/schemas/Address"
+        merchant:
+          $ref: "#/components/schemas/Address"
+        token:
+          $ref: "#/components/schemas/Address"
+        amount:
+          type: string
+          description: Payment amount in stroops (as string to handle big integers)
+          example: "10000000"
+        status:
+          type: string
+          enum: [ACTIVE, PAUSED, OVERDUE, CANCELLED, EXPIRED]
+        interval:
+          type: integer
+          nullable: true
+          description: Payment interval in seconds (null if not stored in event index)
+        nextPaymentDue:
+          type: integer
+          nullable: true
+          description: Unix timestamp of next payment due (null if not computable from index)
+        lastPaymentAt:
+          type: string
+          nullable: true
+          description: Ledger timestamp of last executed payment (as string)
+        createdAt:
+          type: string
+          nullable: true
+          description: Ledger timestamp when subscription was created
+
+    # ── Payment event ─────────────────────────────────────────────────────────
+    Payment:
+      type: object
+      required: [id, subscriber, merchant, token, amount, ledgerTimestamp, type]
+      properties:
+        id:
+          type: integer
+        subscriber:
+          $ref: "#/components/schemas/Address"
+        merchant:
+          $ref: "#/components/schemas/Address"
+        token:
+          $ref: "#/components/schemas/Address"
+        amount:
+          type: string
+          example: "10000000"
+        type:
+          type: string
+          enum: [executed, payment_transfer_failure]
+        ledgerTimestamp:
+          type: string
+          description: Unix timestamp in seconds (as string)
+        createdAt:
+          type: string
+          format: date-time
+
+    # ── Analytics ─────────────────────────────────────────────────────────────
+    MrrDataPoint:
+      type: object
+      properties:
+        month:
+          type: string
+          description: "YYYY-MM"
+          example: "2024-01"
+        label:
+          type: string
+          example: "Jan 24"
+        revenue:
+          type: string
+          description: Total revenue in stroops for the month
+          example: "100000000"
+        paymentCount:
+          type: integer
+
+    RevenueAnalytics:
+      type: object
+      properties:
+        period:
+          type: string
+          enum: [30d, 90d, all]
+        merchant:
+          $ref: "#/components/schemas/Address"
+        mrr:
+          type: array
+          items:
+            $ref: "#/components/schemas/MrrDataPoint"
+        activeSubscribers:
+          type: integer
+        totalRevenue:
+          type: string
+          description: Total revenue for the period (stroops)
+        successRate:
+          type: integer
+          minimum: 0
+          maximum: 100
+        executedCount:
+          type: integer
+        failureCount:
+          type: integer
+        events:
+          type: array
+          description: Raw events used to compute metrics
+
+    # ── Webhook ───────────────────────────────────────────────────────────────
+    WebhookEndpoint:
+      type: object
+      properties:
+        id:
+          type: integer
+        merchant:
+          $ref: "#/components/schemas/Address"
+        url:
+          type: string
+          format: uri
+        active:
+          type: boolean
+        events:
+          type: string
+          description: Comma-separated list of event types to deliver
+          example: "payment.executed,payment.failed"
+        createdAt:
+          type: string
+          format: date-time
+
+    WebhookDelivery:
+      type: object
+      properties:
+        id:
+          type: integer
+        eventId:
+          type: string
+          description: Stable event identifier (idempotency key)
+        deliveryId:
+          type: string
+          description: Unique per delivery attempt
+        url:
+          type: string
+        merchant:
+          $ref: "#/components/schemas/Address"
+        event:
+          type: string
+        statusCode:
+          type: integer
+        attempt:
+          type: integer
+        success:
+          type: boolean
+        error:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+
+    # ── Error ─────────────────────────────────────────────────────────────────
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+
+    PaginatedMeta:
+      type: object
+      properties:
+        total:
+          type: integer
+        limit:
+          type: integer
+        offset:
+          type: integer
+
+# ─── Paths ────────────────────────────────────────────────────────────────────
+paths:
+
+  # ── Health ──────────────────────────────────────────────────────────────────
+  /health:
+    get:
+      operationId: getHealth
+      summary: Service health check
+      tags: [Health]
+      responses:
+        "200":
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+                  rpc:
+                    type: string
+                    enum: [ok, degraded]
+                  db:
+                    type: string
+                    enum: [ok, degraded]
+                  timestamp:
+                    type: string
+                    format: date-time
+        "503":
+          description: Service is degraded
+
+  # ── Auth ────────────────────────────────────────────────────────────────────
+  /api/v1/auth/challenge:
+    get:
+      operationId: getAuthChallenge
+      summary: Request a SEP-10 authentication challenge
+      tags: [Auth]
+      parameters:
+        - name: account
+          in: query
+          required: true
+          schema:
+            $ref: "#/components/schemas/Address"
+          description: Merchant Stellar public key (G…)
+      responses:
+        "200":
+          description: Unsigned challenge transaction
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  transaction:
+                    type: string
+                    description: Base64-encoded unsigned Stellar transaction XDR
+                  network_passphrase:
+                    type: string
+                  expires_in:
+                    type: integer
+                    description: Seconds until challenge expires
+        "400":
+          description: Invalid account
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/v1/auth/token:
+    post:
+      operationId: postAuthToken
+      summary: Exchange signed challenge for a JWT
+      tags: [Auth]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [transaction]
+              properties:
+                transaction:
+                  type: string
+                  description: Base64-encoded signed Stellar transaction XDR
+      responses:
+        "200":
+          description: JWT issued
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  token:
+                    type: string
+                  expires_in:
+                    type: integer
+        "400":
+          description: Missing transaction body
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Signature verification failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  # ── Subscriptions ────────────────────────────────────────────────────────────
+  /api/v1/subscriptions:
+    get:
+      operationId: listSubscriptions
+      summary: List active subscriptions for a merchant
+      tags: [Subscriptions]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: merchant
+          in: query
+          required: true
+          schema:
+            $ref: "#/components/schemas/Address"
+          description: Merchant Stellar address
+      responses:
+        "200":
+          description: Array of subscriptions
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Subscription"
+        "400":
+          description: Missing merchant parameter
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/v1/subscriptions/{subscriber}/{merchant}:
+    get:
+      operationId: getSubscription
+      summary: Get a single subscription by subscriber and merchant
+      tags: [Subscriptions]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: subscriber
+          in: path
+          required: true
+          schema:
+            $ref: "#/components/schemas/Address"
+        - name: merchant
+          in: path
+          required: true
+          schema:
+            $ref: "#/components/schemas/Address"
+      responses:
+        "200":
+          description: Subscription detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Subscription"
+        "404":
+          description: Subscription not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Unauthorized
+
+  # ── Payments ────────────────────────────────────────────────────────────────
+  /api/v1/payments:
+    get:
+      operationId: listPayments
+      summary: List payment history for a merchant
+      tags: [Payments]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: merchant
+          in: query
+          required: true
+          schema:
+            $ref: "#/components/schemas/Address"
+        - name: from
+          in: query
+          required: false
+          schema:
+            $ref: "#/components/schemas/IsoDate"
+          description: Start date (inclusive), ISO 8601
+        - name: to
+          in: query
+          required: false
+          schema:
+            $ref: "#/components/schemas/IsoDate"
+          description: End date (inclusive), ISO 8601
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+            maximum: 200
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+      responses:
+        "200":
+          description: Paginated payment history
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Payment"
+                  meta:
+                    $ref: "#/components/schemas/PaginatedMeta"
+        "400":
+          description: Invalid parameters
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Unauthorized
+
+  # ── Analytics ────────────────────────────────────────────────────────────────
+  /api/v1/analytics/revenue:
+    get:
+      operationId: getRevenueAnalytics
+      summary: Get MRR and revenue metrics for a merchant
+      tags: [Analytics]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: merchant
+          in: query
+          required: true
+          schema:
+            $ref: "#/components/schemas/Address"
+        - name: period
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [30d, 90d, all]
+            default: 30d
+      responses:
+        "200":
+          description: Revenue analytics data
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RevenueAnalytics"
+        "400":
+          description: Invalid parameters
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Unauthorized
+
+  # ── Webhooks ─────────────────────────────────────────────────────────────────
+  /api/v1/webhooks/endpoints:
+    post:
+      operationId: registerWebhookEndpoint
+      summary: Register a webhook endpoint
+      tags: [Webhooks]
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [merchant, url]
+              properties:
+                merchant:
+                  $ref: "#/components/schemas/Address"
+                url:
+                  type: string
+                  format: uri
+                  description: HTTPS endpoint URL (HTTPS required in production)
+                secret:
+                  type: string
+                  description: HMAC-SHA256 signing secret (optional — auto-generated if omitted)
+                events:
+                  type: array
+                  items:
+                    type: string
+                    enum: [payment.executed, payment.failed, subscription.cancelled]
+      responses:
+        "201":
+          description: Webhook endpoint registered
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WebhookEndpoint"
+        "400":
+          description: Invalid request body
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+    delete:
+      operationId: deactivateWebhookEndpoint
+      summary: Deactivate a webhook endpoint
+      tags: [Webhooks]
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [merchant, url]
+              properties:
+                merchant:
+                  $ref: "#/components/schemas/Address"
+                url:
+                  type: string
+                  format: uri
+      responses:
+        "200":
+          description: Endpoint deactivated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+
+  /api/v1/webhooks/{id}/deliveries:
+    get:
+      operationId: listWebhookDeliveries
+      summary: List delivery attempts for a webhook endpoint
+      tags: [Webhooks]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+          description: WebhookEndpoint.id
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+            maximum: 200
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+      responses:
+        "200":
+          description: Paginated delivery log
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/WebhookDelivery"
+                  meta:
+                    $ref: "#/components/schemas/PaginatedMeta"
+        "400":
+          description: Invalid id
+        "401":
+          description: Unauthorized
+
+tags:
+  - name: Health
+    description: Service health
+  - name: Auth
+    description: SEP-10 merchant authentication
+  - name: Subscriptions
+    description: Subscription queries
+  - name: Payments
+    description: Payment history
+  - name: Analytics
+    description: Revenue and usage analytics
+  - name: Webhooks
+    description: Webhook endpoint management and delivery logs
