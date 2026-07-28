@@ -21,6 +21,7 @@ import {
 } from '@stellar/stellar-sdk';
 import { SorobanRpc } from '@stellar/stellar-sdk';
 import { signTx } from './wallet_manager';
+import { isValidCAddress, isValidGAddress } from './validation';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -69,6 +70,17 @@ export async function buildAndSubmitSubscribe(
   networkPassphrase: string,
   rpcUrl: string
 ): Promise<SubscribeResult> {
+  // 0. Validate addresses before making any network calls
+  if (!isValidGAddress(params.subscriber)) {
+    throw new Error(`Invalid subscriber address: ${params.subscriber}`);
+  }
+  if (!isValidGAddress(params.merchant)) {
+    throw new Error(`Invalid merchant address: ${params.merchant}`);
+  }
+  if (!isValidCAddress(params.token)) {
+    throw new Error(`Invalid token contract address: ${params.token}`);
+  }
+
   const server = new SorobanRpc.Server(rpcUrl, { allowHttp: false });
 
   // 1. Fetch account

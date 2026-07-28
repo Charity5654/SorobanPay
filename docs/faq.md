@@ -1,193 +1,189 @@
 # SorobanPay — Frequently Asked Questions
 
-This document answers the most common questions from developers integrating SorobanPay into their products. If your question isn't covered here, see the [Contributing](#contributing) section below.
+Covers common questions about the smart contract, wallet interactions, payment execution, and subscription cancellation.
 
 ---
 
-## Table of Contents
+## Wallet & Connection
 
-1. [Can I use SorobanPay without deploying my own contract?](#1-can-i-use-sorobanpay-without-deploying-my-own-contract)
-2. [How do I handle a subscriber who revokes their token allowance?](#2-how-do-i-handle-a-subscriber-who-revokes-their-token-allowance)
-3. [What happens if the subscriber's account is merged or deleted?](#3-what-happens-if-the-subscribers-account-is-merged-or-deleted)
-4. [Can the subscription amount be changed mid-cycle?](#4-can-the-subscription-amount-be-changed-mid-cycle)
-5. [How do I migrate subscribers to a new contract version?](#5-how-do-i-migrate-subscribers-to-a-new-contract-version)
-6. [What's the minimum XLM balance needed to subscribe?](#6-whats-the-minimum-xlm-balance-needed-to-subscribe)
-7. [How does SorobanPay compare to payment channels / state channels?](#7-how-does-sorobanpay-compare-to-payment-channels--state-channels)
-8. [Can SorobanPay be used for one-time payments?](#8-can-sorobanpay-be-used-for-one-time-payments)
-9. [How do I get notified of payment failures in real time?](#9-how-do-i-get-notified-of-payment-failures-in-real-time)
-10. [Is SorobanPay audited?](#10-is-sorobanpay-audited)
+### Which wallet does SorobanPay use?
+
+SorobanPay uses [Freighter](https://www.freighter.app), a browser extension wallet for Stellar. It is required to sign and submit transactions from the frontend. No other wallets are currently supported.
+
+### Why does my wallet show "Disconnected"?
+
+The frontend has not yet received approval from Freighter. Click the Freighter extension icon, find the site under **Connected Sites**, click **Connect**, then reload the page. The badge will turn green once connected.
+
+### The Freighter signing popup never appears — what do I do?
+
+1. Confirm the extension is installed (Chrome/Brave or Firefox).
+2. The app must be served over `http://localhost` or `https://` — Freighter blocks `file://` origins.
+3. Disable other wallet extensions temporarily; they can conflict with the injected Freighter API.
+4. Try a hard reload (`Ctrl+Shift+R` / `Cmd+Shift+R`).
+
+### I get "wrong network" errors — how do I fix that?
+
+Open Freighter and switch networks so it matches `NEXT_PUBLIC_NETWORK_PASSPHRASE` in `frontend/.env.local`:
+
+| Network | Passphrase |
+|---------|-----------|
+| Testnet | `Test SDF Network ; September 2015` |
+| Mainnet | `Public Global Stellar Network ; September 2015` |
+
+### Does SorobanPay ever hold my tokens?
+
+No. The contract is non-custodial — every payment transfers tokens **directly from subscriber to merchant** via SEP-41 `transfer`. No balance is ever stored in the contract.
 
 ---
 
-## 1. Can I use SorobanPay without deploying my own contract?
+## Approval Flow
 
-**No — each deployment is fully independent.** SorobanPay is a protocol, not a hosted service. You must deploy the `SubscriptionProtocol` contract to either Stellar testnet or mainnet to use it.
+### What does the subscriber approve when they subscribe?
 
-Deployment takes about two minutes:
+Calling `subscribe` does two things:
+
+1. **Stores a subscription record** on-chain (`subscriber`, `merchant`, `token`, `amount`, `interval`, `next_payment`).
+2. **Requires a SEP-41 token allowance** — the subscriber must separately call `token.approve(contract_id, amount)` (or higher) so the contract is authorized to pull tokens on payment day.
+
+The frontend `buildAndSubmitSubscribe` function handles the `subscribe` contract call. Granting the token allowance is a separate step that should be completed before or alongside subscription creation.
+
+### What is the approval flow step by step?
+
+```
+1. Subscriber fills the form and clicks "Authorize Subscription"
+2. A confirmation modal shows the exact parameters (merchant, token, amount, interval)
+3. Subscriber clicks "Confirm & Authorize"
+4. Frontend builds the `subscribe` transaction and calls prepareTransaction (simulation)
+5. Freighter popup appears — subscriber reviews and approves
+6. Frontend signs with Freighter, submits to Soroban RPC, and polls for confirmation
+7. On success: SuccessCard shows the transaction hash and next-steps guidance
+```
+
+### Why does the form require a confirmation step before Freighter opens?
+
+The confirmation modal lets the subscriber review the exact on-chain parameters — merchant address, token contract, amount, and interval — before the Freighter popup appears. This prevents accidental subscriptions and mirrors the double-confirm pattern common in DeFi UIs.
+
+### Can I revoke approval without cancelling the subscription?
+
+Yes. Calling `token.approve(contract_id, 0)` revokes the SEP-41 allowance. Future `execute_payment` calls will fail with `TransferFailed` (error 7). The subscription record stays on-chain but payments cannot be collected until the allowance is restored. This is a softer stop than `cancel`, which removes the record entirely.
+
+---
+
+## Payment Execution
+
+### Who triggers payments and when?
+
+The **merchant** (or an automated backend acting on the merchant's behalf) calls `execute_payment(subscriber, merchant)`. The contract enforces that:
+
+- A subscription exists for the pair.
+- The current ledger timestamp is ≥ `next_payment`.
+
+The subscriber does **not** need to do anything for recurring payments after the initial `subscribe`.
+
+### How is the next payment date calculated?
+
+On a successful transfer, `next_payment` is set to `now + interval` (current ledger time plus the interval in seconds). This means:
+
+- **On-time collection**: next due date advances normally.
+- **Late collection**: the delay is absorbed — the schedule shifts forward from the actual collection time, not the original due date.
+
+This prevents "bunching" (two payments becoming due at once) but does mean billing dates can drift if payments are consistently late.
+
+### What happens if my balance is too low when payment is due?
+
+The contract checks the subscriber's token balance before attempting the transfer. If it is insufficient:
+
+1. A `payment_transfer_failure` event is emitted.
+2. The subscription record is **not changed** — it remains active and can be retried immediately.
+3. The merchant receives error code `7` (`TransferFailed`).
+
+The merchant or their backend can retry `execute_payment` once the subscriber has topped up.
+
+### What fees does `execute_payment` cost?
+
+`execute_payment` is the most expensive entry point because it invokes two cross-contract calls on the SEP-41 token (`balance` + `transfer`). Always run `simulateTransaction` first — do not hardcode fees. A rough guide:
+
+| Entry point | Recommended min `instructions` |
+|-------------|-------------------------------|
+| `subscribe` | 150,000 |
+| `execute_payment` | 500,000 |
+| `cancel` | 50,000 |
+
+Add a 10–25 % buffer above the simulation result for safety.
+
+### What is the earliest a payment can be collected?
+
+The first payment is collectible **immediately** after `subscribe` — the initial `next_payment` is set to `subscribe_time + interval`, so the very first payment window opens after one full interval. Re-reading: `next_payment = now + interval` at subscribe time, so the merchant must wait one interval before the first collect.
+
+---
+
+## Subscription Cancellation
+
+### How does a subscriber cancel?
+
+Call `cancel(subscriber, merchant)` signed by the subscriber:
 
 ```bash
-# Testnet (default)
-bash deploy/deploy.sh
-
-# Mainnet
-STELLAR_NETWORK=mainnet STELLAR_IDENTITY=your-identity bash deploy/deploy.sh
+stellar contract invoke \
+  --id $CONTRACT_ID --source alice --network testnet \
+  -- cancel \
+  --subscriber GABC...ALICE \
+  --merchant   GXYZ...MERCHANT
 ```
 
-The contract address is printed to stdout on success. Paste it into `frontend/.env.local` as `NEXT_PUBLIC_CONTRACT_ID`.
+Or via the SDK:
 
-> **Reference:** [README.md → Deployment](../README.md#deployment)
-
----
-
-## 2. How do I handle a subscriber who revokes their token allowance?
-
-When a subscriber revokes the SEP-41 token allowance granted to the contract (e.g., by calling `token.approve(contract_id, 0)` in their wallet), the next `execute_payment` call will fail with a token transfer error.
-
-**Recommended approach for merchants / backends:**
-
-1. Listen for failed `execute_payment` transactions on-chain (the transaction will fail, not revert silently).
-2. Flag the subscription as "allowance revoked" in your backend database.
-3. Email or notify the subscriber to re-authorize.
-4. Do not retry the payment until a new allowance is detected.
-
-The on-chain subscription record is **not** automatically deleted when an allowance is revoked. The subscription remains in storage and can resume once the subscriber re-grants the allowance and you call `execute_payment` again.
-
-> **Reference:** [README.md → Security model](../README.md#security-model)
-
----
-
-## 3. What happens if the subscriber's account is merged or deleted?
-
-If a subscriber merges their Stellar account (sends all XLM out and removes the account), subsequent `execute_payment` calls will fail because the source account no longer exists.
-
-- The on-chain subscription record persists until its TTL expires (~365 days from the last successful payment) or until `cancel` is explicitly called.
-- Merchants should treat repeated payment failures as an implicit cancellation and stop retrying.
-- There is no on-chain event emitted for account merges; detect this condition by catching the failed `execute_payment` transaction and inspecting the Stellar SDK error (`ACCOUNT_NOT_FOUND` or similar result code).
-
-> **Reference:** [README.md → Error codes](../README.md#error-codes)
-
----
-
-## 4. Can the subscription amount be changed mid-cycle?
-
-**Yes.** Calling `subscribe(subscriber, merchant, token, new_amount, new_interval)` on an existing subscription **overwrites** the stored amount and interval. This behaves as an upsert.
-
-Important caveats:
-
-- The `next_payment` timestamp is **not** reset by an update — the next payment is still due at the original scheduled time.
-- Both the subscriber (who must re-sign) and the merchant need to coordinate the change to avoid confusion.
-- The new amount takes effect immediately at the next `execute_payment` call.
-
-For SaaS plan upgrades/downgrades, update the subscription at the start of the next billing cycle to keep accounting clean.
-
-> **Reference:** [README.md → Contract entry points](../README.md#contract-entry-points) · [SaaS Integration Guide → Step 4](./saas-integration-guide.md#step-4-handle-plan-upgrades-and-downgrades)
-
----
-
-## 5. How do I migrate subscribers to a new contract version?
-
-Soroban contracts are currently **not upgradeable in-place** (unless you use the `update_current_contract_wasm` host function in your contract). If you deploy a new contract version at a new address, you must re-onboard subscribers.
-
-**Migration strategy:**
-
-1. Deploy the new contract and record the new `CONTRACT_ID`.
-2. Notify subscribers that re-authorization is required (email + in-app prompt).
-3. Direct subscribers to sign a `subscribe` transaction on the new contract.
-4. Once a subscriber has signed on the new contract, call `cancel` on the old contract to clean up their record (optional — TTL expiry will clean it up automatically otherwise).
-5. Decommission the old contract after all subscriptions have migrated or expired.
-
-There is no in-protocol migration path; it requires off-chain coordination.
-
-> **Reference:** [README.md → Deployment](../README.md#deployment)
-
----
-
-## 6. What's the minimum XLM balance needed to subscribe?
-
-A Stellar account requires a **base reserve** of 1 XLM per account plus 0.5 XLM per ledger entry. On top of that, the subscriber must:
-
-- Hold enough of the **subscription token** to cover the payment amount plus any future SEP-41 allowance.
-- Have enough XLM to pay the **transaction fee** (typically 0.00001 XLM, but can spike during congestion — budget 0.001 XLM to be safe).
-- Maintain the account minimum reserve (currently 1 XLM base + 0.5 XLM × number of trust lines and offers).
-
-**Practical rule of thumb:** Ensure the subscriber has at least **2 XLM** of free balance plus the token amount they intend to authorize.
-
-> **Reference:** [Stellar docs — Minimum balance](https://developers.stellar.org/docs/learn/fundamentals/stellar-data-structures/accounts#base-reserves-and-subentries)
-
----
-
-## 7. How does SorobanPay compare to payment channels / state channels?
-
-| Dimension | SorobanPay | Payment/State Channels |
-|-----------|-----------|------------------------|
-| **On-chain footprint** | One ledger entry per subscription | Channel open + close transactions |
-| **Trust model** | Non-custodial; no counterparty risk | Requires locking funds in channel |
-| **Throughput** | One transaction per payment period | High-frequency off-chain messages |
-| **Settlement** | Immediate, each payment is final | Requires on-chain close to settle |
-| **Suitable for** | SaaS billing, subscriptions, low-frequency recurring payments | Micro-payments, streaming, gaming |
-
-SorobanPay is designed for **low-frequency recurring billing** (daily to yearly). Payment channels are better for high-frequency micro-payment scenarios where submitting every transaction on-chain would be impractical.
-
----
-
-## 8. Can SorobanPay be used for one-time payments?
-
-Technically yes, but it's not the primary design goal. You can create a subscription with `interval = 86400` (1 day) and then call `cancel` immediately after the first `execute_payment`. This effectively makes a single authorized payment.
-
-However, for true one-time payments you should use the Stellar SDK directly (a standard `payment` operation) — it's simpler and doesn't require the subscriber to grant a token allowance.
-
-SorobanPay's value is in the **recurring authorization** model: one subscriber signature enables many future payments without repeated user interaction.
-
-> **Reference:** [README.md → Contract entry points](../README.md#contract-entry-points)
-
----
-
-## 9. How do I get notified of payment failures in real time?
-
-SorobanPay emits `subscribe` and `executed` events (see [README.md → Events emitted](../README.md#events-emitted)), but does **not** emit an event for failed payments — a failed `execute_payment` transaction simply does not appear in the event stream.
-
-**Recommended real-time monitoring setup:**
-
-1. Run a **Stellar Horizon webhook** or a custom indexer that streams transactions for your contract address.
-2. For successful payments, watch for `executed` events from your contract.
-3. For failures, listen for failed transactions that called your contract's `execute_payment` function (the transaction result code will be non-`SUCCESS`).
-4. Use a job queue (e.g., BullMQ, SQS) to retry failed payment calls with exponential back-off.
-
-Example: subscribe to events via Horizon streaming:
-
-```js
-const server = new StellarSdk.Horizon.Server('https://horizon-testnet.stellar.org');
-server
-  .transactions()
-  .forAccount(CONTRACT_ID)
-  .stream({ onmessage: (tx) => console.log(tx) });
+```typescript
+const op = contract.call(
+  "cancel",
+  new Address(subscriber).toScVal(),
+  new Address(merchant).toScVal(),
+);
 ```
 
-> **Reference:** [README.md → Events emitted](../README.md#events-emitted) · [SaaS Integration Guide → Step 3](./saas-integration-guide.md#step-3-webhook-setup-for-real-time-payment-notifications)
+### What does cancel actually do?
+
+1. Verifies the subscription exists (returns `NoActiveSubscription` / error 4 if not).
+2. Removes the record from persistent storage.
+3. Emits a `cancel` event so off-chain indexers can immediately mark the relationship as ended.
+
+After cancellation, any `execute_payment` call for that pair returns `NoActiveSubscription`.
+
+### Can the merchant cancel a subscription?
+
+No. `cancel` requires a signature from the **subscriber**. Only the subscriber can remove their own subscription record.
+
+### What happens to in-flight payments after cancel?
+
+If a `cancel` transaction and an `execute_payment` transaction are submitted in the same ledger, whichever is ordered first by the Soroban host wins. If `cancel` executes first, `execute_payment` returns `NoActiveSubscription`. If `execute_payment` executes first, the payment succeeds and then `cancel` removes the record. The contract has no lock mechanism between the two.
+
+### Will my subscription expire automatically if I never cancel?
+
+Eventually, yes. Each subscription entry has a storage TTL:
+
+- **Minimum TTL**: ~30 days (518,400 ledgers)
+- **Maximum TTL**: ~365 days (6,307,200 ledgers)
+
+`subscribe` and each successful `execute_payment` reset the TTL to the maximum. If no successful payment occurs for a full year (e.g., the subscriber's balance is consistently zero), the entry is evicted by the Soroban host and future calls return `NoActiveSubscription`. Explicit `cancel` is still recommended rather than relying on expiry.
 
 ---
 
-## 10. Is SorobanPay audited?
+## Error Reference
 
-SorobanPay has not yet undergone a formal third-party security audit. The contract has a comprehensive test suite (unit tests, error-path tests, auth tests, and property-based tests) and follows Soroban security best practices:
-
-- Per-invocation `require_auth()` on every entry point — no stored sessions.
-- Non-custodial design — the contract never holds token balances.
-- On-chain time-lock prevents early payment collection.
-- SEP-41 allowance model gives subscribers a kill-switch independent of the contract.
-
-**Until an audit is completed, use on mainnet at your own risk.** We recommend starting on testnet and performing your own security review before deploying to production.
-
-> **Reference:** [README.md → Security model](../README.md#security-model)
+| Code | Name | Common cause | Fix |
+|------|------|-------------|-----|
+| 1 | `AmountMustBePositive` | `amount ≤ 0` | Enter a positive amount |
+| 2 | `IntervalTooShort` | `interval < 86400 s` | Use at least 86,400 s (1 day) |
+| 3 | `IntervalTooLong` | `interval > 31536000 s` | Use at most 31,536,000 s (1 year) |
+| 4 | `NoActiveSubscription` | Pair not found or already cancelled | Check addresses; re-subscribe if needed |
+| 5 | `PaymentNotDue` | Too early to collect | Wait until `next_payment` timestamp |
+| 6 | `Unauthorized` | Auth signature missing or wrong signer | Use the correct account in Freighter |
+| 7 | `TransferFailed` | Insufficient balance | Top up subscriber balance and retry |
+| 8 | `InvalidTimestamp` | Ledger clock is zero | Unusual network state; retry |
+| 9 | `AmountTooLarge` | `amount > 10¹⁸` | Use a smaller amount |
+| 10 | `SelfSubscription` | `subscriber == merchant` | Use different addresses |
+| 11 | `InvalidTokenAddress` | Token is the contract itself | Use a valid SEP-41 token address |
 
 ---
 
-## Contributing
-
-Got a question that isn't answered here? We welcome community-submitted questions:
-
-1. **Open a GitHub Discussion** in the [Discussions tab](https://github.com/Chrisland58/SorobanPay/discussions) with the `FAQ` label — your question may be added to this document.
-2. **Submit a PR** — edit this file directly and open a pull request. See [README.md → Contributing](../README.md#contributing) for guidelines.
-3. **File an issue** with the `documentation` label if you found an inaccurate or missing answer.
-
-All contributions are welcome — the clearer these docs are, the better for everyone integrating SorobanPay.
+For deeper technical details see [docs/contract-api.md](contract-api.md), [docs/events.md](events.md), and [docs/architecture.md](architecture.md).

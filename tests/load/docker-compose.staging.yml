@@ -1,0 +1,95 @@
+# Docker Compose — Staging profile for k6 load testing (TEST-102)
+#
+# Spins up the full SorobanPay backend stack locally so k6 tests can run
+# against a realistic environment without needing a cloud staging environment.
+#
+# Usage:
+#   # Start the staging stack (detached):
+#   docker compose -f tests/load/docker-compose.staging.yml up -d
+#
+#   # Run a load test scenario:
+#   k6 run --out json=results/read-heavy-results.json tests/load/read-heavy.js
+#
+#   # Run all three scenarios sequentially:
+#   make load-test
+#
+#   # Stop and clean up:
+#   docker compose -f tests/load/docker-compose.staging.yml down -v
+
+version: "3.9"
+
+services:
+  # ── PostgreSQL (matches Prisma schema) ─────────────────────────────────────
+  postgres:
+    image: postgres:15-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: sorobanpay_staging
+      POSTGRES_USER: sorobanpay
+      POSTGRES_PASSWORD: sorobanpay_staging_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sorobanpay -d sorobanpay_staging"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # ── Database migration (one-shot) ──────────────────────────────────────────
+  migrate:
+    image: node:20-alpine
+    working_dir: /app
+    volumes:
+      - ../../backend:/app
+    command: npx prisma migrate deploy
+    environment:
+      DATABASE_URL: postgresql://sorobanpay:sorobanpay_staging_password@postgres:5432/sorobanpay_staging
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # ── Backend API server ──────────────────────────────────────────────────────
+  backend:
+    image: node:20-alpine
+    working_dir: /app
+    volumes:
+      - ../../backend:/app
+    command: sh -c "npm ci && npx ts-node src/index.ts"
+    environment:
+      NODE_ENV: staging
+      PORT: "3001"
+      DATABASE_URL: postgresql://sorobanpay:sorobanpay_staging_password@postgres:5432/sorobanpay_staging
+      RPC_URL: ${RPC_URL:-https://soroban-testnet.stellar.org}
+      CONTRACT_ID: ${CONTRACT_ID:-CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4}
+      NETWORK_PASSPHRASE: ${NETWORK_PASSPHRASE:-Test SDF Network ; September 2015}
+      # Leave OPERATOR_SECRET unset to disable the payment scheduler in staging
+    ports:
+      - "3001:3001"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3001/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+  # ── Seed data (one-shot, populates DB with test merchant/subscriber data) ──
+  seed:
+    image: node:20-alpine
+    working_dir: /app
+    volumes:
+      - ../../backend:/app
+      - ./seed.sql:/seed.sql
+    command: sh -c "apk add --no-cache postgresql-client && psql $$DATABASE_URL -f /seed.sql"
+    environment:
+      DATABASE_URL: postgresql://sorobanpay:sorobanpay_staging_password@postgres:5432/sorobanpay_staging
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+volumes:
+  postgres_data:
