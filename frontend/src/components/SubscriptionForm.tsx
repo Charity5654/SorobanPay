@@ -35,6 +35,7 @@
 import { useState, useEffect, useCallback, type FormEvent } from "react";
 import { useWallet } from "@/hooks/useWallet";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
+import { SkeletonForm } from "@/components/Skeleton";
 import { downloadReceipt, type ReceiptData } from "@/components/SubscriptionReceipt";
 import { ShareQRCode } from "@/components/ShareQRCode";
 import {
@@ -297,7 +298,8 @@ function ProgressBar() {
     <div
       className="w-full mb-6 p-4 sm:p-5 bg-blue-900/20 border border-blue-600/40 rounded-lg"
       role="status"
-      aria-label="Transaction in progress"
+      aria-live="polite"
+      aria-label="Transaction in progress. Submitting to the Soroban network."
     >
       <div className="flex justify-between items-center mb-3">
         <div className="flex items-center gap-2">
@@ -306,8 +308,10 @@ function ProgressBar() {
             xmlns="http://www.w3.org/2000/svg"
             fill="none"
             viewBox="0 0 24 24"
-            aria-hidden="true"
+            role="img"
+            aria-label="Loading spinner"
           >
+            <title>Loading spinner</title>
             <circle
               className="opacity-25"
               cx="12"
@@ -326,14 +330,22 @@ function ProgressBar() {
             Submitting transaction…
           </span>
         </div>
-        <span className="text-xs text-blue-200 animate-pulse">
+        <span className="text-xs text-blue-200 animate-pulse" aria-hidden="true">
           Processing on blockchain
         </span>
       </div>
-      <div className="h-2 w-full bg-gray-700 rounded-full overflow-hidden shadow-inner">
-        <div className="h-full bg-gradient-to-r from-blue-400 via-blue-500 to-blue-400 rounded-full animate-progress" />
+      <div
+        className="h-2 w-full bg-gray-700 rounded-full overflow-hidden shadow-inner"
+        role="progressbar"
+        aria-label="Transaction submission progress"
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={50}
+        aria-valuetext="Transaction in progress"
+      >
+        <div className="h-full bg-gradient-to-r from-blue-400 via-blue-500 to-blue-400 rounded-full animate-progress" aria-hidden="true" />
       </div>
-      <p className="mt-2 text-xs text-gray-300 text-center">
+      <p className="mt-2 text-xs text-gray-300 text-center" aria-live="off">
         This may take 10-30 seconds. Keep the window open.
       </p>
     </div>
@@ -829,7 +841,7 @@ export interface SubscriptionFormProps {
 }
 
 export default function SubscriptionForm({ initialValues }: SubscriptionFormProps = {}) {
-  const { publicKey, isCheckingFreighter, freighterInstalled } = useWallet();
+  const { publicKey, isCheckingFreighter, freighterInstalled, mounted } = useWallet();
 
   // All hooks must be declared before any early return (rules-of-hooks)
   const [merchantAddress, setMerchantAddress] = useState(initialValues?.merchantAddress ?? '');
@@ -846,6 +858,14 @@ export default function SubscriptionForm({ initialValues }: SubscriptionFormProp
   // Guard: must have a valid contract address before rendering the form
   // (placed after hooks so rules-of-hooks is satisfied)
   if (!CONTRACT_ID) return <ContractConfigError />;
+
+  // FE-47: Defer wallet-state-dependent rendering until after client mount.
+  // On the server, publicKey is always null and freighterInstalled is always
+  // false. Rendering before mount produces the same output on both sides, so
+  // no hydration mismatch occurs. After mount we show the real wallet state.
+  if (!mounted) {
+    return <SkeletonForm />;
+  }
   const intervalNum = Number(interval);
 
   const labelCls = 'block text-sm font-semibold text-gray-100 mb-2.5';
@@ -1012,6 +1032,22 @@ export default function SubscriptionForm({ initialValues }: SubscriptionFormProp
       {/* Progress indicator — visible only while submitting */}
       {isSubmitting && <ProgressBar />}
 
+      {/* Screen-reader live region for status announcements (FE-49) */}
+      <div
+        aria-live="polite"
+        aria-atomic="true"
+        className="sr-only"
+        role="status"
+      >
+        {isSubmitting
+          ? "Submitting transaction to the Soroban network. Please wait."
+          : successData
+          ? "Subscription created successfully."
+          : txError
+          ? `Transaction failed: ${txError.title}. ${txError.summary}`
+          : ""}
+      </div>
+
       {/* Success card */}
       {successData && <SuccessCard data={successData} onReset={resetForm} />}
 
@@ -1134,6 +1170,8 @@ export default function SubscriptionForm({ initialValues }: SubscriptionFormProp
               value={amount}
               onChange={(e) => setAmount(e.target.value)}
               disabled={isSubmitting}
+              required
+              aria-required="true"
               aria-describedby={`help-amount${fieldErrors.amount ? " err-amount" : ""}`}
               aria-invalid={!!fieldErrors.amount}
               className={fieldClass(!!fieldErrors.amount)}
@@ -1173,6 +1211,8 @@ export default function SubscriptionForm({ initialValues }: SubscriptionFormProp
               value={interval}
               onChange={(e) => setInterval(e.target.value)}
               disabled={isSubmitting}
+              required
+              aria-required="true"
               aria-describedby={`help-interval${intervalError ? ' err-interval' : ''}`}
               aria-invalid={!!intervalError}
               className={fieldClass(!!intervalError)}
@@ -1210,6 +1250,7 @@ export default function SubscriptionForm({ initialValues }: SubscriptionFormProp
               type="submit"
               disabled={isSubmitting || !publicKey}
               aria-describedby={!publicKey ? "hint-wallet" : undefined}
+              aria-busy={isSubmitting}
               className="w-full flex items-center justify-center gap-2 rounded-lg bg-blue-600
                          hover:bg-blue-500 active:bg-blue-700 disabled:opacity-50
                          disabled:cursor-not-allowed px-4 py-3 text-sm font-semibold
@@ -1223,8 +1264,10 @@ export default function SubscriptionForm({ initialValues }: SubscriptionFormProp
                   xmlns="http://www.w3.org/2000/svg"
                   fill="none"
                   viewBox="0 0 24 24"
-                  aria-hidden="true"
+                  role="img"
+                  aria-label="Submitting"
                 >
+                  <title>Submitting</title>
                   <circle
                     className="opacity-25"
                     cx="12"
