@@ -8,6 +8,9 @@
  * to all child components via useWallet().
  *
  * Requirements: 9.1–9.6
+ * FE-47: SSR-safe initial state — all wallet values are `null`/`false` until
+ *         the component mounts on the client, preventing React hydration
+ *         mismatches caused by window.freighter not existing on the server.
  */
 
 import React, {
@@ -32,6 +35,13 @@ export interface WalletContextValue {
   freighterInstalled: boolean;
   /** True while checking Freighter availability on initial load. */
   isCheckingFreighter: boolean;
+  /**
+   * True once the provider has mounted on the client.
+   * Use this flag to suppress wallet-state rendering during SSR so that the
+   * server-rendered HTML and the first client render are identical, preventing
+   * React hydration mismatches. (FE-47)
+   */
+  mounted: boolean;
   /** Trigger wallet connection — opens Freighter permission dialog. */
   connect: () => Promise<void>;
   /** Clear publicKey and return to disconnected state. */
@@ -50,6 +60,16 @@ export function WalletProvider({ children }: { children: ReactNode }) {
   const [connectError, setConnectError] = useState<string | null>(null);
   const [freighterInstalled, setFreighterInstalled] = useState(false);
   const [isCheckingFreighter, setIsCheckingFreighter] = useState(true);
+  // FE-47: mounted flag — false during SSR, true after client hydration.
+  // Components that read wallet state should gate their render on this flag so
+  // the server-rendered HTML (all defaults: null/false) matches the initial
+  // client render, eliminating React hydration errors.
+  const [mounted, setMounted] = useState(false);
+
+  // Mark component as mounted on the client (runs only in the browser)
+  useEffect(() => {
+    setMounted(true);
+  }, []);
 
   // Check Freighter availability on mount (Issue #110)
   useEffect(() => {
@@ -117,6 +137,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
         connectError,
         freighterInstalled,
         isCheckingFreighter,
+        mounted,
         connect,
         disconnect,
       }}

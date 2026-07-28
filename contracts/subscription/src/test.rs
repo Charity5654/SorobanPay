@@ -167,6 +167,27 @@ fn test_payment_not_due_after_subscribe() {
     assert_eq!(t.sub_bal(), bal);
 }
 
+#[test]
+fn test_pause_blocks_payment_then_resume_allows_payment() {
+    let t = T::new();
+    let amount = 100_000_i128;
+    let interval = 86_400_u64;
+    t.client
+        .subscribe(&t.subscriber, &t.merchant, &t.token, &amount, &interval, &false);
+
+    t.client.pause(&t.subscriber, &t.merchant, &None);
+    t.advance(interval + 1);
+    let paused = t
+        .client
+        .try_execute_payment(&t.subscriber, &t.merchant);
+    assert!(matches!(paused, Err(Ok(ContractError::SubscriptionPaused))));
+
+    t.client.resume(&t.subscriber, &t.merchant);
+    t.advance(interval + 1);
+    t.client.execute_payment(&t.subscriber, &t.merchant);
+    assert_eq!(t.mer_bal(), amount);
+}
+
 // ─── Extra: Execute payment before due time ───────────────────────────────────
 
 /// New subscriptions must have ver == 1.
@@ -619,6 +640,22 @@ fn test_subscribe_emits_one_event() {
 }
 
 #[test]
+fn test_subscribe_event_topics_and_data() {
+    let t   = T::new();
+    let amt = 500_i128;
+    t.client.subscribe(&t.subscriber, &t.merchant, &t.token, &amt, &86_400_u64);
+    helpers::assert_event(
+        &t.env,
+        &t.contract_id,
+        "subscribe",
+        &t.subscriber,
+        &t.merchant,
+        amt,
+        0,
+    );
+}
+
+#[test]
 fn test_execute_payment_emits_event() {
     let t = T::new();
     t.client.subscribe(&t.subscriber, &t.merchant, &t.token, &500_i128, &86_400_u64, &false);
@@ -805,6 +842,53 @@ fn test_subscribe_events_distinct_tokens_have_distinct_topics() {
     assert_eq!(our_events[1].2, 200_i128.into_val(&env));
 }
 
+#[test]
+fn test_execute_payment_event_topics_and_data() {
+    let t   = T::new();
+    let amt = 100_000_i128;
+    t.client.subscribe(&t.subscriber, &t.merchant, &t.token, &amt, &86_400_u64);
+    t.advance(86_401);
+    t.client.execute_payment(&t.subscriber, &t.merchant);
+    // The "executed" event is the second contract event (index 1; index 0 was "subscribe")
+    helpers::assert_event(
+        &t.env,
+        &t.contract_id,
+        "executed",
+        &t.subscriber,
+        &t.merchant,
+        amt,
+        1,
+    );
+}
+
+#[test]
+fn test_subscribe_event_symbol_order_is_stable() {
+    // Regression: topic[0] MUST be "subscribe", not "executed" or any other symbol.
+    // A topic-order swap would break the off-chain indexer.
+    let t = T::new();
+    t.client.subscribe(&t.subscriber, &t.merchant, &t.token, &1_000_i128, &86_400_u64);
+    let all = t.env.events().all();
+    let ours: Vec<_> = all.iter().filter(|e| e.0 == t.contract_id).collect();
+    let (_, topics, _) = ours.get(0).unwrap();
+    let sym: soroban_sdk::Symbol = topics.get(0).unwrap().into_val(&t.env);
+    assert_eq!(sym, soroban_sdk::Symbol::new(&t.env, "subscribe"));
+}
+
+#[test]
+fn test_executed_event_symbol_order_is_stable() {
+    // Regression: topic[0] of the payment event MUST be "executed".
+    let t = T::new();
+    t.client.subscribe(&t.subscriber, &t.merchant, &t.token, &1_000_i128, &86_400_u64);
+    t.advance(86_401);
+    t.client.execute_payment(&t.subscriber, &t.merchant);
+    let all = t.env.events().all();
+    let ours: Vec<_> = all.iter().filter(|e| e.0 == t.contract_id).collect();
+    // index 0 = subscribe event, index 1 = executed event
+    let (_, topics, _) = ours.get(1).unwrap();
+    let sym: soroban_sdk::Symbol = topics.get(0).unwrap().into_val(&t.env);
+    assert_eq!(sym, soroban_sdk::Symbol::new(&t.env, "executed"));
+}
+
 // ─── Requirement 13.11 — No events on failure ────────────────────────────────
 
 #[test]
@@ -815,13 +899,26 @@ fn test_no_events_on_invalid_subscribe() {
 }
 
 #[test]
+fn test_no_events_on_interval_too_short() {
+    let t = T::new();
+    let _ = t.client.try_subscribe(&t.subscriber, &t.merchant, &t.token, &100_i128, &1_u64);
+    assert_eq!(helpers::contract_event_count(&t.env, &t.contract_id), 0);
+}
+
+#[test]
+fn test_no_events_on_interval_too_long() {
+    let t = T::new();
+    let _ = t.client.try_subscribe(&t.subscriber, &t.merchant, &t.token, &100_i128, &99_999_999_u64);
+    assert_eq!(helpers::contract_event_count(&t.env, &t.contract_id), 0);
+}
+
+#[test]
 fn test_no_events_on_payment_not_due() {
     let t = T::new();
     t.client.subscribe(&t.subscriber, &t.merchant, &t.token, &100_i128, &86_400_u64, &false);
     let n = t.env.events().all().iter().filter(|e| e.0 == t.contract_id).count();
     let _ = t.client.try_execute_payment(&t.subscriber, &t.merchant);
-    let n2 = t.env.events().all().iter().filter(|e| e.0 == t.contract_id).count();
-    assert_eq!(n, n2, "no extra events on failed execute_payment");
+    assert_eq!(helpers::contract_event_count(&t.env, &t.contract_id), 0);
 }
 
 #[test]
