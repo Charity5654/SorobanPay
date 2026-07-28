@@ -3,10 +3,44 @@
 @tailwind utilities;
 
 @layer base {
-  /* Ensure sufficient contrast baseline for the dark theme */
+  /**
+   * Baseline dark theme using semantic colour tokens.
+   * All contrast ratios verified against WCAG AA (#451 UX-116).
+   *
+   * body bg  = #030712 (gray-950 / surface-base)
+   * body fg  = #F9FAFB (gray-50  / content-primary) — 16.7:1 ✅ AAA
+   */
   body {
-    background-color: #030712; /* gray-950 — darker than gray-900 for better card contrast */
-    color: #f9fafb;            /* gray-50 — 16.7:1 on gray-950, exceeds WCAG AAA */
+    background-color: theme('colors.surface.base');
+    color: theme('colors.content.primary');
+  }
+
+  /* Animation duration CSS custom property — lets components override via inline style */
+  :root {
+    --animation-duration-fast:   150ms;
+    --animation-duration-base:   250ms;
+    --animation-duration-slow:   400ms;
+  }
+
+  /**
+   * Respect prefers-reduced-motion (#452 UX-117).
+   * Setting duration to near-zero keeps event firing without visual motion.
+   */
+  @media (prefers-reduced-motion: reduce) {
+    :root {
+      --animation-duration-fast:  0.01ms;
+      --animation-duration-base:  0.01ms;
+      --animation-duration-slow:  0.01ms;
+    }
+
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
   }
 
   /*
