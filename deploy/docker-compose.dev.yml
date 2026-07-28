@@ -30,6 +30,21 @@ services:
       timeout: 5s
       retries: 10
 
+  # ─── Redis ─────────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
   # ─── Backend ───────────────────────────────────────────────────────────────
   backend:
     build:
@@ -39,14 +54,21 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      redis:
+        condition: service_healthy
     environment:
       DATABASE_URL: postgresql://sorobanpay:sorobanpay@postgres:5432/sorobanpay
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
       RPC_URL: ${RPC_URL:-https://soroban-testnet.stellar.org}
       NETWORK_PASSPHRASE: ${NETWORK_PASSPHRASE:-Test SDF Network ; September 2015}
       CONTRACT_ID: ${CONTRACT_ID:-CXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX}
       PORT: 3001
       ADMIN_JWT_SECRET: ${ADMIN_JWT_SECRET:-change-me-in-production}
       OTEL_SDK_DISABLED: "true"
+      # Cache TTLs (seconds) — override as needed
+      CACHE_TTL_SUBSCRIPTIONS: ${CACHE_TTL_SUBSCRIPTIONS:-60}
+      CACHE_TTL_ANALYTICS: ${CACHE_TTL_ANALYTICS:-300}
+      CACHE_TTL_SUBSCRIPTION_DETAIL: ${CACHE_TTL_SUBSCRIPTION_DETAIL:-30}
     ports:
       - "3001:3001"
     healthcheck:
@@ -95,5 +117,6 @@ services:
 
 volumes:
   postgres_data:
+  redis_data:
   prometheus_data:
   grafana_data:

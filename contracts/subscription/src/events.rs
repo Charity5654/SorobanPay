@@ -55,14 +55,14 @@ pub fn emit_payment_transfer_success(env: &Env, subscriber: &Address, merchant: 
 ///
 /// Topics:  (symbol("payment_transfer_failure"), subscriber, merchant)
 /// Data:    amount (i128)
-pub fn emit_payment_transfer_failure(env: &Env, subscriber: &Address, merchant: &Address, amount: i128) {
+pub fn emit_payment_transfer_failure(env: &Env, subscriber: &Address, merchant: &Address, amount: i128, overdue_since: u64) {
     env.events().publish(
         (
             Symbol::new(env, "payment_transfer_failure"),
             subscriber.clone(),
             merchant.clone(),
         ),
-        amount,
+        (amount, overdue_since),
     );
 }
 
@@ -71,7 +71,7 @@ pub fn emit_payment_transfer_failure(env: &Env, subscriber: &Address, merchant: 
 ///
 /// Topics:  (symbol("executed"), subscriber, merchant, token)
 /// Data:    amount (i128)
-pub fn emit_executed(env: &Env, subscriber: &Address, merchant: &Address, token: &Address, amount: i128) {
+pub fn emit_executed(env: &Env, subscriber: &Address, merchant: &Address, token: &Address, amount: i128, nonce: u64) {
     env.events().publish(
         (
             Symbol::new(env, "executed"),
@@ -79,8 +79,12 @@ pub fn emit_executed(env: &Env, subscriber: &Address, merchant: &Address, token:
             merchant.clone(),
             token.clone(),
         ),
-        amount,
+        (amount, nonce),
     );
+}
+
+pub fn emit_expired(env: &Env, subscriber: &Address, merchant: &Address) {
+    env.events().publish((Symbol::new(env, "expired"), subscriber.clone(), merchant.clone()), ());
 }
 
 /// Emit the `cancel` event after a subscription has been successfully cancelled and removed.
@@ -152,21 +156,5 @@ pub fn emit_low_allowance(
             token.clone(),
         ),
         (allowance, required),
-    );
-}
-
-/// Emit the `pause` event after a subscription has been paused.
-pub fn emit_pause(env: &Env, subscriber: &Address, merchant: &Address, resume_at: Option<u64>) {
-    env.events().publish(
-        (Symbol::new(env, "pause"), subscriber.clone(), merchant.clone()),
-        resume_at.map(|timestamp| timestamp as i128),
-    );
-}
-
-/// Emit the `resume` event after a subscription has been resumed.
-pub fn emit_resume(env: &Env, subscriber: &Address, merchant: &Address) {
-    env.events().publish(
-        (Symbol::new(env, "resume"), subscriber.clone(), merchant.clone()),
-        (),
     );
 }
