@@ -158,12 +158,15 @@ app.listen(PORT, () => {
   } catch (err) {
     console.warn('[retryWorker] Could not start retry worker (Redis unavailable?):', err);
   }
-  // Initial event fetch on startup
-  eventIndexer.fetchAndStoreEvents();
+
+  // BE-51: Start cursor-based polling loop (10 s default, configurable via env)
+  const pollIntervalMs = parseInt(process.env.INDEXER_POLL_INTERVAL_MS ?? '10000', 10);
+  eventIndexer.startPolling(pollIntervalMs);
 });
 
 // Graceful shutdown
 process.on('SIGTERM', async () => {
+  eventIndexer.stopPolling();   // BE-51: stop cursor-based polling
   await shutdownRetryWorker();
   process.exit(0);
 });

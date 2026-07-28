@@ -24,6 +24,33 @@ model Event {
   createdAt       DateTime @default(now())
 }
 
+// BE-51: Cursor-based indexer resumability
+// A single row (id = 1) acts as a singleton state record.
+model IndexerState {
+  id                   Int      @id @default(autoincrement())
+  lastCursor           String?  // Opaque RPC pagination cursor from getEvents()
+  lastProcessedLedger  Int      @default(0)
+  updatedAt            DateTime @updatedAt
+}
+
+// BE-51: Normalised payment record for executed payments
+// Stores txHash for deduplication and cross-reference with audit logs.
+model Payment {
+  id          Int      @id @default(autoincrement())
+  subscriber  String
+  merchant    String
+  token       String
+  amount      String   // stroops as string
+  txHash      String   @unique
+  ledger      BigInt
+  timestamp   DateTime
+  status      String   @default("executed") // executed | failed
+  createdAt   DateTime @default(now())
+
+  @@index([merchant, timestamp])
+  @@index([subscriber, merchant])
+}
+
 model AuditLog {
   id               Int      @id @default(autoincrement())
   eventType        String
