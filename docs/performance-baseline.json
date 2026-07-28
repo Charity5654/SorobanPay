@@ -1,0 +1,33 @@
+{
+  "_comment": "Performance baseline for SorobanPay SubscriptionProtocol — TEST-100 / SC-23.",
+  "_comment2": "Update via: npm run update-baseline (from project root, requires live testnet access).",
+  "_comment3": "Regression threshold: 20%. CI fails if any metric exceeds baseline * 1.20.",
+  "capturedAt": "2026-07-26T00:00:00.000Z",
+  "gitCommit": "initial-baseline",
+  "entryPoints": {
+    "subscribe": {
+      "_comment": "Pure write: 1 require_auth + 5 validations + 1 persistent write + 1 TTL extend + 1 event publish.",
+      "_comment2": "No cross-contract calls. Cost: ~50k–150k instructions (README guidance).",
+      "instructions": 100000,
+      "readBytes": 200,
+      "writeBytes": 300,
+      "minResourceFee": 1000
+    },
+    "execute_payment": {
+      "_comment": "Highest cost: 1 require_auth + 1 storage read + 1 timestamp read + 2 cross-contract calls (balance + transfer) + 1 storage write + 1 TTL extend + 1 event publish.",
+      "_comment2": "Two cross-contract calls (especially transfer) dominate. Cost: ~500k instructions (README guidance).",
+      "instructions": 500000,
+      "readBytes": 400,
+      "writeBytes": 500,
+      "minResourceFee": 5000
+    },
+    "cancel": {
+      "_comment": "Lowest cost: 1 require_auth + 1 storage has check + 1 storage remove + 1 event publish.",
+      "_comment2": "No cross-contract calls, no write to new keys. Cost: ~50k instructions (README guidance).",
+      "instructions": 50000,
+      "readBytes": 100,
+      "writeBytes": 100,
+      "minResourceFee": 500
+    }
+  }
+}

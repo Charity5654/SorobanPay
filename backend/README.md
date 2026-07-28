@@ -73,6 +73,22 @@ GET /api/summaries/:id
 - **Daily Summaries**: 1:00 AM every day
 - **Weekly Summaries**: 2:00 AM every Sunday
 
+## Troubleshooting
+
+If you encounter issues with the event indexer, webhooks, the payment scheduler, or the database, see the dedicated guide:
+
+**[docs/troubleshooting-backend.md](../docs/troubleshooting-backend.md)**
+
+Common issues covered:
+- Indexer lag / RPC rate limiting
+- Duplicate payment records
+- Webhooks not delivering
+- `401 Unauthorized` / `503` errors
+- Cancel events missing from the audit trail
+- Re-indexing from a specific ledger
+
+---
+
 ## Project Structure
 
 ```

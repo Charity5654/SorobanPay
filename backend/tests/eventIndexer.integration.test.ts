@@ -11,17 +11,17 @@
  * into payout summaries.
  */
 
-import { PayoutSummaryGenerator } from '../../src/services/payoutSummaryGenerator';
-import { InMemoryPrismaClient } from '../helpers/inMemoryDb';
+import { PayoutSummaryGenerator } from '../src/services/payoutSummaryGenerator';
+import { InMemoryPrismaClient } from './helpers/inMemoryDb';
 
 // Inject the in-memory client by patching the module import the service uses.
-jest.mock('../../src/lib/prisma', () => ({
+jest.mock('../src/lib/prisma', () => ({
   __esModule: true,
-  default: new (require('../helpers/inMemoryDb').InMemoryPrismaClient)(),
+  default: new (require('./helpers/inMemoryDb').InMemoryPrismaClient)(),
 }));
 
 // Re-import the mocked prisma so we can seed it
-import prisma from '../../src/lib/prisma';
+import prisma from '../src/lib/prisma';
 const db = prisma as unknown as InMemoryPrismaClient;
 
 const MERCHANT = 'GMERCHANT0000001';
