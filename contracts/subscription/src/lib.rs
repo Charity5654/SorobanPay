@@ -28,7 +28,8 @@ fn ledger_timestamp(env: &Env) -> Result<u64, ContractError> {
 
 #[inline]
 fn checked_next_payment(ts: u64, interval: u64) -> Result<u64, ContractError> {
-    ts.checked_add(interval).ok_or(ContractError::InvalidTimestamp)
+    ts.checked_add(interval)
+        .ok_or(ContractError::InvalidTimestamp)
 }
 
 /// Add a hashed key to a merchant's subscription index.
@@ -147,18 +148,16 @@ impl SubscriptionProtocol {
         env: Env,
         subscriber: Address,
         merchant: Address,
+        token: Address,
     ) -> BytesN<32> {
-        subscription_key(&env, &subscriber, &merchant)
+        subscription_key(&env, &subscriber, &merchant, &token)
     }
 
     /// Return all subscription key hashes indexed for a given merchant.
     ///
     /// Off-chain tools can iterate these hashes to enumerate all active
     /// subscriptions the merchant participates in.
-    pub fn get_merchant_subscription_keys(
-        env: Env,
-        merchant: Address,
-    ) -> Vec<BytesN<32>> {
+    pub fn get_merchant_subscription_keys(env: Env, merchant: Address) -> Vec<BytesN<32>> {
         let idx_key = DataKey::MerchantIndex(merchant);
         env.storage()
             .temporary()
@@ -226,6 +225,7 @@ impl SubscriptionProtocol {
         // Allowance validation (#346).
         let contract_address = env.current_contract_address();
         let token_client = token::Client::new(&env, &token);
+        token_client.symbol();
         let allowance = token_client.allowance(&subscriber, &contract_address);
 
         if allowance < amount {
@@ -247,7 +247,7 @@ impl SubscriptionProtocol {
         };
 
         // Compact key (#347): sha256(subscriber_xdr ++ merchant_xdr).
-        let hash = subscription_key(&env, &subscriber, &merchant);
+        let hash = subscription_key(&env, &subscriber, &merchant, &token);
         let key = DataKey::Subscription(hash.clone());
         env.storage().persistent().set(&key, &data);
         env.storage()
@@ -270,10 +270,11 @@ impl SubscriptionProtocol {
         env: Env,
         subscriber: Address,
         merchant: Address,
+        token: Address,
     ) -> Result<(), ContractError> {
         merchant.require_auth();
 
-        let hash = subscription_key(&env, &subscriber, &merchant);
+        let hash = subscription_key(&env, &subscriber, &merchant, &token);
         let key = DataKey::Subscription(hash.clone());
         let mut data: SubscriptionData = env
             .storage()
@@ -315,6 +316,7 @@ impl SubscriptionProtocol {
     pub fn batch_execute_payment(
         env: Env,
         merchant: Address,
+        token: Address,
         subscribers: Vec<Address>,
     ) -> Result<Vec<(Address, bool)>, ContractError> {
         merchant.require_auth();
@@ -333,7 +335,7 @@ impl SubscriptionProtocol {
         let mut keys_to_extend: Vec<DataKey> = Vec::new(&env);
 
         for subscriber in subscribers.iter() {
-            let hash = subscription_key(&env, &subscriber, &merchant);
+            let hash = subscription_key(&env, &subscriber, &merchant, &token);
             let key = DataKey::Subscription(hash.clone());
 
             let mut data: SubscriptionData = match env.storage().persistent().get(&key) {
@@ -386,10 +388,11 @@ impl SubscriptionProtocol {
         env: Env,
         subscriber: Address,
         merchant: Address,
+        token: Address,
     ) -> Result<(), ContractError> {
         subscriber.require_auth();
 
-        let hash = subscription_key(&env, &subscriber, &merchant);
+        let hash = subscription_key(&env, &subscriber, &merchant, &token);
         let key = DataKey::Subscription(hash.clone());
         if !env.storage().persistent().has(&key) {
             return Err(ContractError::NoActiveSubscription);
@@ -412,8 +415,9 @@ impl SubscriptionProtocol {
         env: Env,
         subscriber: Address,
         merchant: Address,
+        token: Address,
     ) -> Option<SubscriptionData> {
-        let hash = subscription_key(&env, &subscriber, &merchant);
+        let hash = subscription_key(&env, &subscriber, &merchant, &token);
         let key = DataKey::Subscription(hash);
         let data = env.storage().persistent().get(&key)?;
         env.storage()
@@ -431,3 +435,6 @@ mod security_tests;
 
 #[cfg(test)]
 mod property_tests;
+
+#[cfg(test)]
+mod multi_token_tests;
