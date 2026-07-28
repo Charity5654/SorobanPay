@@ -307,6 +307,19 @@ impl SubscriptionProtocol {
             .ok_or(ContractError::NoActiveSubscription)?;
 
         let now = ledger_timestamp(&env)?;
+        if data.is_paused {
+            if let Some(resume_at) = data.paused_until {
+                if now >= resume_at {
+                    data.is_paused = false;
+                    data.paused_until = None;
+                    data.next_payment = checked_next_payment(now, data.interval)?;
+                } else {
+                    return Err(ContractError::SubscriptionPaused);
+                }
+            } else {
+                return Err(ContractError::SubscriptionPaused);
+            }
+        }
         if now < data.next_payment {
             return Err(ContractError::PaymentNotDue);
         }
@@ -471,6 +484,55 @@ impl SubscriptionProtocol {
             .persistent()
             .extend_ttl(&key, MIN_TTL_LEDGERS, MAX_TTL_LEDGERS);
         Some(data)
+    }
+
+    /// Pause a subscription without extending its storage TTL.
+    pub fn pause(
+        env: Env,
+        subscriber: Address,
+        merchant: Address,
+        resume_at: Option<u64>,
+    ) -> Result<(), ContractError> {
+        subscriber.require_auth();
+        if let Some(timestamp) = resume_at {
+            if timestamp <= ledger_timestamp(&env)? {
+                return Err(ContractError::InvalidTimestamp);
+            }
+        }
+        let hash = subscription_key(&env, &subscriber, &merchant);
+        let key = DataKey::Subscription(hash);
+        let mut data: SubscriptionData = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(ContractError::NoActiveSubscription)?;
+        data.is_paused = true;
+        data.paused_until = resume_at;
+        env.storage().persistent().set(&key, &data);
+        events::emit_pause(&env, &subscriber, &merchant, resume_at);
+        Ok(())
+    }
+
+    /// Resume a subscription and restart its payment schedule from now.
+    pub fn resume(env: Env, subscriber: Address, merchant: Address) -> Result<(), ContractError> {
+        subscriber.require_auth();
+        let hash = subscription_key(&env, &subscriber, &merchant);
+        let key = DataKey::Subscription(hash);
+        let mut data: SubscriptionData = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(ContractError::NoActiveSubscription)?;
+        let now = ledger_timestamp(&env)?;
+        data.is_paused = false;
+        data.paused_until = None;
+        data.next_payment = checked_next_payment(now, data.interval)?;
+        env.storage().persistent().set(&key, &data);
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, MIN_TTL_LEDGERS, MAX_TTL_LEDGERS);
+        events::emit_resume(&env, &subscriber, &merchant);
+        Ok(())
     }
 }
 
