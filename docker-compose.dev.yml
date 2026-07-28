@@ -1,0 +1,52 @@
+# SorobanPay — Docker Compose dev override (hot reload)
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up
+#
+# This override:
+#   - Mounts source code as volumes so changes are reflected instantly
+#   - Runs both frontend and API in dev/watch mode
+#   - Sets NODE_ENV=development
+
+version: "3.9"
+
+services:
+
+  # ── Frontend dev server (Next.js HMR) ────────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      target: deps        # stop at the deps stage — we mount source below
+    command: ["npm", "run", "dev"]
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules   # anonymous volume — prevents host overwrite
+      - /app/.next          # ditto for .next cache
+    environment:
+      NODE_ENV: development
+      NEXT_PUBLIC_CONTRACT_ID: ${NEXT_PUBLIC_CONTRACT_ID:-}
+      NEXT_PUBLIC_RPC_URL: ${NEXT_PUBLIC_RPC_URL:-https://soroban-testnet.stellar.org}
+      NEXT_PUBLIC_NETWORK_PASSPHRASE: ${NEXT_PUBLIC_NETWORK_PASSPHRASE:-Test SDF Network ; September 2015}
+    ports:
+      - "3000:3000"
+
+  # ── Backend dev server (ts-node with --watch) ─────────────────────────────────
+  api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      target: deps
+    command: ["npx", "ts-node", "--transpile-only", "src/index.ts"]
+    volumes:
+      - ./backend:/app
+      - /app/node_modules
+    environment:
+      NODE_ENV: development
+      DATABASE_URL: ${DATABASE_URL:-postgresql://sorobanpay:devpassword@postgres:5432/sorobanpay}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+      RPC_URL: ${RPC_URL:-https://soroban-testnet.stellar.org}
+      NETWORK_PASSPHRASE: ${NETWORK_PASSPHRASE:-Test SDF Network ; September 2015}
+      CONTRACT_ID: ${CONTRACT_ID:-}
+      PORT: 4000
+      ADMIN_JWT_SECRET: ${ADMIN_JWT_SECRET:-change-me-in-dev-only}
