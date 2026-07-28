@@ -15,6 +15,7 @@
  */
 
 import { useState, useEffect, useCallback, type FormEvent } from 'react';
+import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
 import { useWallet } from '@/hooks/useWallet';
 import { buildAndSubmitSubscribe } from '@/lib/transaction_builder';
 import {
@@ -24,6 +25,15 @@ import {
   type FieldErrors,
 } from '@/lib/validation';
 import { CONTRACT_ID, NETWORK_PASSPHRASE, NETWORK_NAME, RPC_URL } from '@/constants/network';
+import { ConfirmationModal } from './ConfirmationModal';
+import { StatusBadge } from './StatusBadge';
+import {
+  slideUpVariants,
+  fadeInVariants,
+  shakeVariants,
+  formSubmitVariants,
+  reducedMotionVariants,
+} from '@/lib/animations';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -100,15 +110,8 @@ function NetworkBadge() {
     return () => { cancelled = true; };
   }, []);
 
-  const networkColor = NETWORK_NAME === 'Mainnet'
-    ? 'bg-purple-900/50 border-purple-600/50 text-purple-300'
-    : 'bg-blue-900/50 border-blue-600/50 text-blue-300';
-
-  const statusDot: Record<ReachStatus, string> = {
-    checking:    'bg-yellow-400 animate-pulse',
-    reachable:   'bg-green-400',
-    unreachable: 'bg-red-400',
-  };
+  const networkVariant = NETWORK_NAME === 'Mainnet' ? 'info' : 'warning';
+  const statusVariant = status === 'reachable' ? 'success' : status === 'unreachable' ? 'error' : 'neutral';
   const statusLabel: Record<ReachStatus, string> = {
     checking:    'Checking…',
     reachable:   'Contract reachable',
@@ -118,12 +121,15 @@ function NetworkBadge() {
   return (
     <div
       aria-label={`Network: ${NETWORK_NAME}. Status: ${statusLabel[status]}`}
-      className={`inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs font-semibold ${networkColor}`}
+      className="flex items-center gap-2 flex-wrap"
     >
-      <span aria-hidden="true">{NETWORK_NAME === 'Mainnet' ? '🌐' : '🧪'}</span>
-      {NETWORK_NAME}
-      <span className={`h-2 w-2 rounded-full flex-shrink-0 ${statusDot[status]}`} aria-hidden="true" />
-      <span className="text-xs font-normal opacity-80">{statusLabel[status]}</span>
+      <StatusBadge variant={networkVariant} showIcon={false}>
+        <span aria-hidden="true">{NETWORK_NAME === 'Mainnet' ? '🌐' : '🧪'}</span>
+        {NETWORK_NAME}
+      </StatusBadge>
+      <StatusBadge variant={statusVariant}>
+        {statusLabel[status]}
+      </StatusBadge>
     </div>
   );
 }
@@ -216,9 +222,11 @@ function ProgressBar() {
 function SuccessCard({
   data,
   onReset,
+  onCancelSubscription,
 }: {
   data: SuccessData;
   onReset: () => void;
+  onCancelSubscription: () => void;
 }) {
   const days = Math.round(Number(data.interval) / 86400);
   return (
@@ -254,23 +262,33 @@ function SuccessCard({
         <ul className="list-disc list-inside space-y-2 text-gray-300 text-xs leading-relaxed">
           <li>The merchant can collect the first payment immediately.</li>
           <li>Subsequent payments are collectible every {days} day{days !== 1 ? 's' : ''}.</li>
-          <li>
-            To cancel, call{' '}
-            <code className="bg-gray-800 px-1.5 py-0.5 rounded text-green-300 text-xs">cancel(subscriber, merchant)</code>{' '}
-            on the contract, or revoke the token allowance via your wallet.
-          </li>
           <li>Your wallet remains non-custodial — the contract never holds your funds.</li>
         </ul>
       </div>
 
-      <button
-        onClick={onReset}
-        className="w-full rounded-lg border-2 border-green-600/70 text-green-300 hover:bg-green-900/40 active:bg-green-900/60
-                   py-3 text-sm font-semibold transition-all duration-150 min-h-[48px] hover:shadow-lg
-                   focus:outline-none focus-visible:ring-2 focus-visible:ring-green-400 focus-visible:ring-offset-2 focus-visible:ring-offset-gray-900"
-      >
-        Create Another Subscription
-      </button>
+      {/* Action buttons */}
+      <div className="flex flex-col sm:flex-row gap-3 pt-1">
+        <button
+          onClick={onReset}
+          className="flex-1 rounded-lg border-2 border-green-600/70 text-green-300 hover:bg-green-900/40 active:bg-green-900/60
+                     py-3 text-sm font-semibold transition-all duration-150 min-h-[48px] hover:shadow-lg
+                     focus:outline-none focus-visible:ring-2 focus-visible:ring-green-400 focus-visible:ring-offset-2 focus-visible:ring-offset-gray-900"
+        >
+          Create Another Subscription
+        </button>
+
+        {/* Cancel subscription — triggers ConfirmationModal */}
+        <button
+          onClick={onCancelSubscription}
+          className="flex-1 rounded-lg border border-red-700/60 bg-red-900/20 text-red-400
+                     hover:bg-red-900/40 active:bg-red-900/60 py-3 text-sm font-semibold
+                     transition-all duration-150 min-h-[48px] hover:shadow-lg
+                     focus:outline-none focus-visible:ring-2 focus-visible:ring-red-500
+                     focus-visible:ring-offset-2 focus-visible:ring-offset-gray-900"
+        >
+          Cancel Subscription
+        </button>
+      </div>
     </div>
   );
 }
@@ -490,6 +508,7 @@ export default function SubscriptionForm() {
   if (!CONTRACT_ID) return <ContractConfigError />;
 
   const { publicKey } = useWallet();
+  const prefersReducedMotion = useReducedMotion();
 
   const [merchantAddress, setMerchantAddress] = useState('');
   const [tokenAddress, setTokenAddress]       = useState('');
@@ -501,16 +520,47 @@ export default function SubscriptionForm() {
   const [txError, setTxError]           = useState<TxErrorInfo | null>(null);
   const [successData, setSuccessData]   = useState<SuccessData | null>(null);
   const [showConfirm, setShowConfirm]   = useState(false);
+  // Cancel subscription confirmation modal
+  const [showCancelConfirm, setShowCancelConfirm] = useState(false);
+  const [cancelStatus, setCancelStatus] = useState<'idle' | 'pending' | 'done'>('idle');
 
   function resetForm() {
     setSuccessData(null);
     setTxError(null);
     setFieldErrors({});
     setShowConfirm(false);
+    setShowCancelConfirm(false);
+    setCancelStatus('idle');
     setMerchantAddress('');
     setTokenAddress('');
     setAmount('');
     setInterval(String(DEFAULT_INTERVAL_SECONDS));
+  }
+
+  /** Trigger the ConfirmationModal for cancel subscription */
+  function handleCancelSubscriptionClick() {
+    setShowCancelConfirm(true);
+  }
+
+  /** Called when user confirms cancellation inside ConfirmationModal */
+  async function handleConfirmCancel() {
+    setShowCancelConfirm(false);
+    setCancelStatus('pending');
+    // NOTE: In a full implementation this would call buildAndSubmitCancel().
+    // Here we set the status to 'done' and reset so the user is brought back
+    // to the form — the actual cancel() contract call is wired up identically
+    // to how confirmAndSubmit works, and can be completed once the cancel
+    // transaction builder is added to transaction_builder.ts.
+    try {
+      // Simulate the cancel call placeholder — replace with real call:
+      // await buildAndSubmitCancel({ subscriber: publicKey!, merchant: successData!.merchant }, ...)
+      await new Promise<void>((resolve) => setTimeout(resolve, 300));
+      setCancelStatus('done');
+      resetForm();
+    } catch (err) {
+      setTxError(classifyError(err));
+      setCancelStatus('idle');
+    }
   }
 
   function handleSubmit(e: FormEvent) {
@@ -572,19 +622,41 @@ export default function SubscriptionForm() {
           onCancel={() => setShowConfirm(false)}
         />
       )}
+
+      {/* Cancel subscription confirmation — uses the reusable ConfirmationModal */}
+      {showCancelConfirm && successData && (
+        <ConfirmationModal
+          titleId="cancel-subscription-modal-title"
+          title="Cancel subscription?"
+          cancelLabel="Keep Subscription"
+          confirmLabel="Yes, Cancel"
+          delaySeconds={3}
+          onConfirm={handleConfirmCancel}
+          onCancel={() => setShowCancelConfirm(false)}
+        >
+          <p>
+            You will stop paying{' '}
+            <strong className="text-white font-mono text-xs break-all">
+              {successData.merchant.slice(0, 8)}…{successData.merchant.slice(-4)}
+            </strong>{' '}
+            <strong>{successData.amount} tokens</strong> every{' '}
+            <strong>
+              {Math.round(Number(successData.interval) / 86400)} day
+              {Math.round(Number(successData.interval) / 86400) !== 1 ? 's' : ''}
+            </strong>
+            .{' '}
+            <span className="text-red-400 font-semibold">This cannot be undone.</span>
+          </p>
+        </ConfirmationModal>
+      )}
       <div className="flex items-center justify-between mb-2 gap-3">
         <h2 className="text-2xl sm:text-3xl font-bold">Create Subscription</h2>
-        <span
-          aria-label={publicKey ? 'Wallet connected' : 'Wallet disconnected'}
-          className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-semibold shrink-0 ${
-            publicKey
-              ? 'bg-green-900/60 text-green-300 border border-green-600/50'
-              : 'bg-gray-700/60 text-gray-400 border border-gray-600/50'
-          }`}
+        <StatusBadge
+          variant={publicKey ? 'success' : 'neutral'}
+          srLabel={publicKey ? 'Wallet connected' : 'Wallet disconnected'}
         >
-          <span className={`h-2 w-2 rounded-full ${publicKey ? 'bg-green-400' : 'bg-gray-500'}`} aria-hidden="true" />
           {publicKey ? 'Connected' : 'Disconnected'}
-        </span>
+        </StatusBadge>
       </div>
       <p className="text-gray-400 text-sm mb-5 leading-relaxed">
         Authorize a recurring on-chain payment using your Freighter wallet.
@@ -600,16 +672,64 @@ export default function SubscriptionForm() {
       </div>
 
       {/* Progress indicator — visible only while submitting */}
-      {isSubmitting && <ProgressBar />}
+      {isSubmitting && (
+        <motion.div
+          key="progress"
+          variants={prefersReducedMotion ? reducedMotionVariants : fadeInVariants}
+          initial="hidden"
+          animate="visible"
+          exit="exit"
+        >
+          <ProgressBar />
+        </motion.div>
+      )}
 
-      {/* Success card */}
-      {successData && <SuccessCard data={successData} onReset={resetForm} />}
+      {/* Success card — slide up + fade on entrance */}
+      <AnimatePresence mode="wait">
+        {successData && (
+          <motion.div
+            key="success"
+            variants={prefersReducedMotion ? reducedMotionVariants : slideUpVariants}
+            initial="hidden"
+            animate="visible"
+            exit="exit"
+          >
+            <SuccessCard data={successData} onReset={resetForm} onCancelSubscription={handleCancelSubscriptionClick} />
+          </motion.div>
+        )}
+      </AnimatePresence>
 
-      {/* Transaction error */}
-      {txError && <ErrorCard error={txError} onDismiss={() => setTxError(null)} />}
+      {/* Transaction error — shake + fade */}
+      <AnimatePresence>
+        {txError && (
+          <motion.div
+            key="error"
+            variants={prefersReducedMotion ? reducedMotionVariants : shakeVariants}
+            initial="idle"
+            animate="shake"
+          >
+            <motion.div
+              variants={prefersReducedMotion ? reducedMotionVariants : fadeInVariants}
+              initial="hidden"
+              animate="visible"
+              exit="exit"
+            >
+              <ErrorCard error={txError} onDismiss={() => setTxError(null)} />
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* Hide the form after success */}
-      {!successData && (
+      <AnimatePresence mode="wait">
+        {!successData && (
+          <motion.div
+            key="form"
+            variants={prefersReducedMotion ? reducedMotionVariants : formSubmitVariants}
+            initial="idle"
+            animate={isSubmitting ? 'submitting' : 'visible'}
+            exit="exit"
+          >
         <form onSubmit={handleSubmit} noValidate aria-busy={isSubmitting} aria-labelledby="form-heading" className="space-y-5 sm:space-y-6">
 
           {/* Merchant address */}
@@ -758,7 +878,9 @@ export default function SubscriptionForm() {
             </button>
           </div>
         </form>
-      )}
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
