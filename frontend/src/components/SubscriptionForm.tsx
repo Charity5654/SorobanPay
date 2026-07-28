@@ -807,6 +807,229 @@ function ErrorCard({
   );
 }
 
+// ─── Token info helpers ────────────────────────────────────────────────────────
+
+/** SEP-41 standard: 7 decimal places (10^7 stroops per token unit). */
+const STROOPS_PER_TOKEN = 10_000_000n;
+
+/**
+ * Format a raw stroop bigint value as a human-readable token amount with 7
+ * decimal places (e.g. 1_000_000_000n → "100.0000000").
+ */
+function formatStroops(stroops: bigint): string {
+  const whole = stroops / STROOPS_PER_TOKEN;
+  const frac = stroops % STROOPS_PER_TOKEN;
+  // Pad fractional part to 7 digits
+  const fracStr = frac.toString().padStart(7, "0");
+  return `${whole}.${fracStr}`;
+}
+
+// ─── TokenInfoPanel ────────────────────────────────────────────────────────────
+
+/**
+ * Displays the subscriber's current token balance and approved allowance for
+ * the SorobanPay contract, with warnings when either is insufficient for the
+ * entered amount.
+ *
+ * Rendered below the amount field whenever the wallet is connected and a valid
+ * token address is present. Warnings are informational — they do not block submission.
+ */
+function TokenInfoPanel({
+  tokenAddress,
+  subscriberAddress,
+  amountStr,
+}: {
+  tokenAddress: string;
+  subscriberAddress: string;
+  amountStr: string;
+}) {
+  const { status, balance, allowance, error, refresh } = useTokenInfo(
+    tokenAddress,
+    subscriberAddress,
+    CONTRACT_ID,
+  );
+
+  // Parse the entered amount into stroops for comparison
+  const enteredTokens = amountStr.trim() !== "" ? Number(amountStr) : NaN;
+  const enteredStroops =
+    !isNaN(enteredTokens) && Number.isInteger(enteredTokens) && enteredTokens > 0
+      ? BigInt(enteredTokens) * STROOPS_PER_TOKEN
+      : null;
+
+  const balanceTooLow =
+    enteredStroops !== null && balance !== null && enteredStroops > balance;
+  const allowanceTooLow =
+    enteredStroops !== null && allowance !== null && enteredStroops > allowance;
+
+  // Don't render anything when idle (no valid addresses yet)
+  if (status === "idle") return null;
+
+  return (
+    <div className="mt-3 space-y-2">
+      {/* ── Loading skeleton ── */}
+      {status === "loading" && (
+        <div
+          role="status"
+          aria-label="Fetching token information"
+          className="flex items-center gap-2 text-xs text-gray-400 animate-pulse"
+        >
+          <svg
+            className="h-3.5 w-3.5 animate-spin text-blue-400"
+            xmlns="http://www.w3.org/2000/svg"
+            fill="none"
+            viewBox="0 0 24 24"
+            aria-hidden="true"
+          >
+            <circle
+              className="opacity-25"
+              cx="12"
+              cy="12"
+              r="10"
+              stroke="currentColor"
+              strokeWidth="4"
+            />
+            <path
+              className="opacity-75"
+              fill="currentColor"
+              d="M4 12a8 8 0 018-8v8H4z"
+            />
+          </svg>
+          Fetching balance…
+        </div>
+      )}
+
+      {/* ── Error state ── */}
+      {status === "error" && error && (
+        <div
+          id="token-info-error"
+          role="status"
+          className="flex flex-col gap-2 rounded-lg bg-red-900/30 border border-red-700/50 px-3 py-2.5 text-xs text-red-300"
+        >
+          <p>{error}</p>
+          <button
+            type="button"
+            aria-label="Retry fetching token info"
+            onClick={refresh}
+            className="self-start inline-flex items-center gap-1.5 rounded px-2 py-1 text-xs font-medium
+                       bg-red-800/60 hover:bg-red-700/60 text-red-200 transition-colors
+                       focus:outline-none focus-visible:ring-2 focus-visible:ring-red-400"
+          >
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              className="h-3.5 w-3.5"
+              viewBox="0 0 20 20"
+              fill="currentColor"
+              aria-hidden="true"
+            >
+              <path
+                fillRule="evenodd"
+                d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 010 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z"
+                clipRule="evenodd"
+              />
+            </svg>
+            Retry
+          </button>
+        </div>
+      )}
+
+      {/* ── Success state: balance + allowance rows ── */}
+      {status === "success" && balance !== null && allowance !== null && (
+        <div className="rounded-lg bg-gray-800/60 border border-gray-700/60 divide-y divide-gray-700/50 text-xs">
+          {/* Header row with refresh button */}
+          <div className="flex items-center justify-between px-3 py-2">
+            <span className="text-gray-400 font-medium uppercase tracking-wide text-[10px]">
+              Token info
+            </span>
+            <button
+              type="button"
+              aria-label="Refresh token balance and allowance"
+              onClick={refresh}
+              className="text-gray-500 hover:text-gray-300 transition-colors rounded
+                         focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400"
+            >
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                className="h-3.5 w-3.5"
+                viewBox="0 0 20 20"
+                fill="currentColor"
+                aria-hidden="true"
+              >
+                <path
+                  fillRule="evenodd"
+                  d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 010 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z"
+                  clipRule="evenodd"
+                />
+              </svg>
+            </button>
+          </div>
+
+          {/* Balance row */}
+          <div className="flex items-center justify-between px-3 py-2">
+            <span className="text-gray-400">Your balance</span>
+            <span className={`font-mono font-medium ${balanceTooLow ? "text-yellow-400" : "text-gray-200"}`}>
+              {formatStroops(balance)}
+            </span>
+          </div>
+
+          {/* Allowance row */}
+          <div className="flex items-center justify-between px-3 py-2">
+            <span className="text-gray-400">Approved allowance</span>
+            <span className={`font-mono font-medium ${allowanceTooLow ? "text-yellow-400" : "text-gray-200"}`}>
+              {formatStroops(allowance)}
+            </span>
+          </div>
+        </div>
+      )}
+
+      {/* ── Insufficient balance warning ── */}
+      {balanceTooLow && balance !== null && (
+        <div
+          role="status"
+          className="rounded-lg bg-yellow-900/30 border border-yellow-600/50 px-3 py-2.5 text-xs text-yellow-300 space-y-1"
+        >
+          <p className="font-semibold">⚠ Balance too low</p>
+          <p>
+            Your current balance is{" "}
+            <span className="font-mono">{formatStroops(balance)}</span>, which
+            is less than the requested amount. The first payment will fail with{" "}
+            <strong>TransferFailed (error 7)</strong> unless you top up before the merchant
+            collects.
+          </p>
+        </div>
+      )}
+
+      {/* ── Insufficient allowance warning ── */}
+      {allowanceTooLow && allowance !== null && (
+        <div
+          role="status"
+          className="rounded-lg bg-yellow-900/30 border border-yellow-600/50 px-3 py-2.5 text-xs text-yellow-300 space-y-2"
+        >
+          <p className="font-semibold">⚠ Allowance too low</p>
+          <p>
+            The contract is only approved to transfer{" "}
+            <span className="font-mono">{formatStroops(allowance)}</span> tokens,
+            which is less than the requested amount. Payment will fail with{" "}
+            <strong>TransferFailed (error 7)</strong>. Approve a higher allowance
+            before subscribing.
+          </p>
+          <div className="bg-gray-900/60 rounded p-2 space-y-1">
+            <p className="text-gray-400 font-medium">Approve via CLI:</p>
+            <pre className="overflow-x-auto whitespace-pre-wrap break-all text-[10px] text-gray-300">
+              {`stellar contract invoke \\
+  --id ${tokenAddress} --source <your-key> --network testnet \\
+  -- approve \\
+  --from <subscriber-address> \\
+  --spender ${CONTRACT_ID} \\
+  --amount <desired-amount> \\
+  --expiration-ledger 9999999`}
+            </pre>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Component ────────────────────────────────────────────────────────────────
 
 // ─── Props ────────────────────────────────────────────────────────────────────
@@ -1118,7 +1341,7 @@ export default function SubscriptionForm({ initialValues }: SubscriptionFormProp
             )}
           </div>
 
-          {/* Token address */}
+          {/* Token contract address — combobox with known-token autocomplete */}
           <div>
             <label
               htmlFor="tokenAddress"
@@ -1127,27 +1350,20 @@ export default function SubscriptionForm({ initialValues }: SubscriptionFormProp
               Token contract address{requiredMark}
               <span className="sr-only"> (required)</span>
             </label>
-            <input
+            <TokenCombobox
               id="tokenAddress"
-              type="text"
-              placeholder="e.g. CXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
-              autoComplete="off"
               value={tokenAddress}
-              onChange={(e) => setTokenAddress(e.target.value)}
+              onChange={setTokenAddress}
               disabled={isSubmitting}
-              required
-              aria-required="true"
-              aria-describedby={`help-token${fieldErrors.tokenAddress ? " err-token" : ""}`}
-              aria-invalid={!!fieldErrors.tokenAddress}
-              className={fieldClass(!!fieldErrors.tokenAddress)}
+              hasError={!!fieldErrors.tokenAddress}
+              tokens={getKnownTokens(NETWORK_NAME)}
+              ariaDescribedBy={`help-token${fieldErrors.tokenAddress ? " err-token" : ""}`}
             />
             <p id="help-token" className={hintCls}>
-              The SEP-41 token contract address — starts with{" "}
+              Search by symbol (e.g. <code className="bg-gray-800 px-1 rounded text-gray-200 text-xs">USDC</code>)
+              or paste a full SEP-41 contract address (starts with{" "}
               <code className="bg-gray-800 px-1 rounded text-gray-200 text-xs">C</code>,
-              56 characters. Example (testnet USDC):{" "}
-              <code className="bg-gray-800 px-1 rounded text-gray-200 text-xs font-mono">
-                CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA
-              </code>
+              56 characters). Token list is network-aware ({NETWORK_NAME}).
             </p>
             {fieldErrors.tokenAddress && (
               <p
@@ -1196,6 +1412,15 @@ export default function SubscriptionForm({ initialValues }: SubscriptionFormProp
               >
                 {fieldErrors.amount}
               </p>
+            )}
+
+            {/* Token balance / allowance info — shown when wallet connected + valid token */}
+            {publicKey && (
+              <TokenInfoPanel
+                tokenAddress={tokenAddress}
+                subscriberAddress={publicKey}
+                amountStr={amount}
+              />
             )}
           </div>
 
