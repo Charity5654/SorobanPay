@@ -366,3 +366,80 @@ jobs:
         with:
           name: gas-estimation-report
           path: gas-estimation-report.md
+
+  # Issue #458 OPS-123 — Automated contract deployment with version pinning
+  deploy:
+    name: Deploy contract & update manifest
+    runs-on: ubuntu-latest
+    # Only run on direct pushes to main — not on PRs, schedules, or other branches
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    # Ensure contract tests pass before deploying
+    needs: [contract]
+    permissions:
+      contents: write  # required to commit deployments.json back to the repo
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Use a PAT or the default GITHUB_TOKEN. A PAT is needed if branch
+          # protection rules prevent the default token from pushing to main.
+          token: ${{ secrets.DEPLOY_GITHUB_TOKEN || secrets.GITHUB_TOKEN }}
+          # Fetch full history so `git rev-parse HEAD` is always accurate
+          fetch-depth: 0
+
+      - name: Install Rust stable + wasm32 target
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: contracts/subscription
+
+      # Pin Stellar CLI to the exact version recorded in deploy.sh
+      - name: Install Stellar CLI (pinned)
+        run: |
+          STELLAR_CLI_VERSION="21.3.0"
+          echo "Installing stellar-cli ${STELLAR_CLI_VERSION}..."
+          cargo install --locked stellar-cli \
+            --version "${STELLAR_CLI_VERSION}" \
+            --features opt
+          stellar version
+
+      # Import the deployer secret key as a named identity so deploy.sh can sign
+      - name: Configure Stellar identity
+        env:
+          STELLAR_SECRET_KEY: ${{ secrets.STELLAR_SECRET_KEY }}
+        run: |
+          stellar keys add deployer --secret-key "$STELLAR_SECRET_KEY"
+
+      - name: Deploy contract
+        id: deploy
+        env:
+          STELLAR_NETWORK: ${{ vars.STELLAR_NETWORK || 'testnet' }}
+          STELLAR_IDENTITY: deployer
+        run: |
+          chmod +x deploy/deploy.sh
+          CONTRACT_ID=$(bash deploy/deploy.sh)
+          echo "contract_id=${CONTRACT_ID}" >> "$GITHUB_OUTPUT"
+          echo "Deployed contract: ${CONTRACT_ID}"
+
+      - name: Commit & push deployments.json
+        env:
+          CONTRACT_ID: ${{ steps.deploy.outputs.contract_id }}
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Stage only the manifest — nothing else
+          git add deploy/deployments.json
+
+          # Skip commit if the manifest is unchanged (idempotent re-runs)
+          if git diff --cached --quiet; then
+            echo "deployments.json unchanged — nothing to commit."
+            exit 0
+          fi
+
+          NETWORK="${STELLAR_NETWORK:-testnet}"
+          git commit -m "chore(deploy): update deployments.json [${NETWORK}] ${CONTRACT_ID:0:12} [skip ci]"
+          git push
