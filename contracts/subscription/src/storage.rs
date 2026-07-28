@@ -104,3 +104,18 @@ pub const MIN_TTL_LEDGERS: u32 = 30 * 24 * 60 * 60 / 5;
 
 /// ~365 days at 5-second ledger close time (6_307_200 ledgers).
 pub const MAX_TTL_LEDGERS: u32 = 365 * 24 * 60 * 60 / 5;
+
+// ==================== AdminConfig Helpers ====================
+
+/// Store `AdminConfig` in persistent storage and extend its TTL to the maximum.
+pub fn set_admin_config(env: &Env, config: &AdminConfig) {
+    env.storage().persistent().set(&DataKey::AdminConfig, config);
+    env.storage()
+        .persistent()
+        .extend_ttl(&DataKey::AdminConfig, MIN_TTL_LEDGERS, MAX_TTL_LEDGERS);
+}
+
+/// Load `AdminConfig` from persistent storage, returning `None` if not yet initialised.
+pub fn get_admin_config(env: &Env) -> Option<AdminConfig> {
+    env.storage().persistent().get(&DataKey::AdminConfig)
+}

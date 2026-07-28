@@ -1829,3 +1829,258 @@ fn test_execute_payment_before_due_does_not_mutate_subscription() {
     assert_eq!(before.next_payment, after.next_payment);
     assert_eq!(before.amount, after.amount);
 }
+
+// ─── Pause / Unpause ─────────────────────────────────────────────────────────
+
+/// Helper that creates an initialized contract with an admin address.
+///
+/// Returns `(T, admin_address)`.  The admin is distinct from subscriber and merchant.
+fn make_initialized() -> (T, Address) {
+    let t = T::new();
+    let admin = Address::generate(&t.env);
+    t.client.initialize(&admin);
+    (t, admin)
+}
+
+/// `initialize` sets paused = false by default.
+#[test]
+fn test_initialize_sets_paused_false() {
+    let (t, _admin) = make_initialized();
+    assert!(!t.client.is_paused(), "contract must not be paused after initialize");
+}
+
+/// `initialize` can only be called once.
+#[test]
+fn test_initialize_rejects_double_init() {
+    let (t, _admin) = make_initialized();
+    let admin2 = Address::generate(&t.env);
+    let r = t.client.try_initialize(&admin2);
+    assert!(
+        matches!(r, Err(Ok(ContractError::AlreadyInitialized))),
+        "second initialize must return AlreadyInitialized"
+    );
+}
+
+/// `pause_contract` transitions paused from false → true and emits `contract_paused`.
+#[test]
+fn test_pause_contract_sets_paused_and_emits_event() {
+    let (t, admin) = make_initialized();
+    assert!(!t.client.is_paused());
+
+    t.client.pause_contract();
+    assert!(t.client.is_paused(), "contract must be paused after pause_contract");
+
+    // Verify the contract_paused event was emitted with correct topics.
+    let all = t.env.events().all();
+    let contract_events: Vec<_> = all.iter().filter(|e| e.0 == t.contract_id).collect();
+
+    let expected_topics = (
+        Symbol::new(&t.env, "contract_paused"),
+        admin.clone(),
+    )
+        .into_val(&t.env);
+    let found = contract_events.iter().any(|e| e.1 == expected_topics);
+    assert!(found, "contract_paused event with correct admin topic must be emitted");
+}
+
+/// `unpause_contract` transitions paused from true → false and emits `contract_unpaused`.
+#[test]
+fn test_unpause_contract_clears_paused_and_emits_event() {
+    let (t, admin) = make_initialized();
+    t.client.pause_contract();
+    assert!(t.client.is_paused());
+
+    t.client.unpause_contract();
+    assert!(!t.client.is_paused(), "contract must not be paused after unpause_contract");
+
+    let all = t.env.events().all();
+    let contract_events: Vec<_> = all.iter().filter(|e| e.0 == t.contract_id).collect();
+
+    let expected_topics = (
+        Symbol::new(&t.env, "contract_unpaused"),
+        admin.clone(),
+    )
+        .into_val(&t.env);
+    let found = contract_events.iter().any(|e| e.1 == expected_topics);
+    assert!(found, "contract_unpaused event with correct admin topic must be emitted");
+}
+
+/// Pausing an already-paused contract is a no-op (no extra event, no error).
+#[test]
+fn test_pause_idempotent() {
+    let (t, _admin) = make_initialized();
+    t.client.pause_contract();
+    let events_before = t.env.events().all().len();
+    t.client.pause_contract(); // second call — no-op
+    let events_after = t.env.events().all().len();
+    assert_eq!(events_before, events_after, "second pause must emit no new event");
+}
+
+/// Unpausing an already-running contract is a no-op (no extra event, no error).
+#[test]
+fn test_unpause_idempotent() {
+    let (t, _admin) = make_initialized();
+    // Already unpaused; calling unpause should be silent.
+    let events_before = t.env.events().all().len();
+    t.client.unpause_contract();
+    let events_after = t.env.events().all().len();
+    assert_eq!(events_before, events_after, "unpause on running contract must emit no event");
+}
+
+/// `subscribe` returns `ContractPaused` when the contract is paused.
+#[test]
+fn test_subscribe_blocked_when_paused() {
+    let (t, _admin) = make_initialized();
+    t.client.pause_contract();
+
+    let r = t.client.try_subscribe(
+        &t.subscriber,
+        &t.merchant,
+        &t.token,
+        &100_000_i128,
+        &86_400_u64,
+    );
+    assert!(
+        matches!(r, Err(Ok(ContractError::ContractPaused))),
+        "subscribe must return ContractPaused when paused, got: {:?}",
+        r
+    );
+}
+
+/// `execute_payment` returns `ContractPaused` when the contract is paused.
+#[test]
+fn test_execute_payment_blocked_when_paused() {
+    let (t, _admin) = make_initialized();
+    // Subscribe while running, then pause, then try to collect.
+    t.client.subscribe(&t.subscriber, &t.merchant, &t.token, &100_000_i128, &86_400_u64);
+    t.advance(86_400);
+    t.client.pause_contract();
+
+    let r = t.client.try_execute_payment(&t.subscriber, &t.merchant);
+    assert!(
+        matches!(r, Err(Ok(ContractError::ContractPaused))),
+        "execute_payment must return ContractPaused when paused, got: {:?}",
+        r
+    );
+}
+
+/// `execute_payment_batch` returns `ContractPaused` when the contract is paused.
+#[test]
+fn test_execute_payment_batch_blocked_when_paused() {
+    let (t, _admin) = make_initialized();
+    t.client.subscribe(&t.subscriber, &t.merchant, &t.token, &100_000_i128, &86_400_u64);
+    t.advance(86_400);
+    t.client.pause_contract();
+
+    let mut payments = soroban_sdk::Vec::new(&t.env);
+    payments.push_back(t.subscriber.clone());
+    let r = t.client.try_execute_payment_batch(&t.merchant, &payments);
+    assert!(
+        matches!(r, Err(Ok(ContractError::ContractPaused))),
+        "execute_payment_batch must return ContractPaused when paused, got: {:?}",
+        r
+    );
+}
+
+/// `cancel` returns `ContractPaused` when the contract is paused.
+#[test]
+fn test_cancel_blocked_when_paused() {
+    let (t, _admin) = make_initialized();
+    t.client.subscribe(&t.subscriber, &t.merchant, &t.token, &100_000_i128, &86_400_u64);
+    t.client.pause_contract();
+
+    let r = t.client.try_cancel(&t.subscriber, &t.merchant);
+    assert!(
+        matches!(r, Err(Ok(ContractError::ContractPaused))),
+        "cancel must return ContractPaused when paused, got: {:?}",
+        r
+    );
+}
+
+/// `get_subscription` is accessible (no error) when the contract is paused.
+#[test]
+fn test_get_subscription_accessible_when_paused() {
+    let (t, _admin) = make_initialized();
+    t.client.subscribe(&t.subscriber, &t.merchant, &t.token, &100_000_i128, &86_400_u64);
+    t.client.pause_contract();
+
+    let sub = t.client.get_subscription(&t.subscriber, &t.merchant);
+    assert!(sub.is_some(), "get_subscription must still work when paused");
+}
+
+/// `version` is accessible when the contract is paused.
+#[test]
+fn test_version_accessible_when_paused() {
+    let (t, _admin) = make_initialized();
+    t.client.pause_contract();
+    // Should not panic.
+    let _v = t.client.version();
+}
+
+/// After unpausing, `subscribe` succeeds again.
+#[test]
+fn test_subscribe_succeeds_after_unpause() {
+    let (t, _admin) = make_initialized();
+    t.client.pause_contract();
+    t.client.unpause_contract();
+
+    let r = t.client.try_subscribe(
+        &t.subscriber,
+        &t.merchant,
+        &t.token,
+        &100_000_i128,
+        &86_400_u64,
+    );
+    assert!(r.is_ok(), "subscribe must succeed after unpause");
+}
+
+/// After unpausing, `execute_payment` succeeds again.
+#[test]
+fn test_execute_payment_succeeds_after_unpause() {
+    let (t, _admin) = make_initialized();
+    t.client.subscribe(&t.subscriber, &t.merchant, &t.token, &100_000_i128, &86_400_u64);
+    t.advance(86_400);
+    t.client.pause_contract();
+    t.client.unpause_contract();
+
+    let r = t.client.try_execute_payment(&t.subscriber, &t.merchant);
+    assert!(r.is_ok(), "execute_payment must succeed after unpause");
+}
+
+/// After unpausing, `cancel` succeeds again.
+#[test]
+fn test_cancel_succeeds_after_unpause() {
+    let (t, _admin) = make_initialized();
+    t.client.subscribe(&t.subscriber, &t.merchant, &t.token, &100_000_i128, &86_400_u64);
+    t.client.pause_contract();
+    t.client.unpause_contract();
+
+    let r = t.client.try_cancel(&t.subscriber, &t.merchant);
+    assert!(r.is_ok(), "cancel must succeed after unpause");
+}
+
+/// `is_paused` returns false on an uninitialised contract.
+#[test]
+fn test_is_paused_false_when_not_initialized() {
+    let t = T::new(); // no initialize() call
+    assert!(!t.client.is_paused());
+}
+
+/// Pausing and unpausing does not modify existing subscription data.
+#[test]
+fn test_pause_unpause_does_not_corrupt_subscription_data() {
+    let (t, _admin) = make_initialized();
+    let amt = 500_000_i128;
+    let ivl = 86_400_u64;
+    t.client.subscribe(&t.subscriber, &t.merchant, &t.token, &amt, &ivl);
+    let before = t.get_sub();
+
+    t.client.pause_contract();
+    t.client.unpause_contract();
+
+    let after = t.get_sub();
+    assert_eq!(before.amount, after.amount);
+    assert_eq!(before.interval, after.interval);
+    assert_eq!(before.next_payment, after.next_payment);
+    assert_eq!(before.token, after.token);
+}

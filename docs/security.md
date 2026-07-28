@@ -15,6 +15,7 @@ This document is the authoritative security reference for SorobanPay. It covers 
 6. [Known Limitations and Mitigations](#6-known-limitations-and-mitigations)
 7. [Dependency Security](#7-dependency-security)
 8. [Security Disclosure Policy](#8-security-disclosure-policy)
+9. [Pause / Unpause Runbook (SC-30)](#9-pause--unpause-runbook-sc-30)
 
 ---
 
@@ -654,11 +655,13 @@ Warn users:
 stellar account merge --network mainnet ...
 ```
 
-### No on-chain subscription pause
+### Protocol-wide pause (implemented — no individual subscription pause)
 
-**Limitation:** There is no contract-level mechanism to pause an individual subscription. The `is_paused` field exists in `SubscriptionData` but is not read by `execute_payment`.
+The contract now supports a **protocol-wide pause** via `pause_contract` / `unpause_contract` (see [§9 Pause / Unpause Runbook](#9-pause--unpause-runbook-sc-30)). This halts all state-mutating entry points simultaneously.
 
-**Mitigation:** Subscribers can achieve the equivalent of a pause by revoking their token allowance (`approve(contract, 0)`). Merchants can stop calling `execute_payment`. A future contract version may implement on-chain pause semantics.
+**Remaining limitation:** There is no mechanism to pause an individual subscription. The `is_paused` field exists in `SubscriptionData` but is not read by `execute_payment`.
+
+**Mitigation for individual pauses:** Subscribers can achieve the equivalent by revoking their token allowance (`approve(contract, 0)`). Merchants can stop calling `execute_payment` for specific subscribers.
 
 ### Backend is a single point of failure for analytics
 
@@ -787,3 +790,190 @@ For questions about this policy, contact the repository maintainers via the GitH
 - [ ] `cargo audit` and `npm audit` passing in CI
 - [ ] CSP headers configured in `next.config.mjs`
 - [ ] Security advisory channel tested (can create a draft advisory)
+
+---
+
+## 9. Pause / Unpause Runbook (SC-30)
+
+The `pause_contract` / `unpause_contract` entry points provide an on-chain circuit breaker that immediately halts all state-mutating operations without requiring coordination with merchants or subscribers. This section describes when and how to use it.
+
+### When to use the pause
+
+Pause the contract when you have **confirmed** (not merely suspected) one of the following:
+
+| Scenario | Use pause? | Notes |
+|----------|-----------|-------|
+| Critical vulnerability in `subscribe`, `execute_payment`, or `cancel` | ✅ Yes | Stops exploitation immediately |
+| Dependency vulnerability in a SEP-41 token contract | ✅ Yes | Prevents further transfers until assessed |
+| Backend compromise (scheduler or indexer) | ⚠️ Optional | Backend cannot sign transactions; pause is precautionary |
+| Suspected front-running or MEV | ❌ No | No financial incentive to front-run; do not pause lightly |
+| Spam subscriptions (high volume, no exploits) | ❌ No | Rate-limit at the backend level instead |
+| Network congestion or RPC outage | ❌ No | Pause does not help network-level issues |
+
+**Pausing is disruptive.** All `subscribe`, `execute_payment`, `execute_payment_batch`, and `cancel` calls return `ContractPaused` (error 16) until unpause. Do not pause for anything less than a confirmed critical or high-severity issue.
+
+### Prerequisites
+
+The admin key must be:
+- Stored in a **hardware wallet** or **multisig account** for mainnet use.
+- Known and accessible to at least two team members (avoid single-key dependency).
+- Funded with enough XLM to pay transaction fees (minimum 1 XLM recommended).
+
+The contract must have been initialised with `initialize(admin)` before the pause functionality is available. Check with:
+
+```bash
+stellar contract invoke \
+  --id <CONTRACT_ID> --network mainnet \
+  -- is_paused
+```
+
+### Phase 1 — Pause (target: within 5 minutes of confirmed incident)
+
+#### Using the Stellar CLI
+
+```bash
+stellar contract invoke \
+  --id <CONTRACT_ID> \
+  --source <admin-identity> \
+  --network mainnet \
+  -- pause_contract
+```
+
+#### Using the JavaScript SDK
+
+```typescript
+import { Contract, SorobanRpc, TransactionBuilder, Networks, Keypair } from "@stellar/stellar-sdk";
+
+const server    = new SorobanRpc.Server("https://mainnet.stellar.validationcloud.io/v1/<KEY>");
+const adminKey  = Keypair.fromSecret(process.env.ADMIN_SECRET!);
+const contract  = new Contract(process.env.CONTRACT_ID!);
+const account   = await server.getAccount(adminKey.publicKey());
+
+const tx = new TransactionBuilder(account, {
+  fee: "10000",
+  networkPassphrase: Networks.PUBLIC,
+})
+  .addOperation(contract.call("pause_contract"))
+  .setTimeout(30)
+  .build();
+
+const simResult = await server.simulateTransaction(tx);
+if (!SorobanRpc.Api.isSimulationSuccess(simResult)) {
+  throw new Error(`Simulation failed: ${JSON.stringify(simResult)}`);
+}
+
+const preparedTx = SorobanRpc.assembleTransaction(tx, simResult).build();
+preparedTx.sign(adminKey);
+const response = await server.sendTransaction(preparedTx);
+console.log("Pause transaction:", response.hash);
+```
+
+#### Verify the pause
+
+```bash
+# Should print "true"
+stellar contract invoke \
+  --id <CONTRACT_ID> --network mainnet \
+  -- is_paused
+```
+
+Query the `contract_paused` event to obtain an on-chain timestamp of when the pause was recorded:
+
+```bash
+stellar events \
+  --id <CONTRACT_ID> \
+  --network mainnet \
+  --type contract \
+  --start-ledger <recent-ledger>
+```
+
+### Phase 2 — Communicate (within 15 minutes)
+
+1. Post in your internal incident channel: contract address, time of pause, severity level, and incident lead.
+2. Notify merchants via webhook, email, or Discord that the contract is paused and `execute_payment` calls will fail with error 16 until further notice.
+3. Optionally publish a status-page incident:
+   - Status: **Investigating**
+   - Message: "The SorobanPay contract has been temporarily paused to investigate a potential security issue. No funds are at risk at this time. We will update this page as the investigation proceeds."
+4. Do **not** disclose technical vulnerability details until a fix is deployed.
+
+### Phase 3 — Investigate and fix
+
+While the contract is paused, no new transactions are processed.  You can still call read-only entry points (`get_subscription`, `is_paused`, `version`) to query state.
+
+Follow the same investigation steps as the [Circuit Breaker Runbook (SC-25)](#4-circuit-breaker-runbook-sc-25), Phase 3.
+
+### Phase 4 — Unpause or deploy a new version
+
+#### Option A — Unpause (vulnerability was not exploitable or has a hotfix)
+
+If the vulnerability can be resolved without a contract upgrade (e.g., a backend configuration change, a false alarm, or the exploit vector is no longer reachable):
+
+```bash
+stellar contract invoke \
+  --id <CONTRACT_ID> \
+  --source <admin-identity> \
+  --network mainnet \
+  -- unpause_contract
+```
+
+Verify:
+
+```bash
+# Should print "false"
+stellar contract invoke \
+  --id <CONTRACT_ID> --network mainnet \
+  -- is_paused
+```
+
+Update your status page: **Resolved** — "The contract has been unpaused. Normal operations have resumed."
+
+#### Option B — Deploy a new contract version (vulnerability requires code change)
+
+Because Soroban contracts are immutable, a code fix requires deploying a new instance.  Follow Phase 4 of the [Circuit Breaker Runbook (SC-25)](#4-circuit-breaker-runbook-sc-25).
+
+Keep the old contract **paused** (do not unpause it) to ensure subscribers and merchants migrate to the new address.
+
+### Phase 5 — Post-incident
+
+1. Write a post-mortem: timeline, root cause, impact assessment, remediation steps.
+2. Update this runbook with any new lessons learned.
+3. Verify that the `contract_paused` and `contract_unpaused` events were captured in your event indexer.
+4. Re-run `make test` and `cargo audit` on the updated codebase.
+5. File a CVE if the vulnerability involves a shared dependency.
+
+### Severity and response time
+
+| Severity | Pause immediately? | Response SLA |
+|----------|--------------------|-------------|
+| Critical — funds at risk, active exploit | ✅ Yes | Pause < 5 min; fix < 4 hr |
+| High — auth bypass, state corruption | ✅ Yes | Pause < 15 min; fix < 24 hr |
+| Medium — DoS, information leak | ⚠️ Evaluate | Fix < 72 hr; pause optional |
+| Low — edge case, no immediate risk | ❌ No | Fix in next release |
+
+### Admin key security
+
+The admin key has no financial custody over contract funds (the contract holds no balances), but it controls contract availability.  A compromised admin key allows an attacker to pause the contract indefinitely (DoS).
+
+Best practices:
+- Use a **Stellar multisig account** (e.g., 2-of-3) as the admin address for mainnet.
+- Store the admin secret in a hardware wallet (Ledger) or HSM — never in a `.env` file.
+- Document the admin address in your incident runbook so any on-call engineer can verify pauses.
+- Rotate the admin key by deploying a new contract with a different admin address (no admin-transfer mechanism exists in this version).
+
+### Auth matrix update for admin entry points
+
+The following rows supplement the auth matrix in [§2 Authorization Audit](#2-authorization-audit-sc-20):
+
+| Entry point | Authenticating address | Effect when paused |
+|-------------|----------------------|--------------------|
+| `initialize` | `admin` (new) | Always available (creates AdminConfig) |
+| `pause_contract` | `admin` | Always available (admin can pause a paused contract — no-op) |
+| `unpause_contract` | `admin` | Always available (admin can unpause) |
+| `is_paused` | *(no auth)* | Always available (read-only) |
+| `subscribe` | `subscriber` | Returns `ContractPaused` (16) |
+| `execute_payment` | `merchant` | Returns `ContractPaused` (16) |
+| `execute_payment_batch` | `merchant` | Returns `ContractPaused` (16) |
+| `cancel` | `subscriber` | Returns `ContractPaused` (16) |
+| `get_subscription` | *(no auth)* | Unaffected — read-only |
+| `version` | *(no auth)* | Unaffected — read-only |
+| `contract_name` | *(no auth)* | Unaffected — read-only |
