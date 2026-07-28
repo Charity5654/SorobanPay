@@ -48,6 +48,7 @@ pub enum DataKey {
 
     /// Designated admin address authorised to call `migrate`.
     Admin,
+    AdminConfig,
 }
 
 /// Persistent on-chain record for a subscription.
@@ -77,6 +78,16 @@ pub struct SubscriptionData {
     pub next_payment: u64,
     /// True when subscription payments are suspended
     pub is_paused:    bool,
+    pub grace_period: u64,
+    pub overdue_since: Option<u64>,
+    pub payment_nonce: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct AdminConfig {
+    pub admin: Address,
+    pub max_amount: i128,
 }
 
 /// Safe upper bound for a single subscription payment amount (1 × 10¹⁸ stroops).
@@ -87,42 +98,3 @@ pub const MIN_TTL_LEDGERS: u32 = 30 * 24 * 60 * 60 / 5;
 
 /// ~365 days at 5-second ledger close time (6_307_200 ledgers).
 pub const MAX_TTL_LEDGERS: u32 = 365 * 24 * 60 * 60 / 5;
-
-// ─── AdminConfig helpers ──────────────────────────────────────────────────────
-
-/// Load the admin config from instance storage; returns a zero-cap default if absent.
-pub fn get_admin_config(env: &Env) -> AdminConfig {
-    env.storage()
-        .instance()
-        .get(&DataKey::AdminConfig)
-        .unwrap_or(AdminConfig { max_subscribers_per_merchant: 0 })
-}
-
-/// Persist the admin config to instance storage.
-pub fn set_admin_config(env: &Env, config: AdminConfig) {
-    env.storage().instance().set(&DataKey::AdminConfig, &config);
-}
-
-// ─── MerchantSubscriberCount helpers ─────────────────────────────────────────
-
-/// Return the current active-subscriber count for a merchant (0 if never set).
-pub fn get_subscriber_count(env: &Env, merchant: &Address) -> u32 {
-    env.storage()
-        .persistent()
-        .get(&DataKey::MerchantSubscriberCount(merchant.clone()))
-        .unwrap_or(0u32)
-}
-
-/// Persist the active-subscriber count for a merchant and extend its TTL.
-pub fn set_subscriber_count(env: &Env, merchant: &Address, count: u32) {
-    env.storage()
-        .persistent()
-        .set(&DataKey::MerchantSubscriberCount(merchant.clone()), &count);
-    env.storage()
-        .persistent()
-        .extend_ttl(
-            &DataKey::MerchantSubscriberCount(merchant.clone()),
-            MIN_TTL_LEDGERS,
-            MAX_TTL_LEDGERS,
-        );
-}

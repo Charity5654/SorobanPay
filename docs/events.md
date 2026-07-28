@@ -2,7 +2,44 @@
 
 This document provides comprehensive documentation for all events emitted by the SorobanPay subscription contract.
 
-## Overview
+---
+
+## Table of contents
+
+1. [Event overview](#event-overview)
+2. [Event schemas](#event-schemas)
+3. [Topic filter cheat sheet](#topic-filter-cheat-sheet)
+4. [RPC query examples](#rpc-query-examples)
+5. [Cursor-based pagination](#cursor-based-pagination)
+6. [Decoding guide — TypeScript](#decoding-guide--typescript)
+7. [Decoding guide — Python](#decoding-guide--python)
+8. [Indexing patterns](#indexing-patterns)
+9. [Amount units](#amount-units)
+
+---
+
+## Event overview
+
+| Event | Emitted by | Topics | Data | Condition |
+|-------|-----------|--------|------|-----------|
+| `subscribe` | `subscribe()` | `(sym, subscriber, merchant, token)` | `i128` amount | Always on success |
+| `executed` | `execute_payment()`, `batch_execute_payment()` | `(sym, subscriber, merchant, token)` | `(i128 amount, u64 nonce)` | Successful transfer |
+| `expired` | `expire_subscription()` | `(sym, subscriber, merchant)` | `()` | Grace period elapsed |
+| `payment_transfer_failure` | `execute_payment()`, `batch_execute_payment()` | `(sym, subscriber, merchant)` | `i128` amount attempted | Insufficient subscriber balance |
+| `payment_transfer_success` | `batch_execute_payment()` | `(sym, subscriber, merchant)` | `i128` amount | Batch payment succeeded |
+| `cancel` | `cancel()` | `(sym, subscriber, merchant)` | `()` unit | Always on success |
+| `batch_execute_initiated` | `batch_execute_payment()` | `(sym, merchant)` | `i128` batch_size | Once per batch call |
+| `low_allowance` | `subscribe()` | `(sym, subscriber, merchant, token)` | `(i128 allowance, i128 required)` | Allowance < amount in non-strict mode |
+| `contract_migrated` | `migrate()` | `(sym, admin)` | `i128` new_schema_version | Successful migration |
+| `contract_deployed` | deployment hook | `(sym,)` | `Symbol` version string | Contract deployment |
+
+> `sym` is always a Soroban `Symbol` (e.g. `Symbol::new(env, "subscribe")`). Topics and data are XDR-encoded `ScVal` values on the wire.
+
+---
+
+## Event schemas
+
+### `subscribe`
 
 SorobanPay emits structured events for all significant contract operations to enable off-chain indexing, monitoring, and integration. Events follow Soroban's standard event format with topics for filtering and data payloads for detailed information.
 
@@ -14,7 +51,34 @@ All events follow this structure:
 
 ## Event Types
 
-### 1. contract_deployed
+| ScVal type | Value |
+|-----------|-------|
+| `SCV_I128` | `amount` — payment amount in token base units |
+
+**Condition:** Always emitted on a successful `subscribe()` call, for both new subscriptions and updates.
+
+---
+
+### `executed`
+
+Emitted when `execute_payment()` or `batch_execute_payment()` successfully transfers tokens and advances `next_payment`.
+
+**XDR topic structure:**
+
+| Index | ScVal type | Value |
+|-------|-----------|-------|
+| `topic[0]` | `SCV_SYMBOL` | `"executed"` |
+| `topic[1]` | `SCV_ADDRESS` | subscriber address |
+| `topic[2]` | `SCV_ADDRESS` | merchant address |
+| `topic[3]` | `SCV_ADDRESS` | token contract address |
+
+**Data field:**
+
+| ScVal type | Value |
+|-----------|-------|
+| `SCV_VEC` | `[amount, nonce]` — amount transferred and monotonic replay-protection nonce |
+
+---
 
 **Purpose**: Signals that the contract has been deployed and is available for use.
 
