@@ -223,6 +223,31 @@ jobs:
         run: npm run type-check
         working-directory: frontend
 
+  # TEST-108: Chaos engineering tests — indexer resilience
+  chaos-tests:
+    name: "[TEST-108] Chaos engineering — indexer resilience"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+
+      - name: Install backend dependencies
+        run: npm ci
+        working-directory: backend
+
+      - name: Run chaos engineering tests
+        # Tests use Jest mocks — no Docker or real network required.
+        # Toxiproxy scenarios are documented in tests/chaos/README.md for
+        # manual / staging runs.
+        run: npx jest ../../tests/chaos/indexer.chaos.test.ts --verbose --forceExit
+        working-directory: backend
+
   # TEST-102: k6 load tests — runs weekly against staging environment
   load-test:
     name: "[TEST-102] k6 load tests"
