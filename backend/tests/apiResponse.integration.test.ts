@@ -8,16 +8,16 @@
 
 import http from 'http';
 import express from 'express';
-import summariesRouter from '../../src/routes/summaries';
-import { InMemoryPrismaClient } from '../helpers/inMemoryDb';
+import summariesRouter from '../src/routes/summaries';
+import { InMemoryPrismaClient } from './helpers/inMemoryDb';
 
 // Inject in-memory Prisma before the router module is evaluated
-jest.mock('../../src/lib/prisma', () => ({
+jest.mock('../src/lib/prisma', () => ({
   __esModule: true,
-  default: new (require('../helpers/inMemoryDb').InMemoryPrismaClient)(),
+  default: new (require('./helpers/inMemoryDb').InMemoryPrismaClient)(),
 }));
 
-import prisma from '../../src/lib/prisma';
+import prisma from '../src/lib/prisma';
 const db = prisma as unknown as InMemoryPrismaClient;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

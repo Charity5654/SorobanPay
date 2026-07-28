@@ -8,4 +8,20 @@
     background-color: #030712; /* gray-950 — darker than gray-900 for better card contrast */
     color: #f9fafb;            /* gray-50 — 16.7:1 on gray-950, exceeds WCAG AAA */
   }
+
+  /*
+   * Global keyboard focus outlines — ensures visible focus rings for all
+   * interactive elements regardless of component-level styling omissions.
+   * Components that define their own focus-visible styles take precedence
+   * via CSS specificity.
+   */
+  :focus-visible {
+    outline: 2px solid #60a5fa; /* blue-400 — meets WCAG 3:1 on gray-900 */
+    outline-offset: 2px;
+  }
+
+  /* Remove the browser default outline only when we know JS focus-visible is active */
+  :focus:not(:focus-visible) {
+    outline: none;
+  }
 }
