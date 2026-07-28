@@ -10,6 +10,7 @@
     "test": "jest",
     "test:coverage": "jest --coverage",
     "test:ci": "jest --ci --coverage --coverageReporters=lcov",
+    "test:pact": "jest tests/pact/api.consumer.pact.test.ts --verbose",
     "type-check": "tsc --noEmit",
     "test:e2e": "playwright test",
     "test:e2e:list": "playwright test --list"
@@ -24,6 +25,7 @@
     "react-dom": "^18.3.1"
   },
   "devDependencies": {
+    "@pact-foundation/pact": "^12.5.0",
     "@playwright/test": "^1.44.1",
     "@testing-library/dom": "^10.4.1",
     "@testing-library/jest-dom": "^6.4.6",
