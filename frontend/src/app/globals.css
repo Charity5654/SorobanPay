@@ -59,3 +59,10 @@
     outline: none;
   }
 }
+
+@layer utilities {
+  /* UX-114: safe-area-inset-bottom padding for iOS home indicator */
+  .safe-area-inset-bottom {
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+}
