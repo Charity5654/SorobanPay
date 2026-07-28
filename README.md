@@ -937,6 +937,7 @@ npm run dev
 
 | Guide | Description |
 |---|---|
+| [Soroban Events API](docs/events.md) | Comprehensive guide to all contract events: topics, payloads, integration examples |
 | [Storage TTL Management](docs/operations.md) | Detecting at-risk entries, extending TTL programmatically, alert thresholds |
 | [Network Configuration](docs/networks.md) | Testnet vs. mainnet side-by-side, common mistakes, switching guide |
 | [Backend API Cookbook](docs/api-cookbook.md) | 8 recipes: auth, subscriptions, webhooks, CSV export, MRR, TTL health |
