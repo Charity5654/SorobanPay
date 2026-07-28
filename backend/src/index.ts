@@ -17,6 +17,7 @@ import { PayoutSummaryGenerator } from './services/payoutSummaryGenerator';
 import { PaymentScheduler } from './services/paymentScheduler';
 import { createRetryScheduler } from './services/retryScheduler';
 import { retryQueue } from './services/retryQueue';
+import { startWebhookWorker, shutdownWebhookWorker } from './services/webhookQueue'; // BE-53
 import { apiLimiter } from './middleware/rateLimiter';
 import { versionMiddleware } from './middleware/versioning';
 import summariesRouter from './routes/summaries';
@@ -158,13 +159,22 @@ app.listen(PORT, () => {
   } catch (err) {
     console.warn('[retryWorker] Could not start retry worker (Redis unavailable?):', err);
   }
+  // BE-53: Start webhook delivery worker (requires REDIS_URL)
+  try {
+    startWebhookWorker();
+  } catch (err) {
+    console.warn('[webhookWorker] Could not start webhook worker (Redis unavailable?):', err);
+  }
   // Initial event fetch on startup
   eventIndexer.fetchAndStoreEvents();
 });
 
 // Graceful shutdown
 process.on('SIGTERM', async () => {
-  await shutdownRetryWorker();
+  await Promise.all([
+    shutdownRetryWorker(),
+    shutdownWebhookWorker(), // BE-53
+  ]);
   process.exit(0);
 });
 

@@ -55,6 +55,9 @@ model WebhookEndpoint {
   url       String
   active    Boolean  @default(true)
   secret    String?  // HMAC-SHA256 signing secret; null = unsigned
+  /// Comma-separated event types to deliver, e.g. "payment.executed,payment.failed"
+  /// Valid values: payment.executed | payment.failed | subscription.cancelled
+  events    String   @default("payment.executed,payment.failed")  // BE-53
   createdAt DateTime @default(now())
 
   deliveries WebhookDelivery[]
