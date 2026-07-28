@@ -199,3 +199,61 @@ describe('SuccessCard – reset flow', () => {
     expect(screen.getByLabelText(/amount/i)).toHaveValue(null);
   });
 });
+
+// ─── Issue #379: Download Receipt button ─────────────────────────────────────
+
+describe('SuccessCard – Download Receipt button (#379)', () => {
+  beforeEach(() => {
+    mockBuildAndSubmit.mockReset();
+    // Mock clipboard
+    Object.defineProperty(navigator, 'clipboard', {
+      value: { writeText: jest.fn().mockResolvedValue(undefined) },
+      writable: true,
+    });
+    // Mock URL.createObjectURL / revokeObjectURL (not available in jsdom)
+    global.URL.createObjectURL = jest.fn(() => 'blob:mock-url');
+    global.URL.revokeObjectURL = jest.fn();
+  });
+
+  it('renders a "Download Receipt" button in the success state', async () => {
+    await renderSuccessState();
+    expect(
+      screen.getByRole('button', { name: /download.*receipt/i }),
+    ).toBeInTheDocument();
+  });
+
+  it('"Download Receipt" button has an accessible label', async () => {
+    await renderSuccessState();
+    const btn = screen.getByRole('button', { name: /download subscription receipt as pdf/i });
+    expect(btn).toBeInTheDocument();
+  });
+
+  it('"Download Receipt" button is enabled in the success state', async () => {
+    await renderSuccessState();
+    const btn = screen.getByRole('button', { name: /download.*receipt/i });
+    expect(btn).not.toBeDisabled();
+  });
+
+  it('clicking "Download Receipt" triggers receipt generation and does not throw', async () => {
+    await renderSuccessState();
+    const btn = screen.getByRole('button', { name: /download.*receipt/i });
+
+    // The mock pdf().toBlob() returns a minimal Blob; clicking should not crash
+    await act(async () => {
+      fireEvent.click(btn);
+    });
+
+    // Button should re-enable after generation completes (no error state shown)
+    await waitFor(() => expect(btn).not.toBeDisabled());
+  });
+
+  it('"Download Receipt" and "Create Another" buttons both appear side-by-side', async () => {
+    await renderSuccessState();
+    expect(
+      screen.getByRole('button', { name: /download.*receipt/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: /create another subscription/i }),
+    ).toBeInTheDocument();
+  });
+});
