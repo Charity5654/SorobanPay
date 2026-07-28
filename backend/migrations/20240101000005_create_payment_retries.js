@@ -1,8 +1,20 @@
 /**
  * Migration: 20240101000005_create_payment_retries
  *
- * Creates `payment_retries` and `retry_configs` tables.
- * Mirrors the Prisma `PaymentRetry` and `RetryConfig` models.
+ * Creates the `payment_retries` table that tracks automated retry attempts
+ * for failed subscription payments (payment_transfer_failure events).
+ *
+ * Columns:
+ *   subscriber   — Stellar address of the subscriber
+ *   merchant     — Stellar address of the merchant
+ *   amount       — Payment amount (stored as text for big-int safety)
+ *   token        — SEP-41 token contract address
+ *   attempt_number — 1-indexed retry count (1 = first retry after initial failure)
+ *   status       — 'pending' | 'succeeded' | 'failed' | 'cancelled'
+ *   scheduled_at — UTC timestamp when this retry is due to fire
+ *   attempted_at — UTC timestamp when the retry was actually executed (null if not yet run)
+ *   error        — Last error message if the attempt failed
+ *   job_id       — BullMQ job ID, used to cancel the queued job if needed
  */
 
 /** @type {import('node-pg-migrate').ColumnDefinitions | undefined} */
@@ -12,7 +24,6 @@ exports.shorthands = undefined;
  * @param {import('node-pg-migrate').MigrationBuilder} pgm
  */
 exports.up = async (pgm) => {
-  // ─── payment_retries ───────────────────────────────────────────────────────
   pgm.createTable('payment_retries', {
     id: {
       type: 'serial',
@@ -29,6 +40,7 @@ exports.up = async (pgm) => {
     amount: {
       type: 'varchar(64)',
       notNull: true,
+      default: '0',
     },
     token: {
       type: 'varchar(128)',
@@ -43,12 +55,13 @@ exports.up = async (pgm) => {
       type: 'varchar(20)',
       notNull: true,
       default: 'pending',
+      // 'pending' | 'succeeded' | 'failed' | 'cancelled'
     },
     scheduled_at: {
       type: 'timestamptz',
       notNull: true,
     },
-    executed_at: {
+    attempted_at: {
       type: 'timestamptz',
       notNull: false,
     },
@@ -56,39 +69,8 @@ exports.up = async (pgm) => {
       type: 'text',
       notNull: false,
     },
-    created_at: {
-      type: 'timestamptz',
-      notNull: true,
-      default: pgm.func('now()'),
-    },
-    updated_at: {
-      type: 'timestamptz',
-      notNull: true,
-      default: pgm.func('now()'),
-    },
-  });
-
-  // Indexes matching Prisma @@index declarations
-  pgm.createIndex('payment_retries', ['subscriber', 'merchant', 'status']);
-  pgm.createIndex('payment_retries', ['scheduled_at', 'status']);
-
-  // ─── retry_configs ─────────────────────────────────────────────────────────
-  pgm.createTable('retry_configs', {
-    id: {
-      type: 'serial',
-      primaryKey: true,
-    },
-    merchant: {
-      type: 'varchar(128)',
-      notNull: true,
-    },
-    intervals_days: {
-      type: 'varchar(64)',
-      notNull: true,
-      default: '1,3,7',
-    },
-    webhook_url: {
-      type: 'varchar(2048)',
+    job_id: {
+      type: 'varchar(256)',
       notNull: false,
     },
     created_at: {
@@ -103,9 +85,14 @@ exports.up = async (pgm) => {
     },
   });
 
-  pgm.addConstraint('retry_configs', 'retry_configs_merchant_unique', {
-    unique: ['merchant'],
-  });
+  // Look up all retries for a given subscription pair (most common query)
+  pgm.createIndex('payment_retries', ['subscriber', 'merchant']);
+
+  // Look up pending retries by status (for monitoring / cleanup)
+  pgm.createIndex('payment_retries', ['status', 'scheduled_at']);
+
+  // Correlate with BullMQ jobs for cancellation
+  pgm.createIndex('payment_retries', ['job_id']);
 };
 
 /**
@@ -113,5 +100,4 @@ exports.up = async (pgm) => {
  */
 exports.down = async (pgm) => {
   pgm.dropTable('payment_retries');
-  pgm.dropTable('retry_configs');
 };

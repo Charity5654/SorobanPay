@@ -4,7 +4,12 @@ import { AuditLogger } from './auditLogger';
 import { getTracer, withSpan, SpanKind } from '../lib/tracing';
 import { applyEvent } from './subscriptionStateService';
 import { sendPaymentFailureEmail, sendCancellationEmail } from './emailService';
-import type { RetryScheduler } from './retryScheduler';
+import { enqueueRetries } from './retryQueue';
+import {
+  publishCacheInvalidation,
+  cacheDeletePattern,
+  CacheKey,
+} from '../lib/redis';
 
 const auditLogger = new AuditLogger();
 const SUPPORTED_EVENT_TYPES = new Set(['subscribe', 'executed', 'payment_transfer_failure', 'cancel']);
@@ -204,6 +209,16 @@ export class EventIndexer {
       // Post-store: update state machine
       await applyEvent(subscriber, merchant, eventType as any, { amount: amount ?? '0' });
 
+      // Post-store: bust Redis cache keys for the affected merchant/subscriber
+      await Promise.all([
+        cacheDeletePattern(CacheKey.merchantPattern(merchant)),
+        cacheDeletePattern(CacheKey.analyticsPattern(merchant)),
+        subscriber
+          ? cacheDeletePattern(CacheKey.subscriptionPattern(subscriber, merchant))
+          : Promise.resolve(),
+        publishCacheInvalidation({ merchant, subscriber: subscriber ?? undefined, eventType }),
+      ]);
+
       // Post-store: audit log for executed payments
       if (eventType === 'executed') {
         await auditLogger.logPayment({
@@ -223,14 +238,10 @@ export class EventIndexer {
           (err) => console.error('[email] Failed to send payment failure email:', err),
         );
 
-        // Schedule automated payment retries
-        if (this.retryScheduler) {
-          await this.retryScheduler
-            .scheduleRetries(subscriber, merchant, amount ?? '0', token ?? '')
-            .catch((err) =>
-              console.error('[retry] Failed to schedule retries:', err),
-            );
-        }
+        // Schedule automated payment retries (BE-retry)
+        enqueueRetries(subscriber, merchant, amount ?? '0', token ?? '').catch(
+          (err) => console.error('[retryQueue] Failed to enqueue retries:', err),
+        );
       }
 
       if (eventType === 'cancel') {

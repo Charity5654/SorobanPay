@@ -1,0 +1,86 @@
+{
+  "app": {
+    "title": "SorobanPay",
+    "tagline": "Pagos recurrentes descentralizados en Stellar"
+  },
+  "nav": {
+    "connectWallet": "Conectar Freighter",
+    "connecting": "Conectando…",
+    "disconnect": "Desconectar",
+    "connected": "Conectado",
+    "disconnected": "Desconectado"
+  },
+  "wallet": {
+    "notInstalled": "La billetera Freighter no está instalada.",
+    "installLink": "Instalar Freighter",
+    "notInstalledSuffix": "para continuar.",
+    "sessionLost": "Sesión de billetera perdida",
+    "sessionLostDescription": "Freighter ya no está disponible. Desconéctate y vuelve a conectarte para restaurar tu sesión.",
+    "disconnectAndReconnect": "Desconectar y reconectar"
+  },
+  "subscriptionForm": {
+    "title": "Crear Suscripción",
+    "description": "Autoriza un pago recurrente en cadena usando tu billetera Freighter.",
+    "requiredNote": "Los campos marcados con * son obligatorios.",
+    "merchantAddress": "Dirección del comerciante",
+    "merchantAddressPlaceholder": "p.ej. GXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
+    "merchantAddressHint": "La clave pública de la cuenta Stellar del comerciante — comienza con G, 56 caracteres.",
+    "tokenAddress": "Dirección del contrato de token",
+    "tokenAddressPlaceholder": "p.ej. CXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
+    "tokenAddressHint": "La dirección del contrato de token SEP-41 — comienza con C, 56 caracteres.",
+    "amount": "Monto",
+    "amountPlaceholder": "100",
+    "amountHint": "Obligatorio. Ingresa el monto de pago recurrente en unidades de token.",
+    "interval": "Intervalo",
+    "intervalHint": "Obligatorio. La cadencia de recurrencia. El valor predeterminado es 30 días.",
+    "submit": "Autorizar Suscripción",
+    "submitting": "Enviando…",
+    "walletHint": "Conecta tu billetera Freighter para habilitar el envío.",
+    "contract": "Contrato"
+  },
+  "share": {
+    "button": "Compartir",
+    "hideButton": "Ocultar código QR",
+    "title": "Enlace para compartir suscripción",
+    "description": "Cualquier persona que escanee este código QR llegará a un formulario de suscripción prellenado con tu dirección de comerciante, token, monto e intervalo.",
+    "copyLink": "Copiar enlace",
+    "copied": "¡Copiado!",
+    "downloadPng": "Descargar PNG",
+    "qrAlt": "Código QR para enlace de suscripción",
+    "disabledHint": "Ingresa una dirección de comerciante para generar un enlace"
+  },
+  "success": {
+    "title": "¡Suscripción creada!",
+    "createAnother": "Crear otra suscripción"
+  },
+  "errors": {
+    "somethingWentWrong": "Algo salió mal",
+    "refreshOrContact": "Algo salió mal. Recarga la página o contacta soporte.",
+    "tryAgain": "Intentar de nuevo",
+    "refreshPage": "Recargar página",
+    "errorDetails": "Detalles del error (solo dev)"
+  },
+  "onboarding": {
+    "heading": "Lanza tu primer pago recurrente",
+    "steps": "3 pasos",
+    "step1Title": "Configuración de billetera",
+    "step1": "Instala Freighter y cámbialo a Testnet. Luego conecta tu billetera con el botón de abajo.",
+    "step2Title": "Configuración de entorno",
+    "step2": "Agrega NEXT_PUBLIC_CONTRACT_ID a frontend/.env.local y reinicia la aplicación.",
+    "step3Title": "Crear una suscripción",
+    "step3": "Completa los campos de comerciante, token, monto e intervalo. Luego autoriza la suscripción con Freighter."
+  },
+  "paymentHistory": {
+    "title": "Historial de Pagos",
+    "description": "Los pagos ejecutados y la actividad de suscripción aparecerán aquí una vez que el índice de eventos en cadena esté disponible.",
+    "comingSoon": "Próximamente"
+  },
+  "disconnectedCard": {
+    "message": "Conecta tu billetera para comenzar"
+  },
+  "languageSelector": {
+    "label": "Idioma",
+    "en": "English",
+    "es": "Español"
+  }
+}

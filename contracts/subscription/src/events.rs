@@ -55,14 +55,14 @@ pub fn emit_payment_transfer_success(env: &Env, subscriber: &Address, merchant: 
 ///
 /// Topics:  (symbol("payment_transfer_failure"), subscriber, merchant)
 /// Data:    amount (i128)
-pub fn emit_payment_transfer_failure(env: &Env, subscriber: &Address, merchant: &Address, amount: i128) {
+pub fn emit_payment_transfer_failure(env: &Env, subscriber: &Address, merchant: &Address, amount: i128, overdue_since: u64) {
     env.events().publish(
         (
             Symbol::new(env, "payment_transfer_failure"),
             subscriber.clone(),
             merchant.clone(),
         ),
-        amount,
+        (amount, overdue_since),
     );
 }
 
@@ -71,7 +71,7 @@ pub fn emit_payment_transfer_failure(env: &Env, subscriber: &Address, merchant: 
 ///
 /// Topics:  (symbol("executed"), subscriber, merchant, token)
 /// Data:    amount (i128)
-pub fn emit_executed(env: &Env, subscriber: &Address, merchant: &Address, token: &Address, amount: i128) {
+pub fn emit_executed(env: &Env, subscriber: &Address, merchant: &Address, token: &Address, amount: i128, nonce: u64) {
     env.events().publish(
         (
             Symbol::new(env, "executed"),
@@ -79,8 +79,12 @@ pub fn emit_executed(env: &Env, subscriber: &Address, merchant: &Address, token:
             merchant.clone(),
             token.clone(),
         ),
-        amount,
+        (amount, nonce),
     );
+}
+
+pub fn emit_expired(env: &Env, subscriber: &Address, merchant: &Address) {
+    env.events().publish((Symbol::new(env, "expired"), subscriber.clone(), merchant.clone()), ());
 }
 
 /// Emit the `cancel` event after a subscription has been successfully cancelled and removed.
@@ -111,5 +115,46 @@ pub fn emit_batch_execute_initiated(env: &Env, merchant: &Address, batch_size: u
             merchant.clone(),
         ),
         batch_size as i128,
+    );
+}
+
+/// Emit the `contract_migrated` event after a schema migration completes successfully.
+///
+/// Topics:  (symbol("contract_migrated"), admin)
+/// Data:    new schema version (u32 as i128)
+pub fn emit_contract_migrated(env: &Env, admin: &Address, new_version: u32) {
+    env.events().publish(
+        (
+            Symbol::new(env, "contract_migrated"),
+            admin.clone(),
+        ),
+        new_version as i128,
+    );
+}
+
+/// Emit the `low_allowance` warning event when a subscriber's token allowance is below
+/// the subscription amount at the time of `subscribe`.
+///
+/// This is a non-fatal warning (unless strict mode is enabled).  Off-chain systems can
+/// use it to prompt the subscriber to approve a larger allowance before the first payment.
+///
+/// Topics:  (symbol("low_allowance"), subscriber, merchant, token)
+/// Data:    (allowance: i128, required: i128)
+pub fn emit_low_allowance(
+    env: &Env,
+    subscriber: &Address,
+    merchant: &Address,
+    token: &Address,
+    allowance: i128,
+    required: i128,
+) {
+    env.events().publish(
+        (
+            Symbol::new(env, "low_allowance"),
+            subscriber.clone(),
+            merchant.clone(),
+            token.clone(),
+        ),
+        (allowance, required),
     );
 }
