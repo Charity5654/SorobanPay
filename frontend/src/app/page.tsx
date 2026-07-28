@@ -1,439 +1,568 @@
-'use client';
+import Link from 'next/link';
+import type { Metadata } from 'next';
 
-/**
- * page.tsx — Home page
- *
- * Renders the wallet connect/disconnect button and the subscription form.
- * Includes an onboarding guide for first-time users and global keyboard
- * shortcut support (react-hotkeys-hook).
- *
- * Requirements: 9.1, 9.5, 9.6, 10.1
- * Keyboard shortcuts:
- *   ?  — open shortcut help modal
- *   N  — focus subscription form
- *   H  — jump to payment history
- *   M  — jump to merchant portal section
- *   D  — jump to dashboard section
- *   Esc — close modal
- */
+export const metadata: Metadata = {
+  title: 'SorobanPay — Decentralized Recurring Payments on Stellar',
+  description:
+    'Non-custodial, permissionless subscription and recurring payment protocol built on Stellar Soroban. SEP-41 compatible. No custodians, no pre-signed arrays.',
+};
 
-import { useState, useEffect, useRef } from 'react';
-import SubscriptionForm from '@/components/SubscriptionForm';
-import OnboardingGuide from '@/components/OnboardingGuide';
-import ShortcutsHelpModal from '@/components/ShortcutsHelpModal';
-import { useWallet } from '@/hooks/useWallet';
-import { useKeyboardShortcuts, SECTION_IDS } from '@/hooks/useKeyboardShortcuts';
+// ─── Shared class helpers ──────────────────────────────────────────────────────
+const SECTION = 'py-20 px-4 sm:px-8';
+const CONTAINER = 'mx-auto max-w-6xl';
 
-// ─── Live-region for screen-reader announcements ──────────────────────────────
-
-/**
- * Renders a visually hidden aria-live region that other components can post
- * announcements to. Import and call `announceToScreenReader(msg)` from anywhere.
- */
-let _announce: ((msg: string) => void) | null = null;
-
-export function announceToScreenReader(msg: string) {
-  _announce?.(msg);
-}
-
-function LiveRegion() {
-  const [message, setMessage] = useState('');
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  useEffect(() => {
-    _announce = (msg: string) => {
-      setMessage('');
-      if (timerRef.current) clearTimeout(timerRef.current);
-      // Brief reset so the same message can be re-announced
-      timerRef.current = setTimeout(() => setMessage(msg), 50);
-    };
-    return () => {
-      _announce = null;
-      if (timerRef.current) clearTimeout(timerRef.current);
-    };
-  }, []);
-
+// ─── Navigation ───────────────────────────────────────────────────────────────
+function Nav() {
   return (
-    <div
-      aria-live="polite"
-      aria-atomic="true"
-      className="sr-only"
-      role="status"
-    >
-      {message}
-    </div>
-  );
-}
+    <header className="sticky top-0 z-50 border-b border-gray-800/60 bg-gray-950/90 backdrop-blur-md">
+      <nav
+        className="mx-auto flex max-w-6xl items-center justify-between px-4 py-4 sm:px-8"
+        aria-label="Main navigation"
+      >
+        {/* Logo */}
+        <Link
+          href="/"
+          className="flex items-center gap-2 text-lg font-extrabold tracking-tight text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400 rounded"
+        >
+          <span
+            className="inline-flex h-8 w-8 items-center justify-center rounded-lg bg-blue-600 text-sm font-black"
+            aria-hidden="true"
+          >
+            S
+          </span>
+          SorobanPay
+        </Link>
 
-// ─── Keyboard shortcut trigger button ─────────────────────────────────────────
-
-function ShortcutsTriggerButton({ onClick }: { onClick: () => void }) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      aria-label="Show keyboard shortcuts (press ? to toggle)"
-      aria-keyshortcuts="?"
-      title="Keyboard shortcuts (?)"
-      className="
-        fixed bottom-5 right-5 z-40
-        flex items-center justify-center
-        h-10 w-10 rounded-full
-        border border-gray-600 bg-gray-800 text-gray-300
-        hover:bg-gray-700 hover:text-white
-        focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400
-        transition-colors shadow-lg
-      "
-    >
-      <span aria-hidden="true" className="text-base font-bold leading-none select-none">?</span>
-    </button>
-  );
-}
-
-// ─── Onboarding card ──────────────────────────────────────────────────────────
-
-function OnboardingCard({ freighterInstalled }: { freighterInstalled: boolean }) {
-  return (
-    <div className="w-full max-w-lg rounded-2xl border border-gray-800 bg-gradient-to-br from-slate-950/80 via-slate-900/90 to-slate-950/95 p-6 shadow-xl mb-6">
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <p className="text-xs uppercase tracking-[0.28em] text-blue-300 font-semibold">
-            First-time onboarding
-          </p>
-          <h2 className="mt-3 text-2xl font-bold text-white">Launch your first recurring payment</h2>
-        </div>
-        <span className="rounded-full bg-blue-500/10 px-3 py-1 text-xs font-semibold uppercase tracking-[0.18em] text-blue-200 border border-blue-500/20">
-          3 steps
-        </span>
-      </div>
-
-      <ol className="mt-6 space-y-4 text-sm text-gray-300">
-        <li className="rounded-2xl border border-gray-800 bg-gray-900/70 p-4">
-          <div className="flex items-center justify-between gap-3 mb-2">
-            <span className="inline-flex h-7 min-w-[1.75rem] items-center justify-center rounded-full bg-blue-600 text-xs font-semibold text-white">
-              1
-            </span>
-            <span className="text-xs text-blue-200 uppercase tracking-[0.18em] font-semibold">
-              Wallet setup
-            </span>
-          </div>
-          <p className="text-gray-300">
-            Install Freighter and switch it to Testnet. Then connect your wallet with the button below.
-          </p>
-          {!freighterInstalled && (
-            <a
-              href="https://www.freighter.app"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="mt-3 inline-flex rounded-lg bg-blue-600 px-3 py-2 text-xs font-semibold text-white hover:bg-blue-500"
-            >
-              Install Freighter
+        {/* Desktop links */}
+        <ul className="hidden items-center gap-6 text-sm font-medium text-gray-400 sm:flex" role="list">
+          <li>
+            <a href="#how-it-works" className="hover:text-white transition-colors">
+              How it works
             </a>
-          )}
-        </li>
+          </li>
+          <li>
+            <a href="#features" className="hover:text-white transition-colors">
+              Features
+            </a>
+          </li>
+          <li>
+            <a href="#use-cases" className="hover:text-white transition-colors">
+              Use cases
+            </a>
+          </li>
+          <li>
+            <a href="#developer" className="hover:text-white transition-colors">
+              Developer
+            </a>
+          </li>
+        </ul>
 
-        <li className="rounded-2xl border border-gray-800 bg-gray-900/70 p-4">
-          <div className="flex items-center justify-between gap-3 mb-2">
-            <span className="inline-flex h-7 min-w-[1.75rem] items-center justify-center rounded-full bg-slate-700 text-xs font-semibold text-slate-100">
-              2
-            </span>
-            <span className="text-xs text-blue-200 uppercase tracking-[0.18em] font-semibold">
-              Environment config
-            </span>
-          </div>
-          <p className="text-gray-300">
-            Add <code className="rounded bg-slate-800 px-2 py-0.5 text-xs text-slate-200">NEXT_PUBLIC_CONTRACT_ID</code> to{' '}
-            <code className="rounded bg-slate-800 px-2 py-0.5 text-xs text-slate-200">frontend/.env.local</code> and restart the app.
-          </p>
-        </li>
+        {/* CTA */}
+        <Link
+          href="/app"
+          className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-500 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400"
+        >
+          Launch App →
+        </Link>
+      </nav>
+    </header>
+  );
+}
 
-        <li className="rounded-2xl border border-gray-800 bg-gray-900/70 p-4">
-          <div className="flex items-center justify-between gap-3 mb-2">
-            <span className="inline-flex h-7 min-w-[1.75rem] items-center justify-center rounded-full bg-slate-700 text-xs font-semibold text-slate-100">
-              3
-            </span>
-            <span className="text-xs text-blue-200 uppercase tracking-[0.18em] font-semibold">
-              Create a subscription
-            </span>
-          </div>
-          <p className="text-gray-300">
-            Fill in the merchant, token, amount, and interval fields. Then authorize the subscription with Freighter.
+// ─── Section 1: Hero ──────────────────────────────────────────────────────────
+function Hero() {
+  return (
+    <section
+      aria-labelledby="hero-heading"
+      className="relative overflow-hidden bg-gray-950 px-4 pb-24 pt-20 sm:px-8 sm:pb-32 sm:pt-28"
+    >
+      {/* Background gradient blobs */}
+      <div
+        className="pointer-events-none absolute -top-40 left-1/2 h-[600px] w-[600px] -translate-x-1/2 rounded-full bg-blue-600/10 blur-3xl"
+        aria-hidden="true"
+      />
+      <div
+        className="pointer-events-none absolute bottom-0 right-0 h-[400px] w-[400px] rounded-full bg-indigo-600/10 blur-3xl"
+        aria-hidden="true"
+      />
+
+      <div className={`${CONTAINER} relative text-center`}>
+        {/* Badge */}
+        <span className="mb-6 inline-flex items-center gap-2 rounded-full border border-blue-500/30 bg-blue-500/10 px-4 py-1.5 text-xs font-semibold uppercase tracking-widest text-blue-300">
+          <span className="h-1.5 w-1.5 rounded-full bg-blue-400" aria-hidden="true" />
+          Built on Stellar Soroban
+        </span>
+
+        {/* Headline */}
+        <h1
+          id="hero-heading"
+          className="mx-auto mt-4 max-w-3xl text-4xl font-extrabold leading-tight tracking-tight text-white sm:text-5xl lg:text-6xl"
+        >
+          Recurring payments on Stellar —{' '}
+          <span className="bg-gradient-to-r from-blue-400 to-indigo-400 bg-clip-text text-transparent">
+            non-custodial, on-chain.
+          </span>
+        </h1>
+
+        {/* Subheadline */}
+        <p className="mx-auto mt-6 max-w-2xl text-lg text-gray-400 leading-relaxed">
+          SorobanPay enables SaaS billing, creator subscriptions, and recurring donations
+          directly on Stellar. No custodial wallets, no pre-authorized transaction arrays —
+          just smart contracts and SEP-41 tokens.
+        </p>
+
+        {/* CTAs */}
+        <div className="mt-10 flex flex-col items-center justify-center gap-4 sm:flex-row">
+          <Link
+            href="/app"
+            className="w-full rounded-xl bg-blue-600 px-8 py-4 text-sm font-bold text-white shadow-lg shadow-blue-600/20 hover:bg-blue-500 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400 sm:w-auto"
+          >
+            Get Started — Free
+          </Link>
+          <a
+            href="https://github.com/Chrisland58/SorobanPay"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="w-full rounded-xl border border-gray-700 px-8 py-4 text-sm font-bold text-gray-300 hover:border-gray-500 hover:text-white transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400 sm:w-auto"
+          >
+            View on GitHub ↗
+          </a>
+        </div>
+
+        {/* Trust badges */}
+        <div className="mt-12 flex flex-wrap items-center justify-center gap-6 text-xs text-gray-600">
+          <span className="flex items-center gap-1.5">
+            <span aria-hidden="true">🔒</span> Non-custodial
+          </span>
+          <span className="flex items-center gap-1.5">
+            <span aria-hidden="true">⚡</span> Permissionless
+          </span>
+          <span className="flex items-center gap-1.5">
+            <span aria-hidden="true">📖</span> Open source · MIT
+          </span>
+          <span className="flex items-center gap-1.5">
+            <span aria-hidden="true">🔗</span> SEP-41 compatible
+          </span>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+// ─── Section 2: How it works ──────────────────────────────────────────────────
+function HowItWorks() {
+  const steps = [
+    {
+      number: '01',
+      emoji: '✍️',
+      title: 'Subscribe',
+      description:
+        'Set your merchant address, token contract, amount, and interval. Sign once with Freighter — the contract does the rest.',
+    },
+    {
+      number: '02',
+      emoji: '⚡',
+      title: 'Payments run automatically',
+      description:
+        'Merchants collect payments on-chain when the interval elapses. Tokens transfer directly subscriber → merchant. No custodians.',
+    },
+    {
+      number: '03',
+      emoji: '🔓',
+      title: 'Cancel anytime',
+      description:
+        'Remove your subscription instantly with a single on-chain transaction. You stay in full control — always.',
+    },
+  ];
+
+  return (
+    <section
+      id="how-it-works"
+      aria-labelledby="how-heading"
+      className={`${SECTION} bg-gray-900/50`}
+    >
+      <div className={CONTAINER}>
+        <div className="text-center mb-14">
+          <p className="text-xs uppercase tracking-widest text-blue-400 font-semibold mb-3">
+            How it works
           </p>
-        </li>
-      </ol>
-    </div>
+          <h2
+            id="how-heading"
+            className="text-3xl font-extrabold tracking-tight text-white sm:text-4xl"
+          >
+            Recurring payments in 3 steps
+          </h2>
+          <p className="mt-4 text-gray-400 max-w-xl mx-auto">
+            From wallet connection to on-chain subscription in under a minute.
+          </p>
+        </div>
+
+        <div className="relative grid gap-6 sm:grid-cols-3">
+          {/* Connector line — desktop only */}
+          <div
+            className="pointer-events-none absolute top-14 left-[calc(16.67%+1rem)] right-[calc(16.67%+1rem)] hidden h-px bg-gradient-to-r from-blue-600/40 via-blue-400/40 to-blue-600/40 sm:block"
+            aria-hidden="true"
+          />
+
+          {steps.map((step, i) => (
+            <div
+              key={i}
+              className="relative rounded-2xl border border-gray-800 bg-gray-900 p-6 text-center shadow-lg"
+            >
+              <div className="mb-4 flex items-center justify-center gap-3">
+                <span className="text-3xl" aria-hidden="true">{step.emoji}</span>
+                <span className="text-xs font-bold text-blue-500 tracking-widest">{step.number}</span>
+              </div>
+              <h3 className="text-lg font-bold text-white mb-2">{step.title}</h3>
+              <p className="text-sm text-gray-400 leading-relaxed">{step.description}</p>
+            </div>
+          ))}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+// ─── Section 3: Features ──────────────────────────────────────────────────────
+function Features() {
+  const features = [
+    {
+      icon: '🔒',
+      title: 'Non-custodial',
+      description:
+        'No wallets held, no balances stored. Token transfers go directly subscriber → merchant via SEP-41. The contract never holds funds.',
+    },
+    {
+      icon: '⚡',
+      title: 'Permissionless',
+      description:
+        'Deploy to Soroban testnet in minutes. No gatekeepers, no approvals, no KYC. Open to any wallet with a Stellar address.',
+    },
+    {
+      icon: '🔗',
+      title: 'SEP-41 Compatible',
+      description:
+        'Works with any SEP-41 token: USDC, XLM, or custom tokens. Token allowances give subscribers fine-grained control.',
+    },
+    {
+      icon: '📖',
+      title: 'Open Source',
+      description:
+        'Fully auditable Rust smart contract with 95%+ test coverage. MIT licensed. Fork it, audit it, build on it.',
+    },
+  ];
+
+  return (
+    <section
+      id="features"
+      aria-labelledby="features-heading"
+      className={`${SECTION} bg-gray-950`}
+    >
+      <div className={CONTAINER}>
+        <div className="text-center mb-14">
+          <p className="text-xs uppercase tracking-widest text-blue-400 font-semibold mb-3">
+            Features
+          </p>
+          <h2
+            id="features-heading"
+            className="text-3xl font-extrabold tracking-tight text-white sm:text-4xl"
+          >
+            Built for the on-chain era
+          </h2>
+        </div>
+
+        <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-4">
+          {features.map((f, i) => (
+            <div
+              key={i}
+              className="rounded-2xl border border-gray-800 bg-gray-900 p-6 hover:border-blue-800/60 transition-colors"
+            >
+              <div className="mb-4 text-3xl" aria-hidden="true">{f.icon}</div>
+              <h3 className="text-base font-bold text-white mb-2">{f.title}</h3>
+              <p className="text-sm text-gray-400 leading-relaxed">{f.description}</p>
+            </div>
+          ))}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+// ─── Section 4: Use cases ─────────────────────────────────────────────────────
+function UseCases() {
+  const cases = [
+    {
+      icon: '💼',
+      title: 'SaaS billing',
+      description:
+        'Automate recurring SaaS subscriptions directly on-chain. Charge monthly or annually in any SEP-41 token.',
+    },
+    {
+      icon: '🎨',
+      title: 'Creator subscriptions',
+      description:
+        'Enable fans to support creators with automatic monthly payments. No payment processor fees, no intermediaries.',
+    },
+    {
+      icon: '❤️',
+      title: 'Recurring donations',
+      description:
+        'Set up monthly giving to nonprofits with full on-chain transparency. Every transfer is publicly verifiable.',
+    },
+  ];
+
+  return (
+    <section
+      id="use-cases"
+      aria-labelledby="usecases-heading"
+      className={`${SECTION} bg-gray-900/40`}
+    >
+      <div className={CONTAINER}>
+        <div className="text-center mb-14">
+          <p className="text-xs uppercase tracking-widest text-blue-400 font-semibold mb-3">
+            Use cases
+          </p>
+          <h2
+            id="usecases-heading"
+            className="text-3xl font-extrabold tracking-tight text-white sm:text-4xl"
+          >
+            What you can build
+          </h2>
+          <p className="mt-4 text-gray-400 max-w-xl mx-auto">
+            Any recurring payment relationship — from $5/month to enterprise billing.
+          </p>
+        </div>
+
+        <div className="grid gap-6 sm:grid-cols-3">
+          {cases.map((c, i) => (
+            <div
+              key={i}
+              className="rounded-2xl border border-gray-800 bg-gray-900 p-8 text-center hover:border-blue-800/60 transition-colors"
+            >
+              <div className="mb-4 text-4xl" aria-hidden="true">{c.icon}</div>
+              <h3 className="text-lg font-bold text-white mb-3">{c.title}</h3>
+              <p className="text-sm text-gray-400 leading-relaxed">{c.description}</p>
+            </div>
+          ))}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+// ─── Section 5: Developer quickstart ─────────────────────────────────────────
+function DeveloperQuickstart() {
+  const snippet = `// Subscribe: 100 tokens every 30 days
+import { Contract, nativeToScVal, Address } from "@stellar/stellar-sdk";
+
+const op = contract.call(
+  "subscribe",
+  new Address(subscriber).toScVal(),
+  new Address(merchant).toScVal(),
+  new Address(tokenAddress).toScVal(),
+  nativeToScVal(100n, { type: "i128" }),
+  nativeToScVal(2592000n, { type: "u64" }),
+);
+// Expected: subscription stored on-chain, first payment
+// collectable immediately, cancel anytime.`;
+
+  return (
+    <section
+      id="developer"
+      aria-labelledby="dev-heading"
+      className={`${SECTION} bg-gray-950`}
+    >
+      <div className={CONTAINER}>
+        <div className="grid gap-12 lg:grid-cols-2 lg:items-center">
+          {/* Text */}
+          <div>
+            <p className="text-xs uppercase tracking-widest text-blue-400 font-semibold mb-3">
+              Developer
+            </p>
+            <h2
+              id="dev-heading"
+              className="text-3xl font-extrabold tracking-tight text-white sm:text-4xl"
+            >
+              Integrate in minutes
+            </h2>
+            <p className="mt-4 text-gray-400 leading-relaxed">
+              Deploy the Soroban contract to testnet, configure your frontend environment
+              variables, and call <code className="rounded bg-gray-800 px-1.5 py-0.5 text-blue-300 text-sm">subscribe</code>{' '}
+              from the TypeScript SDK. That&apos;s all.
+            </p>
+
+            <ul className="mt-6 space-y-3 text-sm text-gray-400" role="list">
+              {[
+                'Rust/Soroban smart contract with 95%+ test coverage',
+                'TypeScript SDK examples for all 3 entry points',
+                'Full event schema for off-chain indexing',
+                'Docker Compose local dev stack included',
+              ].map((item, i) => (
+                <li key={i} className="flex items-start gap-2">
+                  <span className="mt-0.5 text-blue-400 flex-shrink-0" aria-hidden="true">✓</span>
+                  {item}
+                </li>
+              ))}
+            </ul>
+
+            <div className="mt-8 flex flex-wrap gap-3">
+              <a
+                href="https://github.com/Chrisland58/SorobanPay#quick-start-testnet-demo--5-minutes"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="rounded-lg bg-blue-600 px-5 py-2.5 text-sm font-semibold text-white hover:bg-blue-500 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400"
+              >
+                Read the Docs ↗
+              </a>
+              <a
+                href="https://github.com/Chrisland58/SorobanPay"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="rounded-lg border border-gray-700 px-5 py-2.5 text-sm font-semibold text-gray-300 hover:border-gray-500 hover:text-white transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400"
+              >
+                GitHub ↗
+              </a>
+            </div>
+          </div>
+
+          {/* Code snippet */}
+          <div className="rounded-2xl border border-gray-800 bg-gray-900 overflow-hidden shadow-xl">
+            <div className="flex items-center gap-1.5 border-b border-gray-800 px-4 py-3">
+              <span className="h-3 w-3 rounded-full bg-red-500/70" aria-hidden="true" />
+              <span className="h-3 w-3 rounded-full bg-yellow-500/70" aria-hidden="true" />
+              <span className="h-3 w-3 rounded-full bg-green-500/70" aria-hidden="true" />
+              <span className="ml-2 text-xs text-gray-500">subscribe.ts</span>
+            </div>
+            <pre
+              className="overflow-x-auto p-6 text-xs leading-relaxed text-gray-300 sm:text-sm"
+              aria-label="TypeScript code example: subscribe call"
+            >
+              <code>{snippet}</code>
+            </pre>
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+// ─── Section 6: CTA banner ────────────────────────────────────────────────────
+function CTABanner() {
+  return (
+    <section
+      aria-label="Get started call to action"
+      className="relative overflow-hidden bg-blue-600 px-4 py-16 sm:px-8"
+    >
+      <div
+        className="pointer-events-none absolute inset-0 bg-gradient-to-br from-blue-500 via-blue-600 to-indigo-700"
+        aria-hidden="true"
+      />
+      <div className="relative mx-auto max-w-2xl text-center">
+        <h2 className="text-3xl font-extrabold tracking-tight text-white sm:text-4xl">
+          Start building today
+        </h2>
+        <p className="mt-4 text-blue-100 leading-relaxed">
+          Deploy to Stellar testnet in under 5 minutes. Free, open source, and non-custodial.
+        </p>
+        <div className="mt-8 flex flex-col items-center justify-center gap-4 sm:flex-row">
+          <Link
+            href="/app"
+            className="w-full rounded-xl bg-white px-8 py-4 text-sm font-bold text-blue-700 shadow-lg hover:bg-blue-50 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-white sm:w-auto"
+          >
+            Launch App →
+          </Link>
+          <a
+            href="https://github.com/Chrisland58/SorobanPay"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="w-full rounded-xl border border-white/40 px-8 py-4 text-sm font-bold text-white hover:bg-white/10 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-white sm:w-auto"
+          >
+            View Source ↗
+          </a>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+// ─── Section 6: Footer ────────────────────────────────────────────────────────
+function Footer() {
+  return (
+    <footer className="border-t border-gray-800 bg-gray-950 px-4 py-10 sm:px-8">
+      <div className="mx-auto flex max-w-6xl flex-col items-center justify-between gap-6 text-sm text-gray-500 sm:flex-row">
+        <Link
+          href="/"
+          className="flex items-center gap-2 font-extrabold text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400 rounded"
+        >
+          <span
+            className="inline-flex h-7 w-7 items-center justify-center rounded-lg bg-blue-600 text-xs font-black text-white"
+            aria-hidden="true"
+          >
+            S
+          </span>
+          SorobanPay
+        </Link>
+
+        <nav aria-label="Footer navigation">
+          <ul className="flex flex-wrap items-center justify-center gap-6" role="list">
+            <li>
+              <a
+                href="https://github.com/Chrisland58/SorobanPay"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="hover:text-white transition-colors"
+              >
+                GitHub
+              </a>
+            </li>
+            <li>
+              <a
+                href="https://github.com/Chrisland58/SorobanPay#quick-start-testnet-demo--5-minutes"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="hover:text-white transition-colors"
+              >
+                Docs
+              </a>
+            </li>
+            <li>
+              <a
+                href="https://github.com/Chrisland58/SorobanPay/blob/main/CHANGELOG.md"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="hover:text-white transition-colors"
+              >
+                Changelog
+              </a>
+            </li>
+            <li>
+              <Link href="/app" className="hover:text-white transition-colors">
+                Launch App
+              </Link>
+            </li>
+          </ul>
+        </nav>
+
+        <p className="text-xs">© 2024 SorobanPay. MIT License.</p>
+      </div>
+    </footer>
   );
 }
 
 // ─── Page ─────────────────────────────────────────────────────────────────────
-
-export default function Home() {
-  const {
-    publicKey,
-    isConnecting,
-    connectError,
-    freighterInstalled,
-    connect,
-    disconnect,
-  } = useWallet();
-
-  const [copied, setCopied] = useState(false);
-
-  // Keyboard shortcuts & help modal state
-  const { isHelpOpen, openHelp, closeHelp } = useKeyboardShortcuts();
-
-  const shortKey = publicKey
-    ? `${publicKey.slice(0, 6)}…${publicKey.slice(-4)}`
-    : null;
-
-  async function copyKey() {
-    if (!publicKey) return;
-    await navigator.clipboard.writeText(publicKey);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
-  }
-
+export default function LandingPage() {
   return (
     <>
-      {/* Accessible live region for screen-reader announcements */}
-      <LiveRegion />
-
-      {/* Wallet section */}
-      <div className="w-full max-w-lg mb-6">
-
-      {/* Fixed ? trigger button */}
-      <ShortcutsTriggerButton onClick={openHelp} />
-
-      <main className="min-h-screen flex flex-col items-center px-4 py-12">
-        {/* Onboarding guide */}
-        <OnboardingGuide isConnected={!!publicKey} />
-
-        {/* Header */}
-        <div className="w-full max-w-lg mb-8 text-center">
-          <h1 className="text-4xl font-extrabold tracking-tight mb-2">SorobanPay</h1>
-          <p className="text-gray-400 text-sm">
-            Decentralized recurring payments on Stellar
-          </p>
-          {/* Keyboard shortcut hint below tagline */}
-          <p className="text-gray-600 text-xs mt-1">
-            Press{' '}
-            <kbd className="inline-flex items-center rounded border border-gray-600 bg-gray-800 px-1.5 py-0.5 font-mono text-[11px] text-gray-400 shadow-[inset_0_-1px_0_0_rgba(0,0,0,0.4)]">
-              ?
-            </kbd>{' '}
-            for keyboard shortcuts
-          </p>
-        </div>
-
-        {/* Wallet section */}
-        <div className="w-full max-w-lg mb-6">
-          <OnboardingCard freighterInstalled={freighterInstalled} />
-
-          {!publicKey ? (
-            <div className="bg-gray-900 rounded-2xl p-6 shadow-lg">
-              {/* Req 9.1 — Freighter install prompt */}
-              {!freighterInstalled && (
-                <div
-                  role="alert"
-                  className="mb-4 rounded-lg bg-yellow-900/60 border border-yellow-600 p-3 text-sm text-yellow-200"
-                >
-                  Freighter wallet is not installed.{' '}
-                  <a
-                    href="https://www.freighter.app"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="underline hover:text-yellow-100"
-                  >
-                    Install Freighter
-                  </a>{' '}
-                  to continue.
-                </div>
-              )}
-
-              {/* Req 9.4 — access denied error */}
-              {connectError && (
-                <div
-                  role="alert"
-                  className="mb-4 rounded-lg bg-red-900/60 border border-red-600 p-3 text-sm text-red-200"
-                >
-                  {connectError}
-                </div>
-              )}
-
-              <button
-                onClick={connect}
-                disabled={isConnecting}
-                aria-keyshortcuts="n"
-                title="Connect Freighter Wallet (press N to focus this area)"
-                className="w-full rounded-lg bg-blue-600 hover:bg-blue-500 disabled:opacity-50
-                           disabled:cursor-not-allowed px-4 py-3 text-sm font-semibold
-                           transition-colors focus:outline-none focus:ring-2 focus:ring-blue-400"
-              >
-                {isConnecting ? 'Connecting…' : 'Connect Freighter Wallet'}
-              </button>
-            </div>
-          ) : (
-            /* Connected: show full key with copy support + disconnect button */
-            <div className="bg-gray-900 rounded-2xl p-4 shadow-lg flex items-center justify-between gap-3">
-              <div className="flex items-center gap-2 min-w-0">
-                <span className="h-2 w-2 rounded-full bg-green-400 flex-shrink-0" aria-hidden="true" />
-                <span className="text-sm text-gray-300 flex-shrink-0">Connected:</span>
-                <button
-                  onClick={copyKey}
-                  title={publicKey}
-                  aria-label={`Copy full public key: ${publicKey}`}
-                  className="font-mono text-white text-sm truncate hover:text-blue-300 transition-colors focus:outline-none focus:ring-1 focus:ring-blue-400 rounded"
-                >
-                  {shortKey}
-                </button>
-                <span
-                  aria-live="polite"
-                  className={`text-xs transition-opacity duration-300 flex-shrink-0 ${copied ? 'text-green-400 opacity-100' : 'opacity-0'}`}
-                >
-                  Copied!
-                </span>
-              </div>
-              {/* Req 9.6 — disconnect clears key */}
-              <button
-                onClick={disconnect}
-                className="text-xs text-gray-400 hover:text-red-400 transition-colors flex-shrink-0
-                           focus:outline-none focus:ring-1 focus:ring-red-400 rounded px-2 py-1"
-              >
-                Disconnect
-              </button>
-            </div>
-          )}
-        </div>
-
-        {/* ── Subscription form section ───────────────────────────────────── */}
-        {/* id is referenced by the N shortcut in useKeyboardShortcuts */}
-        <section
-          id={SECTION_IDS.subscriptionForm}
-          aria-label="New subscription"
-          className="w-full max-w-lg"
-          tabIndex={-1}
-        >
-          {publicKey ? (
-            <SubscriptionForm />
-          ) : (
-            <div className="rounded-2xl border border-gray-800 bg-gray-900/40 p-8 text-center space-y-3">
-              <p className="text-2xl" aria-hidden="true">🔒</p>
-              <p className="text-gray-300 font-semibold text-sm">Connect your wallet to get started</p>
-              <p className="text-gray-500 text-xs leading-relaxed">
-                Install{' '}
-                <a
-                  href="https://www.freighter.app"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="underline text-blue-400 hover:text-blue-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400 rounded"
-                >
-                  Freighter
-                </a>{' '}
-                and click <strong className="text-gray-300">Connect Freighter Wallet</strong> above.
-                Then set{' '}
-                <code className="bg-gray-800 px-1 rounded text-yellow-300 text-xs">NEXT_PUBLIC_CONTRACT_ID</code>{' '}
-                in <code className="bg-gray-800 px-1 rounded text-gray-300 text-xs">frontend/.env.local</code> if you
-                haven&apos;t deployed yet. See the{' '}
-                <a
-                  href="https://github.com/Chrisland58/SorobanPay#quick-start-testnet-demo--5-minutes"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="underline text-blue-400 hover:text-blue-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400 rounded"
-                >
-                  Quick Start guide
-                </a>
-                .
-              </p>
-            </div>
-          )}
-        </section>
-
-        {/* ── Payment history section ─────────────────────────────────────── */}
-        {/* id is referenced by the H shortcut in useKeyboardShortcuts */}
-        {publicKey && (
-          <section
-            id={SECTION_IDS.paymentHistory}
-            aria-label="Payment history"
-            className="w-full max-w-lg mt-6"
-            tabIndex={-1}
-          >
-            <div className="rounded-2xl border border-dashed border-gray-700 bg-gray-900/30 p-6 text-center space-y-3">
-              <p className="text-2xl" aria-hidden="true">📋</p>
-              <p className="text-gray-300 font-semibold text-sm">Payment History</p>
-              <p className="text-gray-500 text-xs leading-relaxed max-w-xs mx-auto">
-                Executed payments and subscription activity will appear here once
-                on-chain event indexing is available. Payments are recorded as{' '}
-                <code className="bg-gray-800 px-1 rounded text-gray-400 text-xs">executed</code>{' '}
-                events on the Soroban ledger.
-              </p>
-              <span className="inline-block mt-1 px-3 py-1 rounded-full bg-gray-800 text-gray-600 text-xs font-medium border border-gray-700">
-                Coming soon
-              </span>
-            </div>
-          </section>
-        )}
-
-      {/* Subscription form — only rendered when wallet is connected (Req 9.5) */}
-      {publicKey ? (
-        <SubscriptionForm />
-      ) : (
-        <div className="w-full max-w-lg rounded-2xl border border-gray-800 bg-gray-900/40 p-8 text-center space-y-3">
-          <p className="text-2xl" aria-hidden="true">🔒</p>
-          <p className="text-gray-300 font-semibold text-sm">Connect your wallet to get started</p>
-          <p className="text-gray-500 text-xs leading-relaxed">
-            Install{' '}
-            <a
-              href="https://www.freighter.app"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="underline text-blue-400 hover:text-blue-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400 rounded"
-            >
-              Freighter
-            </a>{' '}
-            and click <strong className="text-gray-300">Connect Freighter Wallet</strong> above.
-            Then set <code className="bg-gray-800 px-1 rounded text-yellow-300 text-xs">NEXT_PUBLIC_CONTRACT_ID</code> in{' '}
-            <code className="bg-gray-800 px-1 rounded text-gray-300 text-xs">frontend/.env.local</code> if you haven&apos;t deployed yet.
-            See the <a href="https://github.com/Chrisland58/SorobanPay#quick-start-testnet-demo--5-minutes" target="_blank" rel="noopener noreferrer" className="underline text-blue-400 hover:text-blue-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400 rounded">Quick Start guide</a>.
-          </p>
-        </div>
-      )}
-
-      {/* Subscription history placeholder */}
-      {publicKey && (
-        <div className="w-full max-w-lg mt-6">
-          <div className="rounded-2xl border border-dashed border-gray-700 bg-gray-900/30 p-6 text-center space-y-3">
-            <p className="text-2xl" aria-hidden="true">📋</p>
-            <p className="text-gray-300 font-semibold text-sm">Payment History</p>
-            <p className="text-gray-500 text-xs leading-relaxed max-w-xs mx-auto">
-              Trigger <code className="bg-gray-800 px-1 rounded text-gray-400 text-xs">execute_payment</code>,
-              view active subscriptions, and review revenue analytics.
-            </p>
-            <span className="inline-block mt-1 px-3 py-1 rounded-full bg-gray-800 text-gray-600 text-xs font-medium border border-gray-700">
-              Coming soon
-            </span>
-          </div>
-        </section>
-
-        {/* ── Dashboard section (coming soon) ─────────────────────────────── */}
-        {/* id is referenced by the D shortcut in useKeyboardShortcuts */}
-        <section
-          id={SECTION_IDS.dashboard}
-          aria-label="Dashboard"
-          className="w-full max-w-lg mt-6 mb-16"
-          tabIndex={-1}
-        >
-          <div className="rounded-2xl border border-dashed border-gray-700 bg-gray-900/20 p-6 text-center space-y-3">
-            <p className="text-2xl" aria-hidden="true">📊</p>
-            <p className="text-gray-300 font-semibold text-sm">Dashboard</p>
-            <p className="text-gray-500 text-xs leading-relaxed max-w-xs mx-auto">
-              Overview of your subscription portfolio, payment timelines, and
-              account health metrics.
-            </p>
-            <span className="inline-block mt-1 px-3 py-1 rounded-full bg-gray-800 text-gray-600 text-xs font-medium border border-gray-700">
-              Coming soon
-            </span>
-          </div>
-        </section>
+      <Nav />
+      <main>
+        <Hero />
+        <HowItWorks />
+        <Features />
+        <UseCases />
+        <DeveloperQuickstart />
+        <CTABanner />
       </main>
+      <Footer />
     </>
   );
 }
