@@ -3,6 +3,11 @@ name: CI
 on:
   push:
   pull_request:
+  # Run gas estimation weekly on Sundays at 02:00 UTC
+  schedule:
+    - cron: "0 2 * * 0"
+  # Allow manual trigger (e.g., to run gas estimation or load tests on demand)
+  workflow_dispatch:
 
 jobs:
   contract:
@@ -24,8 +29,115 @@ jobs:
       - name: Build (wasm32 release)
         run: cargo build --manifest-path contracts/subscription/Cargo.toml --target wasm32-unknown-unknown --release
 
-      - name: Test
-        run: cargo test --manifest-path contracts/subscription/Cargo.toml
+      - name: Test & summary
+        run: |
+          set -o pipefail
+          cargo test --manifest-path contracts/subscription/Cargo.toml 2>&1 \
+            | tee /tmp/contract-test-output.txt
+          echo "--- Test summary ---"
+          grep -E "^test result|FAILED|ok$" /tmp/contract-test-output.txt || true
+
+  # Issue #432 – 95% coverage threshold enforcement
+  contract-coverage:
+    name: Rust contract coverage (≥95%)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable + llvm-tools
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: contracts/subscription
+
+      - name: Install cargo-llvm-cov
+        run: cargo install cargo-llvm-cov --locked
+
+      - name: Generate coverage report (LCOV + HTML)
+        run: make test-coverage
+
+      - name: Check 95% line coverage threshold
+        run: |
+          # Extract line coverage % from lcov.info and fail if below 95
+          LCOV_FILE="contracts/target/lcov.info"
+          if [ ! -f "$LCOV_FILE" ]; then
+            echo "ERROR: lcov.info not found at $LCOV_FILE" >&2
+            exit 1
+          fi
+
+          LINES_FOUND=$(grep -E "^LF:" "$LCOV_FILE" | awk -F: '{sum += $2} END {print sum}')
+          LINES_HIT=$(grep -E "^LH:" "$LCOV_FILE" | awk -F: '{sum += $2} END {print sum}')
+
+          if [ -z "$LINES_FOUND" ] || [ "$LINES_FOUND" -eq 0 ]; then
+            echo "ERROR: No coverage data found in lcov.info" >&2
+            exit 1
+          fi
+
+          COVERAGE=$(echo "scale=2; $LINES_HIT * 100 / $LINES_FOUND" | bc)
+          echo "Line coverage: ${COVERAGE}% (${LINES_HIT}/${LINES_FOUND} lines)"
+
+          # Use awk for floating-point comparison (bc outputs e.g. "97.42")
+          PASS=$(echo "$COVERAGE" | awk '{print ($1 >= 95) ? "yes" : "no"}')
+          if [ "$PASS" != "yes" ]; then
+            echo "FAIL: Coverage ${COVERAGE}% is below the required 95% threshold." >&2
+            exit 1
+          fi
+          echo "PASS: Coverage ${COVERAGE}% meets the 95% threshold."
+
+      - name: Upload LCOV to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          files: contracts/target/lcov.info
+          flags: contract
+          name: sorobanpay-contract
+          fail_ci_if_error: false
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+
+      - name: Upload HTML report as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: contract-coverage-html
+          path: contracts/target/coverage-html/
+
+      - name: Upload LCOV report as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: contract-coverage-lcov
+          path: contracts/target/lcov.info
+
+  # Issue #431 – Integration test suite on local Soroban node
+  contract-integration:
+    name: Smart contract integration tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable + wasm32 target
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: contracts/subscription
+
+      - name: Install Stellar CLI
+        run: cargo install --locked stellar-cli --features opt
+
+      - name: Make integration test script executable
+        run: chmod +x scripts/integration-test.sh
+
+      - name: Run integration tests (local Soroban node via Docker)
+        run: bash scripts/integration-test.sh
+        env:
+          DOCKER_BUILDKIT: 1
 
   backend-integration:
     name: Backend integration tests
@@ -48,8 +160,9 @@ jobs:
         run: npm run test:integration
         working-directory: backend
 
+  # Issue #433 – Frontend unit tests + coverage (>80%)
   frontend:
-    name: Frontend type check
+    name: Frontend type check, unit tests & coverage
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -68,3 +181,142 @@ jobs:
       - name: Type check
         run: npm run type-check
         working-directory: frontend
+
+      - name: Run unit tests with coverage
+        run: npm run test:ci
+        working-directory: frontend
+
+      - name: Upload frontend coverage to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          files: frontend/coverage/lcov.info
+          flags: frontend
+          name: sorobanpay-frontend
+          fail_ci_if_error: false
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+
+      - name: Upload coverage HTML report
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-coverage-html
+          path: frontend/coverage/
+
+  frontend-typecheck:
+    name: Frontend strict type check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+        working-directory: frontend
+
+      - name: Type check (fail on errors)
+        run: npm run type-check
+        working-directory: frontend
+
+  # TEST-102: k6 load tests — runs weekly against staging environment
+  load-test:
+    name: "[TEST-102] k6 load tests"
+    runs-on: ubuntu-latest
+    # Only run on schedule or manual trigger; requires a staging environment
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install k6
+        run: |
+          sudo gpg -k
+          sudo gpg --no-default-keyring \
+            --keyring /usr/share/keyrings/k6-archive-keyring.gpg \
+            --keyserver hkp://keyserver.ubuntu.com:80 \
+            --recv-keys C5AD17C747E3415A3642D57D77C6C491D6AC1D69
+          echo "deb [signed-by=/usr/share/keyrings/k6-archive-keyring.gpg] https://dl.k6.io/deb stable main" \
+            | sudo tee /etc/apt/sources.list.d/k6.list
+          sudo apt-get update && sudo apt-get install -y k6
+
+      - name: Create results directory
+        run: mkdir -p results
+
+      - name: "[TEST-102] Read-heavy scenario (100 VUs, 2 min)"
+        env:
+          BASE_URL: ${{ secrets.LOAD_TEST_BASE_URL }}
+          MERCHANT_ADDRESS: ${{ secrets.LOAD_TEST_MERCHANT_ADDRESS }}
+        run: |
+          k6 run \
+            -e BASE_URL="$BASE_URL" \
+            -e MERCHANT_ADDRESS="$MERCHANT_ADDRESS" \
+            --out json=results/read-heavy-results.json \
+            tests/load/read-heavy.js
+
+      - name: "[TEST-102] Mixed scenario (50 VUs, ramp)"
+        env:
+          BASE_URL: ${{ secrets.LOAD_TEST_BASE_URL }}
+          MERCHANT_ADDRESS: ${{ secrets.LOAD_TEST_MERCHANT_ADDRESS }}
+        run: |
+          k6 run \
+            -e BASE_URL="$BASE_URL" \
+            -e MERCHANT_ADDRESS="$MERCHANT_ADDRESS" \
+            --out json=results/mixed-results.json \
+            tests/load/mixed.js
+
+      - name: "[TEST-102] Webhook storm scenario (50 VUs, 2 min)"
+        env:
+          BASE_URL: ${{ secrets.LOAD_TEST_BASE_URL }}
+          MERCHANT_ADDRESS: ${{ secrets.LOAD_TEST_MERCHANT_ADDRESS }}
+        run: |
+          k6 run \
+            -e BASE_URL="$BASE_URL" \
+            -e MERCHANT_ADDRESS="$MERCHANT_ADDRESS" \
+            --out json=results/webhook-storm-results.json \
+            tests/load/webhook-storm.js
+
+      - name: Upload load test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: load-test-results
+          path: results/
+
+  # TEST-100: Gas estimation regression harness — runs against staging on schedule
+  gas-estimation:
+    name: "[TEST-100] Gas estimation regression"
+    runs-on: ubuntu-latest
+    # Only run on schedule or when manually triggered; staging credentials required
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install script dependencies
+        run: npm install
+        working-directory: .
+
+      - name: Run gas estimation harness
+        env:
+          RPC_URL: ${{ secrets.GAS_RPC_URL }}
+          CONTRACT_ID: ${{ secrets.GAS_CONTRACT_ID }}
+          SUBSCRIBER_KEY: ${{ secrets.GAS_SUBSCRIBER_KEY }}
+          MERCHANT_KEY: ${{ secrets.GAS_MERCHANT_KEY }}
+          TOKEN_ADDRESS: ${{ secrets.GAS_TOKEN_ADDRESS }}
+          NETWORK_PASSPHRASE: ${{ secrets.GAS_NETWORK_PASSPHRASE }}
+        run: npm run gas-estimation
+
+      - name: Upload gas estimation report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gas-estimation-report
+          path: gas-estimation-report.md
