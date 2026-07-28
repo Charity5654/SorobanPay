@@ -77,6 +77,8 @@ pub struct SubscriptionData {
     pub next_payment: u64,
     /// True when subscription payments are suspended
     pub is_paused:    bool,
+    /// Optional timestamp at which the subscription automatically resumes.
+    pub paused_until: Option<u64>,
 }
 
 /// Safe upper bound for a single subscription payment amount (1 × 10¹⁸ stroops).

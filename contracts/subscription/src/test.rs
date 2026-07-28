@@ -167,6 +167,27 @@ fn test_payment_not_due_after_subscribe() {
     assert_eq!(t.sub_bal(), bal);
 }
 
+#[test]
+fn test_pause_blocks_payment_then_resume_allows_payment() {
+    let t = T::new();
+    let amount = 100_000_i128;
+    let interval = 86_400_u64;
+    t.client
+        .subscribe(&t.subscriber, &t.merchant, &t.token, &amount, &interval, &false);
+
+    t.client.pause(&t.subscriber, &t.merchant, &None);
+    t.advance(interval + 1);
+    let paused = t
+        .client
+        .try_execute_payment(&t.subscriber, &t.merchant);
+    assert!(matches!(paused, Err(Ok(ContractError::SubscriptionPaused))));
+
+    t.client.resume(&t.subscriber, &t.merchant);
+    t.advance(interval + 1);
+    t.client.execute_payment(&t.subscriber, &t.merchant);
+    assert_eq!(t.mer_bal(), amount);
+}
+
 // ─── Extra: Execute payment before due time ───────────────────────────────────
 
 /// New subscriptions must have ver == 1.

@@ -154,3 +154,19 @@ pub fn emit_low_allowance(
         (allowance, required),
     );
 }
+
+/// Emit the `pause` event after a subscription has been paused.
+pub fn emit_pause(env: &Env, subscriber: &Address, merchant: &Address, resume_at: Option<u64>) {
+    env.events().publish(
+        (Symbol::new(env, "pause"), subscriber.clone(), merchant.clone()),
+        resume_at.map(|timestamp| timestamp as i128),
+    );
+}
+
+/// Emit the `resume` event after a subscription has been resumed.
+pub fn emit_resume(env: &Env, subscriber: &Address, merchant: &Address) {
+    env.events().publish(
+        (Symbol::new(env, "resume"), subscriber.clone(), merchant.clone()),
+        (),
+    );
+}

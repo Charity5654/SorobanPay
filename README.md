@@ -759,6 +759,7 @@ Failed calls that return a `ContractError` (e.g., `PaymentNotDue`, `NoActiveSubs
 | 9 | `AmountTooLarge` | `amount > 10¹⁸` in `subscribe` |
 | 10 | `SelfSubscription` | `subscriber == merchant` in `subscribe` |
 | 11 | `InvalidTokenAddress` | `token` is the contract's own address in `subscribe` |
+| 12 | `SubscriptionPaused` | Payment attempted while a subscription is paused |
 
 ---
 
