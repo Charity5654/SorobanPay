@@ -21,6 +21,7 @@
  */
 
 import { useState, useEffect, useRef } from 'react';
+import Link from 'next/link';
 import SubscriptionForm from '@/components/SubscriptionForm';
 import OnboardingGuide from '@/components/OnboardingGuide';
 import ShortcutsHelpModal from '@/components/ShortcutsHelpModal';
@@ -265,9 +266,11 @@ export default function Home() {
   return (
     <>
       <LiveRegion />
+
+      {/* Fixed ? trigger button */}
       <ShortcutsTriggerButton onClick={openHelp} />
 
-      {/* Keyboard shortcuts modal */}
+      {/* Shortcuts help modal */}
       <ShortcutsHelpModal isOpen={isHelpOpen} onClose={closeHelp} />
 
       <main className="min-h-screen flex flex-col items-center px-4 py-12">
@@ -480,27 +483,28 @@ export default function Home() {
         </section>
 
         {/* ── Payment history section ─────────────────────────────────────── */}
-        {publicKey && (
-          <section
-            id={SECTION_IDS.paymentHistory}
-            aria-label="Payment history"
-            className="w-full max-w-lg mt-6"
-            tabIndex={-1}
-          >
-            <div className="rounded-2xl border border-dashed border-gray-700 bg-gray-900/30 p-6 text-center space-y-3">
-              <p className="text-2xl" aria-hidden="true">📋</p>
-              <p className="text-gray-300 font-semibold text-sm">Payment History</p>
-              <p className="text-gray-500 text-xs leading-relaxed max-w-xs mx-auto">
-                Executed payments and subscription activity will appear here once
-                on-chain event indexing is available. Payments are recorded as{' '}
-                <code className="bg-gray-800 px-1 rounded text-gray-400 text-xs">
-                  executed
-                </code>{' '}
-                events on the Soroban ledger.
-              </p>
-              <span className="inline-block mt-1 px-3 py-1 rounded-full bg-gray-800 text-gray-600 text-xs font-medium border border-gray-700">
-                Coming soon
-              </span>
+        {/* id is referenced by the H shortcut in useKeyboardShortcuts */}
+        <section
+          id={SECTION_IDS.paymentHistory}
+          aria-label="Payment history"
+          className="w-full max-w-lg mt-6"
+          tabIndex={-1}
+        >
+          <div className="rounded-2xl border border-gray-700 bg-gray-900/30 p-6 space-y-3">
+            <div className="flex items-center justify-between gap-4">
+              <div className="flex items-center gap-3">
+                <span className="text-2xl" aria-hidden="true">📋</span>
+                <p className="text-gray-300 font-semibold text-sm">Payment History</p>
+              </div>
+              {publicKey && (
+                <Link
+                  href="/history"
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-gray-700 bg-gray-800 px-3 py-1.5 text-xs font-medium text-gray-300 hover:bg-gray-700 hover:text-white transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400"
+                  aria-label="View full payment history"
+                >
+                  View all <span aria-hidden="true">→</span>
+                </Link>
+              )}
             </div>
           </section>
         )}
@@ -537,7 +541,8 @@ export default function Home() {
             <p className="text-2xl" aria-hidden="true">📋</p>
             <p className="text-gray-300 font-semibold text-sm">Payment History</p>
             <p className="text-gray-500 text-xs leading-relaxed max-w-xs mx-auto">
-              Trigger <code className="bg-gray-800 px-1 rounded text-gray-400 text-xs">execute_payment</code>,
+              Trigger{' '}
+              <code className="bg-gray-800 px-1 rounded text-gray-400 text-xs">execute_payment</code>,
               view active subscriptions, and review revenue analytics.
             </p>
             <span className="inline-block mt-1 px-3 py-1 rounded-full bg-gray-800 text-gray-600 text-xs font-medium border border-gray-700">
