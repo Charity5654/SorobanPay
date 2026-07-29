@@ -73,6 +73,7 @@ app.get('/metrics', (_req, res) => {
 // ─── Backward-compatible aliases — /api/ (no version prefix) ─────────────────
 // These keep existing integrations working and forward to v1 handlers.
 app.use('/api/subscriptions', subscriptionsRouter);
+app.use('/api/subscriptions/:subscriber/:merchant/retries', retriesRouter);
 app.use('/api/webhooks',      webhooksRouter);
 app.use('/api/summaries',     summariesRouter);
 app.use('/api/reconcile',     reconcileRouter);
