@@ -72,8 +72,45 @@ STELLAR_NETWORK=mainnet STELLAR_IDENTITY=my-mainnet-id bash deploy/deploy.sh
 
 ## Environment variables reference
 
+### `deploy/deploy.sh` variables
+
+These variables control the deployment script. Set them before running `bash deploy/deploy.sh`.
+
+| Variable | Default | Required | Allowed values | Description |
+|----------|---------|----------|---------------|-------------|
+| `STELLAR_NETWORK` | `testnet` | No | `testnet`, `mainnet` | Target Stellar network. Determines the RPC endpoint and network passphrase automatically — do not set `RPC_URL` or `PASSPHRASE` directly. |
+| `STELLAR_IDENTITY` | `alice` | No | Any registered identity alias | Stellar CLI identity alias that signs and pays fees for the deploy transaction. Must be pre-created with `stellar keys generate` and funded. |
+
+**Derived values** (set internally by the script — do not override):
+
+| Derived variable | Testnet value | Mainnet value |
+|-----------------|--------------|--------------|
+| `RPC_URL` | `https://soroban-testnet.stellar.org` | `https://mainnet.stellar.validationcloud.io/v1/<key>` |
+| `PASSPHRASE` | `Test SDF Network ; September 2015` | `Public Global Stellar Network ; September 2015` |
+
+**Quick examples:**
+
+```bash
+# Testnet (all defaults)
+bash deploy/deploy.sh
+
+# Testnet — capture contract address
+CONTRACT_ID=$(bash deploy/deploy.sh)
+
+# Mainnet — explicit identity
+STELLAR_NETWORK=mainnet STELLAR_IDENTITY=my-mainnet-id bash deploy/deploy.sh
+
+# Mainnet — capture contract address
+CONTRACT_ID=$(STELLAR_NETWORK=mainnet STELLAR_IDENTITY=my-mainnet-id bash deploy/deploy.sh)
+echo "Deployed: $CONTRACT_ID"
+```
+
+### Frontend (`frontend/.env.local`) variables
+
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `NEXT_PUBLIC_CONTRACT_ID` | ✅ | Deployed contract address (`C…`) |
-| `NEXT_PUBLIC_RPC_URL` | ✅ | Soroban RPC endpoint |
-| `NEXT_PUBLIC_NETWORK_PASSPHRASE` | ✅ | Must match Freighter network |
+| `NEXT_PUBLIC_CONTRACT_ID` | ✅ | Deployed contract address (`C…`) from `deploy.sh` stdout |
+| `NEXT_PUBLIC_RPC_URL` | ✅ | Soroban RPC endpoint (must match the network Freighter is on) |
+| `NEXT_PUBLIC_NETWORK_PASSPHRASE` | ✅ | Stellar network passphrase — must match Freighter's selected network |
+
+Copy `frontend/.env.example` to `frontend/.env.local` and fill in the values above. See [README.md → Frontend → Configure environment variables](../README.md#2-configure-environment-variables) for the full setup walkthrough.
