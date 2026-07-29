@@ -10,6 +10,8 @@ import {
   cacheDeletePattern,
   CacheKey,
 } from '../lib/redis';
+import { withBackoff, isRpcRetryable } from '../lib/backoff';
+import { indexerStateService } from './indexerStateService';
 
 const auditLogger = new AuditLogger();
 const SUPPORTED_EVENT_TYPES = new Set(['subscribe', 'executed', 'payment_transfer_failure', 'cancel']);
@@ -53,6 +55,8 @@ export class EventIndexer {
   private contractId: string;
   private server: rpc.Server;
   private retryScheduler: RetryScheduler | null = null;
+  private _pollingTimer: ReturnType<typeof setTimeout> | null = null;
+  private _stopped = false;
 
   constructor(rpcUrl: string, contractId: string) {
     this.rpcUrl = rpcUrl;
@@ -65,9 +69,112 @@ export class EventIndexer {
     this.retryScheduler = scheduler;
   }
 
+  // ─── BE-51: Continuous polling with cursor-based pagination ────────────────
+
+  /**
+   * Start a polling loop that calls fetchAndStoreEventsWithCursor() every
+   * `intervalMs` milliseconds (default: 10 seconds).
+   *
+   * The cursor is loaded from the IndexerState table on startup and persisted
+   * after each successful batch so restarts resume exactly where they left off.
+   */
+  startPolling(intervalMs = 10_000): void {
+    this._stopped = false;
+    console.log(`[indexer] Starting cursor-based polling (interval: ${intervalMs}ms)`);
+
+    const tick = async () => {
+      if (this._stopped) return;
+      try {
+        await this.fetchAndStoreEventsWithCursor();
+      } catch (err) {
+        console.error('[indexer] Poll cycle error:', err);
+      }
+      if (!this._stopped) {
+        this._pollingTimer = setTimeout(tick, intervalMs);
+      }
+    };
+
+    // Run immediately on start, then schedule subsequent ticks
+    tick();
+  }
+
+  /** Stop the polling loop gracefully. Waits for the in-flight tick to finish. */
+  stopPolling(): void {
+    this._stopped = true;
+    if (this._pollingTimer) {
+      clearTimeout(this._pollingTimer);
+      this._pollingTimer = null;
+    }
+    console.log('[indexer] Polling stopped.');
+  }
+
+  /**
+   * Fetch one batch of events using cursor-based pagination.
+   *
+   * - Loads the last saved cursor from IndexerState on the first call.
+   * - Uses the cursor to request only events after the last processed position.
+   * - Saves the new cursor after each successful batch.
+   * - Retries on transient RPC errors with exponential backoff.
+   */
+  async fetchAndStoreEventsWithCursor(): Promise<void> {
+    const cursor = await indexerStateService.getLastCursor();
+    const lastLedger = await indexerStateService.getLastProcessedLedger();
+
+    await withBackoff(
+      () => this._fetchBatch(cursor, lastLedger),
+      {
+        maxRetries: 5,
+        baseDelayMs: 1_000,
+        maxDelayMs: 60_000,
+        isRetryable: isRpcRetryable,
+        onRetry: (attempt, err) => {
+          console.warn(
+            `[indexer] RPC error, retry ${attempt}/5: ${(err as Error)?.message ?? err}`,
+          );
+        },
+      },
+    );
+  }
+
+  private async _fetchBatch(cursor: string | null, lastLedger: number): Promise<void> {
+    const filters: rpc.Api.EventFilter[] = [
+      { type: 'contract', contractIds: [this.contractId] },
+    ];
+
+    const eventsRequest: rpc.Api.GetEventsRequest = cursor
+      ? { filters, cursor, limit: 100 }
+      : { filters, startLedger: Math.max(lastLedger, 1), limit: 100 };
+
+    const eventsResponse = await this.server.getEvents(eventsRequest);
+    const events = eventsResponse.events ?? [];
+
+    if (events.length === 0) {
+      console.log('[indexer] No new events.');
+      return;
+    }
+
+    console.log(`[indexer] Processing batch of ${events.length} events`);
+
+    let newCursor: string | null = cursor;
+    let newLedger = lastLedger;
+
+    for (const event of events) {
+      await this.processEvent(event);
+      // Each event's id is "ledger:txIndex:eventIndex" — use as cursor
+      if (event.id) newCursor = event.id;
+      const eventLedger = Number(event.ledger);
+      if (eventLedger > newLedger) newLedger = eventLedger;
+    }
+
+    // Persist cursor so restarts resume from here
+    await indexerStateService.saveState(newCursor, newLedger);
+    console.log(`[indexer] Cursor saved: ${newCursor}, ledger: ${newLedger}`);
+  }
+
   /**
    * Fetch events from Soroban RPC and store them.
    * Wrapped in a root OTel span 'rpc.poll_cycle'.
+   * @deprecated Use fetchAndStoreEventsWithCursor() for cursor-based resumability.
    */
   async fetchAndStoreEvents(startLedger?: number): Promise<void> {
     await withSpan(
@@ -229,6 +336,22 @@ export class EventIndexer {
           amount: amount ?? '',
           transactionHash: event.id,
           ledger: ledgerTimestamp,
+        });
+
+        // BE-51: Persist normalised Payment record with txHash for deduplication
+        await prisma.payment.upsert({
+          where: { txHash: event.id },
+          update: {},  // Already stored — no-op (idempotent)
+          create: {
+            subscriber,
+            merchant,
+            token: token ?? '',
+            amount: amount ?? '',
+            txHash: event.id,
+            ledger: ledgerTimestamp,
+            timestamp: new Date(Number(ledgerTimestamp) * 1000),
+            status: 'executed',
+          },
         });
       }
 

@@ -3,8 +3,10 @@ import type { ReactNode } from 'react';
 import { NextIntlClientProvider } from 'next-intl';
 import { getMessages } from 'next-intl/server';
 import { WalletProvider } from '@/context/WalletContext';
+import { NotificationProvider } from '@/context/NotificationContext';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
 import { LanguageSelector } from '@/components/LanguageSelector';
+import { DarkModeToggle } from '@/components/DarkModeToggle';
 import { ToastProvider } from '@/components/Toast';
 import './globals.css';
 
@@ -53,6 +55,9 @@ export const viewport: Viewport = {
  * - FE-35: NextIntlClientProvider supplies translated messages to all client
  *          components. getMessages() reads the locale resolved by middleware.
  * - PWA: Manifest and meta tags wired up via metadata export above.
+ * - Dark mode: ThemeScript injected into <head> prevents FOUC; ThemeProvider
+ *   wraps body to provide theme context. DarkModeToggle placed in top-right
+ *   header alongside LanguageSelector.
  */
 export default async function RootLayout({
   children,
@@ -63,24 +68,35 @@ export default async function RootLayout({
   const messages = await getMessages();
 
   return (
-    <html lang="en">
-      <body className="min-h-screen bg-gray-950 text-white antialiased">
+    <html lang="en" suppressHydrationWarning>
+      <head>
+        {/*
+         * FOUC prevention — sets the 'dark' class on <html> before the first
+         * paint, based on localStorage preference or system preference.
+         * Must be in <head> to run as a blocking script. (ThemeContext.tsx)
+         */}
+        <ThemeScript />
+      </head>
+      <body className="min-h-screen bg-white dark:bg-gray-950 text-gray-900 dark:text-white antialiased transition-colors duration-200">
         {/*
          * Top-level ErrorBoundary (FE-38)
          * Prevents a full blank-screen crash on any unhandled render error.
          */}
         <ErrorBoundary name="RootLayout">
-          <NextIntlClientProvider messages={messages}>
-            <WalletProvider>
-              <ToastProvider>
-                {/* Language switcher — fixed to top-right corner */}
-                <div className="fixed top-4 right-4 z-50">
-                  <LanguageSelector />
-                </div>
-                {children}
-              </ToastProvider>
-            </WalletProvider>
-          </NextIntlClientProvider>
+          <ThemeProvider>
+            <NextIntlClientProvider messages={messages}>
+              <WalletProvider>
+                <ToastProvider>
+                  {/* Top-right header area: dark mode toggle + language switcher */}
+                  <div className="fixed top-4 right-4 z-50 flex items-center gap-2">
+                    <DarkModeToggle />
+                    <LanguageSelector />
+                  </div>
+                  {children}
+                </ToastProvider>
+              </WalletProvider>
+            </NextIntlClientProvider>
+          </ThemeProvider>
         </ErrorBoundary>
       </body>
     </html>

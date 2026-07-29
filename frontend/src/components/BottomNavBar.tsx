@@ -54,6 +54,15 @@ function DashboardIcon() {
   );
 }
 
+function MerchantIcon() {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+      <path d="M4 4a2 2 0 00-2 2v1h16V6a2 2 0 00-2-2H4z" />
+      <path fillRule="evenodd" d="M18 9H2v5a2 2 0 002 2h12a2 2 0 002-2V9zM4 13a1 1 0 011-1h1a1 1 0 110 2H5a1 1 0 01-1-1zm5-1a1 1 0 100 2h1a1 1 0 100-2H9z" clipRule="evenodd" />
+    </svg>
+  );
+}
+
 const NAV_ITEMS: NavItem[] = [
   {
     id: 'home',
@@ -75,6 +84,13 @@ const NAV_ITEMS: NavItem[] = [
     icon: <HistoryIcon />,
     sectionId: SECTION_IDS.paymentHistory,
     ariaKeyshortcut: 'h',
+  },
+  {
+    id: 'merchant',
+    label: 'Merchant',
+    icon: <MerchantIcon />,
+    sectionId: SECTION_IDS.merchantPortal,
+    ariaKeyshortcut: 'm',
   },
   {
     id: 'dashboard',
@@ -129,8 +145,8 @@ export default function BottomNavBar() {
       className="
         fixed bottom-0 inset-x-0 z-40
         flex md:hidden
-        bg-gray-900/95 backdrop-blur-md
-        border-t border-gray-700/60
+        bg-white/95 dark:bg-gray-900/95 backdrop-blur-md
+        border-t border-gray-200/60 dark:border-gray-700/60
         safe-area-inset-bottom
       "
     >
@@ -151,8 +167,8 @@ export default function BottomNavBar() {
               transition-colors duration-150
               focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-400
               ${isActive
-                ? 'text-blue-400'
-                : 'text-gray-500 hover:text-gray-300 active:text-gray-200'}
+                ? 'text-blue-500 dark:text-blue-400'
+                : 'text-gray-400 dark:text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 active:text-gray-900 dark:active:text-gray-200'}
             `}
           >
             <span className={`transition-transform duration-150 ${isActive ? 'scale-110' : ''}`}>

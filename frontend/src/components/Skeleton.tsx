@@ -34,7 +34,7 @@ interface SkeletonBaseProps {
 export function SkeletonBlock({ className = "", label = "Loading…" }: SkeletonBaseProps) {
   return (
     <div
-      className={`animate-pulse rounded bg-gray-800 ${className}`}
+      className={`animate-pulse rounded bg-gray-200 dark:bg-gray-800 ${className}`}
       aria-hidden="true"
       role="presentation"
     >
@@ -118,7 +118,7 @@ export function SkeletonCard({
 }: SkeletonCardProps) {
   return (
     <div
-      className={`rounded-2xl border border-gray-800 bg-gray-900/40 p-5 sm:p-6 space-y-3 ${className}`}
+      className={`rounded-2xl border border-gray-200 dark:border-gray-800 bg-gray-50/40 dark:bg-gray-900/40 p-5 sm:p-6 space-y-3 ${className}`}
       aria-busy="true"
       aria-label="Loading…"
     >
