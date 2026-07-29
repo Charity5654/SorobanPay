@@ -22,14 +22,23 @@ const isDev = process.env.NODE_ENV !== 'production';
 const logLevel = process.env.LOG_LEVEL ?? 'info';
 
 const transport = isDev
-  ? pino.transport({
-      target: 'pino-pretty',
-      options: {
-        colorize: true,
-        translateTime: 'SYS:standard',
-        ignore: 'pid,hostname',
-      },
-    })
+  ? (() => {
+      try {
+        return pino.transport({
+          target: 'pino-pretty',
+          options: {
+            colorize: true,
+            translateTime: 'SYS:standard',
+            ignore: 'pid,hostname',
+          },
+        });
+      } catch (error) {
+        if (process.env.NODE_ENV !== 'test' && !process.env.JEST_WORKER_ID) {
+          console.warn('[logger] pino-pretty transport unavailable, falling back to default logger');
+        }
+        return undefined;
+      }
+    })()
   : undefined;
 
 export const logger = pino(
