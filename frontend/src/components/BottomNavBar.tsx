@@ -129,8 +129,8 @@ export default function BottomNavBar() {
       className="
         fixed bottom-0 inset-x-0 z-40
         flex md:hidden
-        bg-gray-900/95 backdrop-blur-md
-        border-t border-gray-700/60
+        bg-white/95 dark:bg-gray-900/95 backdrop-blur-md
+        border-t border-gray-200/60 dark:border-gray-700/60
         safe-area-inset-bottom
       "
     >
@@ -151,8 +151,8 @@ export default function BottomNavBar() {
               transition-colors duration-150
               focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-400
               ${isActive
-                ? 'text-blue-400'
-                : 'text-gray-500 hover:text-gray-300 active:text-gray-200'}
+                ? 'text-blue-500 dark:text-blue-400'
+                : 'text-gray-400 dark:text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 active:text-gray-900 dark:active:text-gray-200'}
             `}
           >
             <span className={`transition-transform duration-150 ${isActive ? 'scale-110' : ''}`}>

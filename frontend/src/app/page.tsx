@@ -77,8 +77,11 @@ function ShortcutsTriggerButton({ onClick }: { onClick: () => void }) {
         fixed bottom-5 right-5 z-40
         flex items-center justify-center
         h-10 w-10 rounded-full
-        border border-gray-600 bg-gray-800 text-gray-300
-        hover:bg-gray-700 hover:text-white
+        border border-gray-300 dark:border-gray-600
+        bg-white dark:bg-gray-800
+        text-gray-600 dark:text-gray-300
+        hover:bg-gray-100 dark:hover:bg-gray-700
+        hover:text-gray-900 dark:hover:text-white
         focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400
         transition-colors shadow-lg
       "
@@ -92,32 +95,32 @@ function ShortcutsTriggerButton({ onClick }: { onClick: () => void }) {
 
 function OnboardingCard({ freighterInstalled }: { freighterInstalled: boolean }) {
   return (
-    <div className="w-full max-w-lg rounded-2xl border border-gray-800 bg-gradient-to-br from-slate-950/80 via-slate-900/90 to-slate-950/95 p-6 shadow-xl mb-6">
+    <div className="w-full max-w-lg rounded-2xl border border-gray-200 dark:border-gray-800 bg-gradient-to-br from-slate-50/80 via-white/90 to-slate-50/95 dark:from-slate-950/80 dark:via-slate-900/90 dark:to-slate-950/95 p-6 shadow-xl mb-6">
       <div className="flex items-start justify-between gap-4">
         <div>
-          <p className="text-xs uppercase tracking-[0.28em] text-blue-300 font-semibold">
+          <p className="text-xs uppercase tracking-[0.28em] text-blue-600 dark:text-blue-300 font-semibold">
             First-time onboarding
           </p>
-          <h2 className="mt-3 text-2xl font-bold text-white">
+          <h2 className="mt-3 text-2xl font-bold text-gray-900 dark:text-white">
             Launch your first recurring payment
           </h2>
         </div>
-        <span className="rounded-full bg-blue-500/10 px-3 py-1 text-xs font-semibold uppercase tracking-[0.18em] text-blue-200 border border-blue-500/20">
+        <span className="rounded-full bg-blue-500/10 px-3 py-1 text-xs font-semibold uppercase tracking-[0.18em] text-blue-700 dark:text-blue-200 border border-blue-500/20">
           3 steps
         </span>
       </div>
 
-      <ol className="mt-6 space-y-4 text-sm text-gray-300">
-        <li className="rounded-2xl border border-gray-800 bg-gray-900/70 p-4">
+      <ol className="mt-6 space-y-4 text-sm text-gray-600 dark:text-gray-300">
+        <li className="rounded-2xl border border-gray-200 dark:border-gray-800 bg-gray-50/70 dark:bg-gray-900/70 p-4">
           <div className="flex items-center justify-between gap-3 mb-2">
             <span className="inline-flex h-7 min-w-[1.75rem] items-center justify-center rounded-full bg-blue-600 text-xs font-semibold text-white">
               1
             </span>
-            <span className="text-xs text-blue-200 uppercase tracking-[0.18em] font-semibold">
+            <span className="text-xs text-blue-600 dark:text-blue-200 uppercase tracking-[0.18em] font-semibold">
               Wallet setup
             </span>
           </div>
-          <p className="text-gray-300">
+          <p className="text-gray-600 dark:text-gray-300">
             Install Freighter and switch it to Testnet. Then connect your wallet with the button below.
           </p>
           {!freighterInstalled && (
@@ -132,38 +135,38 @@ function OnboardingCard({ freighterInstalled }: { freighterInstalled: boolean })
           )}
         </li>
 
-        <li className="rounded-2xl border border-gray-800 bg-gray-900/70 p-4">
+        <li className="rounded-2xl border border-gray-200 dark:border-gray-800 bg-gray-50/70 dark:bg-gray-900/70 p-4">
           <div className="flex items-center justify-between gap-3 mb-2">
-            <span className="inline-flex h-7 min-w-[1.75rem] items-center justify-center rounded-full bg-slate-700 text-xs font-semibold text-slate-100">
+            <span className="inline-flex h-7 min-w-[1.75rem] items-center justify-center rounded-full bg-slate-200 dark:bg-slate-700 text-xs font-semibold text-slate-700 dark:text-slate-100">
               2
             </span>
-            <span className="text-xs text-blue-200 uppercase tracking-[0.18em] font-semibold">
+            <span className="text-xs text-blue-600 dark:text-blue-200 uppercase tracking-[0.18em] font-semibold">
               Environment config
             </span>
           </div>
-          <p className="text-gray-300">
+          <p className="text-gray-600 dark:text-gray-300">
             Add{' '}
-            <code className="rounded bg-slate-800 px-2 py-0.5 text-xs text-slate-200">
+            <code className="rounded bg-slate-200 dark:bg-slate-800 px-2 py-0.5 text-xs text-slate-700 dark:text-slate-200">
               NEXT_PUBLIC_CONTRACT_ID
             </code>{' '}
             to{' '}
-            <code className="rounded bg-slate-800 px-2 py-0.5 text-xs text-slate-200">
+            <code className="rounded bg-slate-200 dark:bg-slate-800 px-2 py-0.5 text-xs text-slate-700 dark:text-slate-200">
               frontend/.env.local
             </code>{' '}
             and restart the app.
           </p>
         </li>
 
-        <li className="rounded-2xl border border-gray-800 bg-gray-900/70 p-4">
+        <li className="rounded-2xl border border-gray-200 dark:border-gray-800 bg-gray-50/70 dark:bg-gray-900/70 p-4">
           <div className="flex items-center justify-between gap-3 mb-2">
-            <span className="inline-flex h-7 min-w-[1.75rem] items-center justify-center rounded-full bg-slate-700 text-xs font-semibold text-slate-100">
+            <span className="inline-flex h-7 min-w-[1.75rem] items-center justify-center rounded-full bg-slate-200 dark:bg-slate-700 text-xs font-semibold text-slate-700 dark:text-slate-100">
               3
             </span>
-            <span className="text-xs text-blue-200 uppercase tracking-[0.18em] font-semibold">
+            <span className="text-xs text-blue-600 dark:text-blue-200 uppercase tracking-[0.18em] font-semibold">
               Create a subscription
             </span>
           </div>
-          <p className="text-gray-300">
+          <p className="text-gray-600 dark:text-gray-300">
             Fill in the merchant, token, amount, and interval fields. Then authorize the subscription with Freighter.
           </p>
         </li>
@@ -217,38 +220,28 @@ export default function Home() {
   }
 
   // ── FE-47: Pre-mount skeleton ─────────────────────────────────────────────
-  // Render a stable server-safe skeleton until the component has mounted on
-  // the client. The SSR-rendered HTML (all defaults: null/false wallet state)
-  // must match the initial client render — this guard prevents React hydration
-  // errors caused by window.freighter not existing on the server.
-  // The skeleton also serves as the FE-46 loading state.
   if (!mounted) {
     return (
       <>
         <LiveRegion />
         <ShortcutsTriggerButton onClick={() => {}} />
         <main className="min-h-screen flex flex-col items-center px-4 py-12">
-          {/* Header — identical markup to post-hydration render */}
           <div className="w-full max-w-lg mb-8 text-center">
             <h1 className="text-4xl font-extrabold tracking-tight mb-2">SorobanPay</h1>
-            <p className="text-gray-400 text-sm">
+            <p className="text-gray-500 dark:text-gray-400 text-sm">
               Decentralized recurring payments on Stellar
             </p>
-            <p className="text-gray-600 text-xs mt-1">
+            <p className="text-gray-400 dark:text-gray-600 text-xs mt-1">
               Press{' '}
-              <kbd className="inline-flex items-center rounded border border-gray-600 bg-gray-800 px-1.5 py-0.5 font-mono text-[11px] text-gray-400 shadow-[inset_0_-1px_0_0_rgba(0,0,0,0.4)]">
+              <kbd className="inline-flex items-center rounded border border-gray-300 dark:border-gray-600 bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 font-mono text-[11px] text-gray-500 dark:text-gray-400 shadow-[inset_0_-1px_0_0_rgba(0,0,0,0.1)]">
                 ?
               </kbd>{' '}
               for keyboard shortcuts
             </p>
           </div>
-
-          {/* Wallet area skeleton (FE-46) */}
           <div className="w-full max-w-lg mb-6">
             <SkeletonWallet />
           </div>
-
-          {/* Form area skeleton (FE-46) */}
           <section
             id={SECTION_IDS.subscriptionForm}
             aria-label="New subscription"
@@ -280,12 +273,12 @@ export default function Home() {
         {/* Header */}
         <div className="w-full max-w-lg mb-8 text-center">
           <h1 className="text-4xl font-extrabold tracking-tight mb-2">SorobanPay</h1>
-          <p className="text-gray-400 text-sm">
+          <p className="text-gray-500 dark:text-gray-400 text-sm">
             Decentralized recurring payments on Stellar
           </p>
-          <p className="text-gray-600 text-xs mt-1">
+          <p className="text-gray-400 dark:text-gray-600 text-xs mt-1">
             Press{' '}
-            <kbd className="inline-flex items-center rounded border border-gray-600 bg-gray-800 px-1.5 py-0.5 font-mono text-[11px] text-gray-400 shadow-[inset_0_-1px_0_0_rgba(0,0,0,0.4)]">
+            <kbd className="inline-flex items-center rounded border border-gray-300 dark:border-gray-600 bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 font-mono text-[11px] text-gray-500 dark:text-gray-400 shadow-[inset_0_-1px_0_0_rgba(0,0,0,0.1)]">
               ?
             </kbd>{' '}
             for keyboard shortcuts
@@ -297,19 +290,19 @@ export default function Home() {
           <OnboardingCard freighterInstalled={freighterInstalled} />
 
           {!publicKey ? (
-            <div className="bg-gray-900 rounded-2xl p-6 shadow-lg">
+            <div className="bg-white dark:bg-gray-900 rounded-2xl p-6 shadow-lg border border-gray-200 dark:border-transparent">
               {/* Freighter not installed warning (Req 9.1) */}
               {!freighterInstalled && (
                 <div
                   role="alert"
-                  className="mb-4 rounded-lg bg-yellow-900/60 border border-yellow-600 p-3 text-sm text-yellow-200"
+                  className="mb-4 rounded-lg bg-yellow-50 dark:bg-yellow-900/60 border border-yellow-300 dark:border-yellow-600 p-3 text-sm text-yellow-800 dark:text-yellow-200"
                 >
                   Freighter wallet is not installed.{' '}
                   <a
                     href="https://www.freighter.app"
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="underline hover:text-yellow-100"
+                    className="underline hover:text-yellow-900 dark:hover:text-yellow-100"
                   >
                     Install Freighter
                   </a>{' '}
@@ -321,7 +314,7 @@ export default function Home() {
               {connectError && (
                 <div
                   role="alert"
-                  className="mb-4 rounded-lg bg-red-900/60 border border-red-600 p-3 text-sm text-red-200"
+                  className="mb-4 rounded-lg bg-red-50 dark:bg-red-900/60 border border-red-300 dark:border-red-600 p-3 text-sm text-red-800 dark:text-red-200"
                 >
                   {connectError}
                 </div>
@@ -333,7 +326,7 @@ export default function Home() {
                 aria-keyshortcuts="n"
                 title="Connect Freighter Wallet (press N to focus this area)"
                 className="w-full rounded-lg bg-blue-600 hover:bg-blue-500 disabled:opacity-50
-                           disabled:cursor-not-allowed px-4 py-3 text-sm font-semibold
+                           disabled:cursor-not-allowed px-4 py-3 text-sm font-semibold text-white
                            transition-colors focus:outline-none focus:ring-2 focus:ring-blue-400"
               >
                 {isConnecting ? 'Connecting…' : 'Connect Freighter Wallet'}
@@ -341,23 +334,23 @@ export default function Home() {
             </div>
           ) : (
             /* Connected: balance + copy key + Friendbot (testnet) + disconnect */
-            <div className="bg-gray-900 rounded-2xl p-4 shadow-lg space-y-3">
+            <div className="bg-white dark:bg-gray-900 rounded-2xl p-4 shadow-lg border border-gray-200 dark:border-transparent space-y-3">
               {/* Top row: dot + key + copy + disconnect */}
               <div className="flex items-center justify-between gap-3">
                 <div className="flex items-center gap-2 min-w-0">
-                  <span className="h-2 w-2 rounded-full bg-green-400 flex-shrink-0" aria-hidden="true" />
-                  <span className="text-sm text-gray-300 flex-shrink-0">Connected:</span>
+                  <span className="h-2 w-2 rounded-full bg-green-500 dark:bg-green-400 flex-shrink-0" aria-hidden="true" />
+                  <span className="text-sm text-gray-500 dark:text-gray-300 flex-shrink-0">Connected:</span>
                   <button
                     onClick={copyKey}
                     title={publicKey}
                     aria-label={`Copy full public key: ${publicKey}`}
-                    className="font-mono text-white text-sm truncate hover:text-blue-300 transition-colors focus:outline-none focus:ring-1 focus:ring-blue-400 rounded"
+                    className="font-mono text-gray-900 dark:text-white text-sm truncate hover:text-blue-600 dark:hover:text-blue-300 transition-colors focus:outline-none focus:ring-1 focus:ring-blue-400 rounded"
                   >
                     {shortKey}
                   </button>
                   <span
                     aria-live="polite"
-                    className={`text-xs transition-opacity duration-300 flex-shrink-0 ${copied ? 'text-green-400 opacity-100' : 'opacity-0'}`}
+                    className={`text-xs transition-opacity duration-300 flex-shrink-0 ${copied ? 'text-green-600 dark:text-green-400 opacity-100' : 'opacity-0'}`}
                   >
                     Copied!
                   </span>
@@ -365,7 +358,7 @@ export default function Home() {
                 {/* Req 9.6 — disconnect clears key */}
                 <button
                   onClick={disconnect}
-                  className="text-xs text-gray-400 hover:text-red-400 transition-colors flex-shrink-0
+                  className="text-xs text-gray-400 hover:text-red-600 dark:hover:text-red-400 transition-colors flex-shrink-0
                              focus:outline-none focus:ring-1 focus:ring-red-400 rounded px-2 py-1"
                 >
                   Disconnect
@@ -374,12 +367,12 @@ export default function Home() {
 
               {/* Balance row */}
               <div className="flex items-center gap-2 pl-4">
-                <span className="text-xs text-gray-500">Balance:</span>
+                <span className="text-xs text-gray-400 dark:text-gray-500">Balance:</span>
                 {isLoadingBalance ? (
-                  <span className="h-3 w-20 animate-pulse rounded bg-gray-700" aria-label="Loading balance" />
+                  <span className="h-3 w-20 animate-pulse rounded bg-gray-200 dark:bg-gray-700" aria-label="Loading balance" />
                 ) : (
                   <span
-                    className="font-mono text-xs text-gray-300"
+                    className="font-mono text-xs text-gray-600 dark:text-gray-300"
                     aria-label={`XLM balance: ${balance ?? '—'}`}
                   >
                     {balance !== null ? `${balance} XLM` : '—'}
@@ -411,7 +404,7 @@ export default function Home() {
                   </button>
 
                   {fundError && (
-                    <p role="alert" className="text-xs text-red-400">
+                    <p role="alert" className="text-xs text-red-600 dark:text-red-400">
                       {fundError}
                     </p>
                   )}
@@ -423,7 +416,7 @@ export default function Home() {
                 <div
                   role="status"
                   aria-live="polite"
-                  className="pl-4 flex items-center gap-1.5 text-xs text-green-400"
+                  className="pl-4 flex items-center gap-1.5 text-xs text-green-600 dark:text-green-400"
                 >
                   <span aria-hidden="true">✓</span>
                   Funded! Balance will update in ~5 seconds.
@@ -443,9 +436,9 @@ export default function Home() {
           {publicKey ? (
             <SubscriptionForm />
           ) : (
-            <div className="rounded-2xl border border-gray-800 bg-gray-900/40 p-8 text-center space-y-3">
+            <div className="rounded-2xl border border-gray-200 dark:border-gray-800 bg-gray-50/40 dark:bg-gray-900/40 p-8 text-center space-y-3">
               <p className="text-2xl" aria-hidden="true">🔒</p>
-              <p className="text-gray-300 font-semibold text-sm">
+              <p className="text-gray-700 dark:text-gray-300 font-semibold text-sm">
                 Connect your wallet to get started
               </p>
               <p className="text-gray-500 text-xs leading-relaxed">
@@ -454,17 +447,17 @@ export default function Home() {
                   href="https://www.freighter.app"
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="underline text-blue-400 hover:text-blue-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400 rounded"
+                  className="underline text-blue-600 dark:text-blue-400 hover:text-blue-500 dark:hover:text-blue-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400 rounded"
                 >
                   Freighter
                 </a>{' '}
-                and click <strong className="text-gray-300">Connect Freighter Wallet</strong> above.
+                and click <strong className="text-gray-800 dark:text-gray-300">Connect Freighter Wallet</strong> above.
                 Then set{' '}
-                <code className="bg-gray-800 px-1 rounded text-yellow-300 text-xs">
+                <code className="bg-gray-200 dark:bg-gray-800 px-1 rounded text-yellow-700 dark:text-yellow-300 text-xs">
                   NEXT_PUBLIC_CONTRACT_ID
                 </code>{' '}
                 in{' '}
-                <code className="bg-gray-800 px-1 rounded text-gray-300 text-xs">
+                <code className="bg-gray-200 dark:bg-gray-800 px-1 rounded text-gray-600 dark:text-gray-300 text-xs">
                   frontend/.env.local
                 </code>{' '}
                 if you haven&apos;t deployed yet. See the{' '}
@@ -472,7 +465,7 @@ export default function Home() {
                   href="https://github.com/Chrisland58/SorobanPay#quick-start-testnet-demo--5-minutes"
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="underline text-blue-400 hover:text-blue-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400 rounded"
+                  className="underline text-blue-600 dark:text-blue-400 hover:text-blue-500 dark:hover:text-blue-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400 rounded"
                 >
                   Quick Start guide
                 </a>
@@ -490,64 +483,27 @@ export default function Home() {
           className="w-full max-w-lg mt-6"
           tabIndex={-1}
         >
-          <div className="rounded-2xl border border-gray-700 bg-gray-900/30 p-6 space-y-3">
+          <div className="rounded-2xl border border-gray-200 dark:border-gray-700 bg-gray-50/30 dark:bg-gray-900/30 p-6 space-y-3">
             <div className="flex items-center justify-between gap-4">
               <div className="flex items-center gap-3">
                 <span className="text-2xl" aria-hidden="true">📋</span>
-                <p className="text-gray-300 font-semibold text-sm">Payment History</p>
+                <p className="text-gray-700 dark:text-gray-300 font-semibold text-sm">Payment History</p>
               </div>
               {publicKey && (
                 <Link
                   href="/history"
-                  className="inline-flex items-center gap-1.5 rounded-lg border border-gray-700 bg-gray-800 px-3 py-1.5 text-xs font-medium text-gray-300 hover:bg-gray-700 hover:text-white transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400"
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-gray-300 dark:border-gray-700 bg-gray-100 dark:bg-gray-800 px-3 py-1.5 text-xs font-medium text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700 hover:text-gray-900 dark:hover:text-white transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400"
                   aria-label="View full payment history"
                 >
                   View all <span aria-hidden="true">→</span>
                 </Link>
               )}
             </div>
-          </section>
-        )}
-
-      {/* Subscription form — only rendered when wallet is connected */}
-      {publicKey ? (
-        <SubscriptionForm />
-      ) : (
-        <div className="w-full max-w-lg rounded-2xl border border-gray-800 bg-gray-900/40 p-8 text-center space-y-3">
-          <p className="text-2xl" aria-hidden="true">🔒</p>
-          <p className="text-gray-300 font-semibold text-sm">Connect your wallet to get started</p>
-          <p className="text-gray-500 text-xs leading-relaxed">
-            Install{' '}
-            <a
-              href="https://www.freighter.app"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="underline text-blue-400 hover:text-blue-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400 rounded"
-            >
-              Freighter
-            </a>{' '}
-            and click <strong className="text-gray-300">Connect Freighter Wallet</strong> above.
-            Then set <code className="bg-gray-800 px-1 rounded text-yellow-300 text-xs">NEXT_PUBLIC_CONTRACT_ID</code> in{' '}
-            <code className="bg-gray-800 px-1 rounded text-gray-300 text-xs">frontend/.env.local</code> if you haven&apos;t deployed yet.
-            See the <a href="https://github.com/Chrisland58/SorobanPay#quick-start-testnet-demo--5-minutes" target="_blank" rel="noopener noreferrer" className="underline text-blue-400 hover:text-blue-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400 rounded">Quick Start guide</a>.
-          </p>
-        </div>
-      )}
-
-      {/* Subscription history placeholder */}
-      {publicKey && (
-        <div className="w-full max-w-lg mt-6">
-          <div className="rounded-2xl border border-dashed border-gray-700 bg-gray-900/30 p-6 text-center space-y-3">
-            <p className="text-2xl" aria-hidden="true">📋</p>
-            <p className="text-gray-300 font-semibold text-sm">Payment History</p>
-            <p className="text-gray-500 text-xs leading-relaxed max-w-xs mx-auto">
-              Trigger{' '}
-              <code className="bg-gray-800 px-1 rounded text-gray-400 text-xs">execute_payment</code>,
-              view active subscriptions, and review revenue analytics.
-            </p>
-            <span className="inline-block mt-1 px-3 py-1 rounded-full bg-gray-800 text-gray-600 text-xs font-medium border border-gray-700">
-              Coming soon
-            </span>
+            {!publicKey && (
+              <p className="text-gray-500 text-xs">
+                Connect your wallet to view payment history.
+              </p>
+            )}
           </div>
         </section>
 
@@ -559,14 +515,14 @@ export default function Home() {
           className="w-full max-w-lg mt-6 mb-16"
           tabIndex={-1}
         >
-          <div className="rounded-2xl border border-dashed border-gray-700 bg-gray-900/20 p-6 text-center space-y-3">
+          <div className="rounded-2xl border border-dashed border-gray-300 dark:border-gray-700 bg-gray-50/20 dark:bg-gray-900/20 p-6 text-center space-y-3">
             <p className="text-2xl" aria-hidden="true">📊</p>
-            <p className="text-gray-300 font-semibold text-sm">Dashboard</p>
+            <p className="text-gray-700 dark:text-gray-300 font-semibold text-sm">Dashboard</p>
             <p className="text-gray-500 text-xs leading-relaxed max-w-xs mx-auto">
               Overview of your subscription portfolio, payment timelines, and
               account health metrics.
             </p>
-            <span className="inline-block mt-1 px-3 py-1 rounded-full bg-gray-800 text-gray-600 text-xs font-medium border border-gray-700">
+            <span className="inline-block mt-1 px-3 py-1 rounded-full bg-gray-100 dark:bg-gray-800 text-gray-400 dark:text-gray-600 text-xs font-medium border border-gray-200 dark:border-gray-700">
               Coming soon
             </span>
           </div>
