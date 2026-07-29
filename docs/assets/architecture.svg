@@ -1,0 +1,95 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 560" font-family="monospace, sans-serif" font-size="13">
+
+  <!-- Background -->
+  <rect width="900" height="560" fill="#0f172a" rx="12"/>
+
+  <!-- Title -->
+  <text x="450" y="38" text-anchor="middle" fill="#94a3b8" font-size="16" font-weight="bold">SorobanPay — System Architecture</text>
+
+  <!-- ── Layer boxes ── -->
+
+  <!-- Subscriber -->
+  <rect x="30" y="70" width="160" height="80" rx="8" fill="#1e293b" stroke="#3b82f6" stroke-width="1.5"/>
+  <text x="110" y="106" text-anchor="middle" fill="#93c5fd" font-weight="bold">Subscriber</text>
+  <text x="110" y="124" text-anchor="middle" fill="#64748b">(Freighter wallet)</text>
+
+  <!-- Merchant -->
+  <rect x="370" y="70" width="160" height="80" rx="8" fill="#1e293b" stroke="#8b5cf6" stroke-width="1.5"/>
+  <text x="450" y="106" text-anchor="middle" fill="#c4b5fd" font-weight="bold">Merchant</text>
+  <text x="450" y="124" text-anchor="middle" fill="#64748b">(Service owner)</text>
+
+  <!-- Optional Backend -->
+  <rect x="710" y="70" width="160" height="80" rx="8" fill="#1e293b" stroke="#f59e0b" stroke-width="1.5"/>
+  <text x="790" y="100" text-anchor="middle" fill="#fcd34d" font-weight="bold">Optional</text>
+  <text x="790" y="118" text-anchor="middle" fill="#fcd34d" font-weight="bold">Backend/Indexer</text>
+  <text x="790" y="136" text-anchor="middle" fill="#64748b">(read-only)</text>
+
+  <!-- Frontend -->
+  <rect x="30" y="220" width="160" height="80" rx="8" fill="#1e293b" stroke="#3b82f6" stroke-width="1.5"/>
+  <text x="110" y="256" text-anchor="middle" fill="#93c5fd" font-weight="bold">Frontend</text>
+  <text x="110" y="274" text-anchor="middle" fill="#64748b">(Next.js 14 + TS)</text>
+
+  <!-- Merchant Portal -->
+  <rect x="370" y="220" width="160" height="80" rx="8" fill="#1e293b" stroke="#8b5cf6" stroke-width="1.5"/>
+  <text x="450" y="256" text-anchor="middle" fill="#c4b5fd" font-weight="bold">Merchant Portal</text>
+  <text x="450" y="274" text-anchor="middle" fill="#64748b">(admin panel)</text>
+
+  <!-- Soroban Contract -->
+  <rect x="200" y="380" width="500" height="120" rx="8" fill="#1e293b" stroke="#22c55e" stroke-width="2"/>
+  <text x="450" y="415" text-anchor="middle" fill="#86efac" font-weight="bold" font-size="14">Soroban Contract — SubscriptionProtocol</text>
+  <text x="300" y="445" text-anchor="middle" fill="#4ade80">subscribe()</text>
+  <text x="450" y="445" text-anchor="middle" fill="#4ade80">execute_payment()</text>
+  <text x="610" y="445" text-anchor="middle" fill="#4ade80">cancel()</text>
+  <text x="450" y="470" text-anchor="middle" fill="#64748b">Persistent storage · SEP-41 token · Soroban ledger</text>
+
+  <!-- ── Arrows ── -->
+
+  <!-- Subscriber → Frontend -->
+  <line x1="110" y1="150" x2="110" y2="220" stroke="#3b82f6" stroke-width="1.5" marker-end="url(#arr-blue)"/>
+  <text x="116" y="190" fill="#64748b" font-size="11">signs tx</text>
+
+  <!-- Merchant → Merchant Portal -->
+  <line x1="450" y1="150" x2="450" y2="220" stroke="#8b5cf6" stroke-width="1.5" marker-end="url(#arr-purple)"/>
+  <text x="456" y="190" fill="#64748b" font-size="11">manages</text>
+
+  <!-- Frontend ↔ Merchant Portal (web) -->
+  <line x1="190" y1="260" x2="370" y2="260" stroke="#475569" stroke-width="1" stroke-dasharray="4"/>
+
+  <!-- Frontend → Contract -->
+  <line x1="150" y1="300" x2="330" y2="380" stroke="#3b82f6" stroke-width="1.5" marker-end="url(#arr-blue)"/>
+  <text x="195" y="350" fill="#64748b" font-size="11">contract ops</text>
+
+  <!-- Merchant Portal → Contract -->
+  <line x1="450" y1="300" x2="450" y2="380" stroke="#8b5cf6" stroke-width="1.5" marker-end="url(#arr-purple)"/>
+  <text x="456" y="345" fill="#64748b" font-size="11">execute_payment</text>
+
+  <!-- Contract → Backend (events) -->
+  <line x1="700" y1="430" x2="790" y2="150" stroke="#f59e0b" stroke-width="1.5" stroke-dasharray="6,3" marker-end="url(#arr-yellow)"/>
+  <text x="760" y="310" fill="#64748b" font-size="11">events</text>
+  <text x="760" y="324" fill="#64748b" font-size="11">(getEvents)</text>
+
+  <!-- ── Arrow markers ── -->
+  <defs>
+    <marker id="arr-blue" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#3b82f6"/>
+    </marker>
+    <marker id="arr-purple" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#8b5cf6"/>
+    </marker>
+    <marker id="arr-yellow" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#f59e0b"/>
+    </marker>
+  </defs>
+
+  <!-- Legend -->
+  <rect x="30" y="490" width="840" height="55" rx="6" fill="#1e293b"/>
+  <circle cx="60"  cy="520" r="5" fill="#3b82f6"/>
+  <text x="72" y="524" fill="#94a3b8" font-size="11">Subscriber / Frontend flow</text>
+  <circle cx="230" cy="520" r="5" fill="#8b5cf6"/>
+  <text x="242" y="524" fill="#94a3b8" font-size="11">Merchant flow</text>
+  <circle cx="360" cy="520" r="5" fill="#22c55e"/>
+  <text x="372" y="524" fill="#94a3b8" font-size="11">On-chain contract (source of truth)</text>
+  <line x1="555" y1="520" x2="580" y2="520" stroke="#f59e0b" stroke-width="1.5" stroke-dasharray="4,2"/>
+  <text x="588" y="524" fill="#94a3b8" font-size="11">Off-chain indexing (optional, read-only)</text>
+
+</svg>
