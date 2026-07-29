@@ -1,0 +1,82 @@
+##############################################################################
+# docker-compose.chaos.yml
+#
+# TEST-108 — Chaos engineering Docker Compose profile.
+#
+# Starts the services needed to run the Toxiproxy-backed chaos scenarios
+# described in tests/chaos/README.md.
+#
+# Usage:
+#   docker compose -f tests/chaos/docker-compose.chaos.yml up -d
+#   # ... run tests ...
+#   docker compose -f tests/chaos/docker-compose.chaos.yml down -v
+##############################################################################
+
+version: "3.9"
+
+services:
+  # ── Toxiproxy ───────────────────────────────────────────────────────────────
+  # Intercepts TCP connections between the indexer and its dependencies.
+  # The HTTP management API (port 8474) is used to add/remove toxics at runtime.
+  toxiproxy:
+    image: ghcr.io/shopify/toxiproxy:2.9.0
+    container_name: chaos_toxiproxy
+    ports:
+      # Management API — used by the test harness to configure toxics
+      - "8474:8474"
+      # Proxied Soroban RPC — indexer connects here instead of real RPC
+      - "8545:8545"
+      # Proxied PostgreSQL — indexer connects here instead of real DB
+      - "5433:5433"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8474/proxies"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ── PostgreSQL ───────────────────────────────────────────────────────────────
+  # In-process DB used by the indexer in the chaos test environment.
+  postgres:
+    image: postgres:16-alpine
+    container_name: chaos_postgres
+    environment:
+      POSTGRES_USER: sorobanpay
+      POSTGRES_PASSWORD: sorobanpay
+      POSTGRES_DB: sorobanpay_chaos
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sorobanpay"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ── Toxiproxy init ───────────────────────────────────────────────────────────
+  # One-shot container that registers the two proxies via the management API
+  # after Toxiproxy is healthy.
+  toxiproxy-init:
+    image: curlimages/curl:8.8.0
+    container_name: chaos_toxiproxy_init
+    depends_on:
+      toxiproxy:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        echo "Registering Soroban RPC proxy..."
+        curl -s -X POST http://toxiproxy:8474/proxies \
+          -H 'Content-Type: application/json' \
+          -d '{"name":"rpc","listen":"0.0.0.0:8545","upstream":"soroban-testnet.stellar.org:443","enabled":true}'
+
+        echo "Registering PostgreSQL proxy..."
+        curl -s -X POST http://toxiproxy:8474/proxies \
+          -H 'Content-Type: application/json' \
+          -d '{"name":"postgres","listen":"0.0.0.0:5433","upstream":"postgres:5432","enabled":true}'
+
+        echo "Proxies registered."
+        curl -s http://toxiproxy:8474/proxies | head -c 500
+
+networks:
+  default:
+    name: chaos_network
