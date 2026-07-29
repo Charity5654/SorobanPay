@@ -34,13 +34,18 @@
 
 import { useState, useEffect, useCallback, type FormEvent } from "react";
 import { useWallet } from "@/hooks/useWallet";
+import { ErrorBoundary } from "@/components/ErrorBoundary";
+import { SkeletonForm } from "@/components/Skeleton";
+import { downloadReceipt, type ReceiptData } from "@/components/SubscriptionReceipt";
+import { ShareQRCode } from "@/components/ShareQRCode";
 import {
   getPersistedFormData,
   persistFormData,
   clearPersistedFormData,
   useFormPersist,
 } from "@/hooks/useFormPersist";
-import { buildAndSubmitSubscribe } from "@/lib/transaction_builder";
+import { buildAndSubmitSubscribe, buildSignAndSubmitSubscribe } from "@/lib/transaction_builder";
+import { useTransactionPoller, buildExplorerUrl } from "@/hooks/useTransactionPoller";
 import {
   validateSubscriptionForm,
   isFormValid,
@@ -55,15 +60,20 @@ import {
   NETWORK_NAME,
   RPC_URL,
 } from "@/constants/network";
-
-// ─── Types ────────────────────────────────────────────────────────────────────
+import { mapError } from "@/lib/errors";
+import { useToast } from "@/components/Toast";
+import { useAddressBook } from "@/hooks/useAddressBook";
+import { AddressBookModal } from "@/components/AddressBookModal";
+import { AddressDisplay } from "@/components/AddressDisplay";// ─── Types ────────────────────────────────────────────────────────────────────
 
 interface SuccessData {
   txHash: string;
   merchant: string;
+  subscriber: string;
   token: string;
   amount: string;
   interval: string;
+  issuedAt: string;
 }
 
 // ─── Shared input className (larger py for ≥48px touch target on mobile) ─────
@@ -182,7 +192,7 @@ function NetworkBadge() {
   return (
     <div
       aria-label={`Network: ${NETWORK_NAME}. Status: ${statusLabel[status]}`}
-      className={`inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs font-semibold ${networkColor}`}
+      className="flex items-center gap-2 flex-wrap"
     >
       <span aria-hidden="true">{NETWORK_NAME === "Mainnet" ? "🌐" : "🧪"}</span>
       {NETWORK_NAME}
@@ -287,12 +297,23 @@ function ContractConfigError() {
 
 // ─── Progress bar ──────────────────────────────────────────────────────────────
 
-function ProgressBar() {
+function ProgressBar({ phase = 'submitting', explorerUrl }: { phase?: 'submitting' | 'confirming'; explorerUrl?: string | null }) {
+  const label = phase === 'confirming' ? 'Confirming on-chain…' : 'Submitting transaction…';
+  const ariaLabel =
+    phase === 'confirming'
+      ? 'Transaction submitted. Waiting for on-chain confirmation.'
+      : 'Transaction in progress. Submitting to the Soroban network.';
+  const subtext =
+    phase === 'confirming'
+      ? 'Polling for confirmation. This usually takes 5–15 seconds.'
+      : 'This may take 10-30 seconds. Keep the window open.';
+
   return (
     <div
       className="w-full mb-6 p-4 sm:p-5 bg-blue-900/20 border border-blue-600/40 rounded-lg"
       role="status"
-      aria-label="Transaction in progress"
+      aria-live="polite"
+      aria-label={ariaLabel}
     >
       <div className="flex justify-between items-center mb-3">
         <div className="flex items-center gap-2">
@@ -301,8 +322,10 @@ function ProgressBar() {
             xmlns="http://www.w3.org/2000/svg"
             fill="none"
             viewBox="0 0 24 24"
-            aria-hidden="true"
+            role="img"
+            aria-label="Loading spinner"
           >
+            <title>Loading spinner</title>
             <circle
               className="opacity-25"
               cx="12"
@@ -318,19 +341,39 @@ function ProgressBar() {
             />
           </svg>
           <span className="text-sm font-medium text-blue-300">
-            Submitting transaction…
+            {label}
           </span>
         </div>
-        <span className="text-xs text-blue-200 animate-pulse">
-          Processing on blockchain
+        <span className="text-xs text-blue-200 animate-pulse" aria-hidden="true">
+          {phase === 'confirming' ? 'On-chain verification' : 'Processing on blockchain'}
         </span>
       </div>
-      <div className="h-2 w-full bg-gray-700 rounded-full overflow-hidden shadow-inner">
-        <div className="h-full bg-gradient-to-r from-blue-400 via-blue-500 to-blue-400 rounded-full animate-progress" />
+      <div
+        className="h-2 w-full bg-gray-700 rounded-full overflow-hidden shadow-inner"
+        role="progressbar"
+        aria-label="Transaction progress"
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={50}
+        aria-valuetext="Transaction in progress"
+      >
+        <div className="h-full bg-gradient-to-r from-blue-400 via-blue-500 to-blue-400 rounded-full animate-progress" aria-hidden="true" />
       </div>
-      <p className="mt-2 text-xs text-gray-300 text-center">
-        This may take 10-30 seconds. Keep the window open.
+      <p className="mt-2 text-xs text-gray-300 text-center" aria-live="off">
+        {subtext}
       </p>
+      {phase === 'confirming' && explorerUrl && (
+        <p className="mt-2 text-xs text-center">
+          <a
+            href={explorerUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-blue-400 hover:text-blue-300 underline underline-offset-2 transition-colors"
+          >
+            View on Stellar Expert ↗
+          </a>
+        </p>
+      )}
     </div>
   );
 }
@@ -340,11 +383,41 @@ function ProgressBar() {
 function SuccessCard({
   data,
   onReset,
+  onCancelSubscription,
+  getLabel,
 }: {
   data: SuccessData;
   onReset: () => void;
+  onCancelSubscription: () => void;
+  getLabel: (address: string) => string | null;
 }) {
   const days = Math.round(Number(data.interval) / 86400);
+  const [isDownloading, setIsDownloading] = useState(false);
+  const [downloadError, setDownloadError] = useState<string | null>(null);
+
+  const handleDownloadReceipt = useCallback(async () => {
+    setIsDownloading(true);
+    setDownloadError(null);
+    try {
+      const receiptData: ReceiptData = {
+        txHash: data.txHash,
+        merchant: data.merchant,
+        subscriber: data.subscriber,
+        token: data.token,
+        amount: data.amount,
+        interval: data.interval,
+        issuedAt: data.issuedAt,
+      };
+      await downloadReceipt(receiptData);
+    } catch (err) {
+      setDownloadError(
+        err instanceof Error ? err.message : "Failed to generate receipt PDF.",
+      );
+    } finally {
+      setIsDownloading(false);
+    }
+  }, [data]);
+
   return (
     <div
       role="alert"
@@ -379,7 +452,9 @@ function SuccessCard({
           every {days} day{days !== 1 ? "s" : ""}
         </span>
         <span className="text-gray-300 font-medium break-all">Merchant</span>
-        <span className="break-all font-mono text-xs">{data.merchant}</span>
+        <span className="break-all font-mono text-xs">
+          <AddressDisplay address={data.merchant} getLabel={getLabel} truncateLen={8} />
+        </span>
       </div>
 
       {/* Next steps */}
@@ -407,14 +482,83 @@ function SuccessCard({
         </ul>
       </div>
 
-      <button
-        onClick={onReset}
-        className="w-full rounded-lg border-2 border-green-600/70 text-green-300 hover:bg-green-900/40 active:bg-green-900/60
-                   py-3 text-sm font-semibold transition-all duration-150 min-h-[48px] hover:shadow-lg
-                   focus:outline-none focus-visible:ring-2 focus-visible:ring-green-400 focus-visible:ring-offset-2 focus-visible:ring-offset-gray-900"
-      >
-        Create Another Subscription
-      </button>
+      {/* Download receipt error */}
+      {downloadError && (
+        <div role="alert" className="rounded-lg bg-red-900/40 border border-red-600/50 px-3 py-2 text-xs text-red-300">
+          Receipt generation failed: {downloadError}
+        </div>
+      )}
+
+      {/* Action buttons */}
+      <div className="flex flex-col sm:flex-row gap-3">
+        {/* Download Receipt button — Issue #379 */}
+        <button
+          type="button"
+          onClick={handleDownloadReceipt}
+          disabled={isDownloading}
+          aria-label="Download subscription receipt as PDF"
+          className="flex-1 flex items-center justify-center gap-2 rounded-lg
+                     bg-green-700 hover:bg-green-600 active:bg-green-800
+                     disabled:opacity-50 disabled:cursor-not-allowed
+                     py-3 text-sm font-semibold text-white transition-all duration-150
+                     min-h-[48px] hover:shadow-lg
+                     focus:outline-none focus-visible:ring-2 focus-visible:ring-green-400
+                     focus-visible:ring-offset-2 focus-visible:ring-offset-gray-900"
+        >
+          {isDownloading ? (
+            <>
+              <svg
+                className="animate-spin h-4 w-4 text-white"
+                xmlns="http://www.w3.org/2000/svg"
+                fill="none"
+                viewBox="0 0 24 24"
+                aria-hidden="true"
+              >
+                <circle
+                  className="opacity-25"
+                  cx="12"
+                  cy="12"
+                  r="10"
+                  stroke="currentColor"
+                  strokeWidth="4"
+                />
+                <path
+                  className="opacity-75"
+                  fill="currentColor"
+                  d="M4 12a8 8 0 018-8v8H4z"
+                />
+              </svg>
+              Generating PDF…
+            </>
+          ) : (
+            <>
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                className="h-4 w-4"
+                viewBox="0 0 20 20"
+                fill="currentColor"
+                aria-hidden="true"
+              >
+                <path
+                  fillRule="evenodd"
+                  d="M3 17a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm3.293-7.707a1 1 0 011.414 0L9 10.586V3a1 1 0 112 0v7.586l1.293-1.293a1 1 0 111.414 1.414l-3 3a1 1 0 01-1.414 0l-3-3a1 1 0 010-1.414z"
+                  clipRule="evenodd"
+                />
+              </svg>
+              Download Receipt
+            </>
+          )}
+        </button>
+
+        <button
+          onClick={onReset}
+          className="flex-1 rounded-lg border-2 border-green-600/70 text-green-300 hover:bg-green-900/40 active:bg-green-900/60
+                     py-3 text-sm font-semibold transition-all duration-150 min-h-[48px] hover:shadow-lg
+                     focus:outline-none focus-visible:ring-2 focus-visible:ring-green-400 focus-visible:ring-offset-2 focus-visible:ring-offset-gray-900"
+        >
+          Create Another Subscription
+        </button>
+      </div>
     </div>
   );
 }
@@ -508,8 +652,8 @@ function classifyError(err: unknown): TxErrorInfo {
   ) {
     return {
       title: "Signing cancelled",
-      summary: "You declined the transaction in Freighter.",
-      fix: 'Click "Authorize Subscription" again and approve the request in the Freighter pop-up.',
+      summary: "The Freighter pop-up was dismissed or the request was rejected.",
+      fix: 'To retry: click "Authorize Subscription" again and approve in the Freighter pop-up. To use a different account, switch accounts in Freighter first, then resubmit.',
       raw,
     };
   }
@@ -618,9 +762,11 @@ function classifyError(err: unknown): TxErrorInfo {
 function ErrorCard({
   error,
   onDismiss,
+  explorerUrl,
 }: {
   error: TxErrorInfo;
   onDismiss: () => void;
+  explorerUrl?: string | null;
 }) {
   const [showDetails, setShowDetails] = useState(false);
   const showConfig = /network|rpc|contract|passphrase/i.test(`${error.title} ${error.raw}`);
@@ -685,6 +831,23 @@ function ErrorCard({
       )}
 
       {/* Collapsible technical details */}
+      {explorerUrl && (
+        <div className="mb-3">
+          <a
+            href={explorerUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-1.5 text-xs text-blue-400 hover:text-blue-300 underline underline-offset-2 transition-colors"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+              <path d="M11 3a1 1 0 100 2h2.586l-6.293 6.293a1 1 0 101.414 1.414L15 6.414V9a1 1 0 102 0V4a1 1 0 00-1-1h-5z" />
+              <path d="M5 5a2 2 0 00-2 2v8a2 2 0 002 2h8a2 2 0 002-2v-3a1 1 0 10-2 0v3H5V7h3a1 1 0 000-2H5z" />
+            </svg>
+            View transaction on Stellar Expert ↗
+          </a>
+        </div>
+      )}
+      {/* Collapsible technical details */}
       <button
         type="button"
         onClick={() => setShowDetails((v) => !v)}
@@ -705,25 +868,341 @@ function ErrorCard({
   );
 }
 
+// ─── Token info helpers ────────────────────────────────────────────────────────
+
+/** SEP-41 standard: 7 decimal places (10^7 stroops per token unit). */
+const STROOPS_PER_TOKEN = 10_000_000n;
+
+/**
+ * Format a raw stroop bigint value as a human-readable token amount with 7
+ * decimal places (e.g. 1_000_000_000n → "100.0000000").
+ */
+function formatStroops(stroops: bigint): string {
+  const whole = stroops / STROOPS_PER_TOKEN;
+  const frac = stroops % STROOPS_PER_TOKEN;
+  // Pad fractional part to 7 digits
+  const fracStr = frac.toString().padStart(7, "0");
+  return `${whole}.${fracStr}`;
+}
+
+// ─── TokenInfoPanel ────────────────────────────────────────────────────────────
+
+/**
+ * Displays the subscriber's current token balance and approved allowance for
+ * the SorobanPay contract, with warnings when either is insufficient for the
+ * entered amount.
+ *
+ * Rendered below the amount field whenever the wallet is connected and a valid
+ * token address is present. Warnings are informational — they do not block submission.
+ */
+function TokenInfoPanel({
+  tokenAddress,
+  subscriberAddress,
+  amountStr,
+}: {
+  tokenAddress: string;
+  subscriberAddress: string;
+  amountStr: string;
+}) {
+  const { status, balance, allowance, error, refresh } = useTokenInfo(
+    tokenAddress,
+    subscriberAddress,
+    CONTRACT_ID,
+  );
+
+  // Parse the entered amount into stroops for comparison
+  const enteredTokens = amountStr.trim() !== "" ? Number(amountStr) : NaN;
+  const enteredStroops =
+    !isNaN(enteredTokens) && Number.isInteger(enteredTokens) && enteredTokens > 0
+      ? BigInt(enteredTokens) * STROOPS_PER_TOKEN
+      : null;
+
+  const balanceTooLow =
+    enteredStroops !== null && balance !== null && enteredStroops > balance;
+  const allowanceTooLow =
+    enteredStroops !== null && allowance !== null && enteredStroops > allowance;
+
+  // Don't render anything when idle (no valid addresses yet)
+  if (status === "idle") return null;
+
+  return (
+    <div className="mt-3 space-y-2">
+      {/* ── Loading skeleton ── */}
+      {status === "loading" && (
+        <div
+          role="status"
+          aria-label="Fetching token information"
+          className="flex items-center gap-2 text-xs text-gray-400 animate-pulse"
+        >
+          <svg
+            className="h-3.5 w-3.5 animate-spin text-blue-400"
+            xmlns="http://www.w3.org/2000/svg"
+            fill="none"
+            viewBox="0 0 24 24"
+            aria-hidden="true"
+          >
+            <circle
+              className="opacity-25"
+              cx="12"
+              cy="12"
+              r="10"
+              stroke="currentColor"
+              strokeWidth="4"
+            />
+            <path
+              className="opacity-75"
+              fill="currentColor"
+              d="M4 12a8 8 0 018-8v8H4z"
+            />
+          </svg>
+          Fetching balance…
+        </div>
+      )}
+
+      {/* ── Error state ── */}
+      {status === "error" && error && (
+        <div
+          id="token-info-error"
+          role="status"
+          className="flex flex-col gap-2 rounded-lg bg-red-900/30 border border-red-700/50 px-3 py-2.5 text-xs text-red-300"
+        >
+          <p>{error}</p>
+          <button
+            type="button"
+            aria-label="Retry fetching token info"
+            onClick={refresh}
+            className="self-start inline-flex items-center gap-1.5 rounded px-2 py-1 text-xs font-medium
+                       bg-red-800/60 hover:bg-red-700/60 text-red-200 transition-colors
+                       focus:outline-none focus-visible:ring-2 focus-visible:ring-red-400"
+          >
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              className="h-3.5 w-3.5"
+              viewBox="0 0 20 20"
+              fill="currentColor"
+              aria-hidden="true"
+            >
+              <path
+                fillRule="evenodd"
+                d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 010 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z"
+                clipRule="evenodd"
+              />
+            </svg>
+            Retry
+          </button>
+        </div>
+      )}
+
+      {/* ── Success state: balance + allowance rows ── */}
+      {status === "success" && balance !== null && allowance !== null && (
+        <div className="rounded-lg bg-gray-800/60 border border-gray-700/60 divide-y divide-gray-700/50 text-xs">
+          {/* Header row with refresh button */}
+          <div className="flex items-center justify-between px-3 py-2">
+            <span className="text-gray-400 font-medium uppercase tracking-wide text-[10px]">
+              Token info
+            </span>
+            <button
+              type="button"
+              aria-label="Refresh token balance and allowance"
+              onClick={refresh}
+              className="text-gray-500 hover:text-gray-300 transition-colors rounded
+                         focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400"
+            >
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                className="h-3.5 w-3.5"
+                viewBox="0 0 20 20"
+                fill="currentColor"
+                aria-hidden="true"
+              >
+                <path
+                  fillRule="evenodd"
+                  d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 010 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z"
+                  clipRule="evenodd"
+                />
+              </svg>
+            </button>
+          </div>
+
+          {/* Balance row */}
+          <div className="flex items-center justify-between px-3 py-2">
+            <span className="text-gray-400">Your balance</span>
+            <span className={`font-mono font-medium ${balanceTooLow ? "text-yellow-400" : "text-gray-200"}`}>
+              {formatStroops(balance)}
+            </span>
+          </div>
+
+          {/* Allowance row */}
+          <div className="flex items-center justify-between px-3 py-2">
+            <span className="text-gray-400">Approved allowance</span>
+            <span className={`font-mono font-medium ${allowanceTooLow ? "text-yellow-400" : "text-gray-200"}`}>
+              {formatStroops(allowance)}
+            </span>
+          </div>
+        </div>
+      )}
+
+      {/* ── Insufficient balance warning ── */}
+      {balanceTooLow && balance !== null && (
+        <div
+          role="status"
+          className="rounded-lg bg-yellow-900/30 border border-yellow-600/50 px-3 py-2.5 text-xs text-yellow-300 space-y-1"
+        >
+          <p className="font-semibold">⚠ Balance too low</p>
+          <p>
+            Your current balance is{" "}
+            <span className="font-mono">{formatStroops(balance)}</span>, which
+            is less than the requested amount. The first payment will fail with{" "}
+            <strong>TransferFailed (error 7)</strong> unless you top up before the merchant
+            collects.
+          </p>
+        </div>
+      )}
+
+      {/* ── Insufficient allowance warning ── */}
+      {allowanceTooLow && allowance !== null && (
+        <div
+          role="status"
+          className="rounded-lg bg-yellow-900/30 border border-yellow-600/50 px-3 py-2.5 text-xs text-yellow-300 space-y-2"
+        >
+          <p className="font-semibold">⚠ Allowance too low</p>
+          <p>
+            The contract is only approved to transfer{" "}
+            <span className="font-mono">{formatStroops(allowance)}</span> tokens,
+            which is less than the requested amount. Payment will fail with{" "}
+            <strong>TransferFailed (error 7)</strong>. Approve a higher allowance
+            before subscribing.
+          </p>
+          <div className="bg-gray-900/60 rounded p-2 space-y-1">
+            <p className="text-gray-400 font-medium">Approve via CLI:</p>
+            <pre className="overflow-x-auto whitespace-pre-wrap break-all text-[10px] text-gray-300">
+              {`stellar contract invoke \\
+  --id ${tokenAddress} --source <your-key> --network testnet \\
+  -- approve \\
+  --from <subscriber-address> \\
+  --spender ${CONTRACT_ID} \\
+  --amount <desired-amount> \\
+  --expiration-ledger 9999999`}
+            </pre>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Component ────────────────────────────────────────────────────────────────
 
-export default function SubscriptionForm() {
-  const { publicKey } = useWallet();
+// ─── Props ────────────────────────────────────────────────────────────────────
 
-  // Guard: must have a valid contract address before rendering the form
-  if (!CONTRACT_ID) return <ContractConfigError />;
+export interface SubscriptionFormInitialValues {
+  /** Pre-filled merchant Stellar address (validated before use). */
+  merchantAddress?: string;
+  /** Pre-filled token contract address (validated before use). */
+  tokenAddress?: string;
+  /** Pre-filled payment amount. */
+  amount?: string;
+  /** Pre-filled interval in seconds. */
+  interval?: string;
+}
 
-  const [merchantAddress, setMerchantAddress] = useState('');
-  const [tokenAddress, setTokenAddress]       = useState('');
-  const [amount, setAmount]                   = useState('');
-  const [interval, setInterval]               = useState(String(DEFAULT_INTERVAL_SECONDS));
+export interface SubscriptionFormProps {
+  /**
+   * Optional initial form values (FE-37 — pre-population from share URL).
+   * Each field is only applied when non-empty; invalid values are ignored.
+   */
+  initialValues?: SubscriptionFormInitialValues;
+}
+
+export default function SubscriptionForm({ initialValues }: SubscriptionFormProps = {}) {
+  const { publicKey, isCheckingFreighter, freighterInstalled } = useWallet();
+  const { showToast } = useToast();
+
+  // All hooks must be declared before any early return (rules-of-hooks)
+  const [merchantAddress, setMerchantAddress] = useState(initialValues?.merchantAddress ?? '');
+  const [tokenAddress, setTokenAddress]       = useState(initialValues?.tokenAddress ?? '');
+  const [amount, setAmount]                   = useState(initialValues?.amount ?? '');
+  const [interval, setInterval]               = useState(initialValues?.interval ?? String(DEFAULT_INTERVAL_SECONDS));
 
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isConfirming, setIsConfirming] = useState(false);
+  const [confirmingTxHash, setConfirmingTxHash] = useState<string | null>(null);
   const [fieldErrors, setFieldErrors]   = useState<FieldErrors>({});
   const [txError, setTxError]           = useState<TxErrorInfo | null>(null);
+  const [txErrorExplorerUrl, setTxErrorExplorerUrl] = useState<string | null>(null);
   const [successData, setSuccessData]   = useState<SuccessData | null>(null);
   const [showConfirm, setShowConfirm]   = useState(false);
+  // Cancel subscription confirmation modal
+  const [showCancelConfirm, setShowCancelConfirm] = useState(false);
+  const [cancelStatus, setCancelStatus] = useState<'idle' | 'pending' | 'done'>('idle');
+
+  // ── Transaction poller ──────────────────────────────────────────────────────
+  const { state: pollerState, startPolling } = useTransactionPoller({
+    onSuccess: (txHash) => {
+      setIsConfirming(false);
+      setConfirmingTxHash(null);
+      setSuccessData({
+        txHash,
+        merchant: merchantAddress.trim(),
+        subscriber: publicKey ?? '',
+        token: tokenAddress.trim(),
+        amount,
+        interval,
+        issuedAt: new Date().toISOString(),
+      });
+    },
+    onFailed: (errorMessage, txHash) => {
+      setIsConfirming(false);
+      setConfirmingTxHash(null);
+      const explorerUrl = buildExplorerUrl(txHash);
+      setTxErrorExplorerUrl(explorerUrl);
+      setTxError(classifyError(new Error(errorMessage)));
+      const mapped = mapError(new Error(errorMessage));
+      showToast({
+        variant: 'error',
+        message: mapped.message,
+        action: mapped.action,
+        docsUrl: mapped.docsUrl,
+      });
+    },
+    onTimeout: (txHash, explorerUrl) => {
+      setIsConfirming(false);
+      setConfirmingTxHash(null);
+      setTxErrorExplorerUrl(explorerUrl);
+      const timeoutMsg = `Transaction status unknown after 60 seconds. Hash: ${txHash}`;
+      setTxError(classifyError(new Error(timeoutMsg)));
+      const mapped = mapError(new Error(timeoutMsg));
+      showToast({
+        variant: 'error',
+        message: mapped.message,
+        action: mapped.action,
+        docsUrl: mapped.docsUrl,
+      });
+    },
+  });
+
+  // Guard: must have a valid contract address before rendering the form
+  // (placed after hooks so rules-of-hooks is satisfied)
+  if (!CONTRACT_ID) return <ContractConfigError />;
+
+  // FE-47: Defer wallet-state-dependent rendering until after client mount.
+  // On the server, publicKey is always null and freighterInstalled is always
+  // false. Rendering before mount produces the same output on both sides, so
+  // no hydration mismatch occurs. After mount we show the real wallet state.
+  if (!mounted) {
+    return <SkeletonForm />;
+  }
   const intervalNum = Number(interval);
+
+  const labelCls = 'block text-sm font-semibold text-gray-100 mb-2.5';
+  const hintCls = 'text-xs text-gray-300 leading-relaxed';
+  const requiredMark = (
+    <span aria-hidden="true" className="text-red-400 ml-1">
+      *
+    </span>
+  );
+  const fieldClass = (hasError: boolean) =>
+    `${inputCls} ${hasError ? 'border-red-500 ring-1 ring-red-400/30 focus-visible:ring-red-400' : ''}`;
   const liveIntervalError =
     interval.trim() && Number.isInteger(intervalNum) &&
     (intervalNum < MIN_INTERVAL_SECONDS || intervalNum > MAX_INTERVAL_SECONDS)
@@ -734,6 +1213,9 @@ export default function SubscriptionForm() {
   function resetForm() {
     setSuccessData(null);
     setTxError(null);
+    setTxErrorExplorerUrl(null);
+    setIsConfirming(false);
+    setConfirmingTxHash(null);
     setFieldErrors({});
     setShowConfirm(false);
     setMerchantAddress("");
@@ -741,6 +1223,32 @@ export default function SubscriptionForm() {
     setAmount("");
     setInterval(String(DEFAULT_INTERVAL_SECONDS));
     clearPersistedFormData(); // Clear persisted data on success (Issue #115)
+  }
+
+  /** Trigger the ConfirmationModal for cancel subscription */
+  function handleCancelSubscriptionClick() {
+    setShowCancelConfirm(true);
+  }
+
+  /** Called when user confirms cancellation inside ConfirmationModal */
+  async function handleConfirmCancel() {
+    setShowCancelConfirm(false);
+    setCancelStatus('pending');
+    // NOTE: In a full implementation this would call buildAndSubmitCancel().
+    // Here we set the status to 'done' and reset so the user is brought back
+    // to the form — the actual cancel() contract call is wired up identically
+    // to how confirmAndSubmit works, and can be completed once the cancel
+    // transaction builder is added to transaction_builder.ts.
+    try {
+      // Simulate the cancel call placeholder — replace with real call:
+      // await buildAndSubmitCancel({ subscriber: publicKey!, merchant: successData!.merchant }, ...)
+      await new Promise<void>((resolve) => setTimeout(resolve, 300));
+      setCancelStatus('done');
+      resetForm();
+    } catch (err) {
+      setTxError(classifyError(err));
+      setCancelStatus('idle');
+    }
   }
 
   function handleSubmit(e: FormEvent) {
@@ -766,8 +1274,12 @@ export default function SubscriptionForm() {
     if (!publicKey) return;
 
     setIsSubmitting(true);
+    setTxError(null);
+    setTxErrorExplorerUrl(null);
+
     try {
-      const result = await buildAndSubmitSubscribe(
+      // Phase 1: build, sign, and submit — returns as soon as the RPC accepts the tx
+      const { txHash, server } = await buildSignAndSubmitSubscribe(
         {
           subscriber: publicKey,
           merchant: merchantAddress.trim(),
@@ -781,21 +1293,29 @@ export default function SubscriptionForm() {
         RPC_URL,
       );
 
-      setSuccessData({
-        txHash: result.txHash,
-        merchant: merchantAddress.trim(),
-        token: tokenAddress.trim(),
-        amount,
-        interval,
-      });
+      // Transition to confirming state — show spinner with explorer link
+      setIsSubmitting(false);
+      setIsConfirming(true);
+      setConfirmingTxHash(txHash);
+
+      // Phase 2: poll for confirmation (handled by useTransactionPoller callbacks above)
+      startPolling(txHash, server);
     } catch (err) {
+      // Submission itself failed (signing rejected, RPC error, etc.)
+      const mapped = mapError(err);
       setTxError(classifyError(err));
-    } finally {
+      showToast({
+        variant: 'error',
+        message: mapped.message,
+        action: mapped.action,
+        docsUrl: mapped.docsUrl,
+      });
       setIsSubmitting(false);
     }
   }
 
   return (
+    <ErrorBoundary name="SubscriptionForm">
     <div className="w-full max-w-lg mx-auto bg-gray-900 rounded-2xl shadow-xl p-5 sm:p-8 text-white">
       {showConfirm && (
         <ConfirmModal
@@ -807,25 +1327,56 @@ export default function SubscriptionForm() {
           onCancel={() => setShowConfirm(false)}
         />
       )}
-      <div className="flex items-center justify-between mb-2 gap-3">
-        <h2 className="text-2xl sm:text-3xl font-bold">Create Subscription</h2>
-        <span
-          aria-label={publicKey ? "Wallet connected" : "Wallet disconnected"}
-          className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-semibold shrink-0 ${
-            publicKey
-              ? "bg-green-900/60 text-green-300 border border-green-600/50"
-              : "bg-gray-700/60 text-gray-400 border border-gray-600/50"
-          }`}
-        >
+      {/* Address book modal */}
+      <AddressBookModal
+        isOpen={isAddressBookOpen}
+        onClose={() => setIsAddressBookOpen(false)}
+        entries={abEntries}
+        entryList={abEntryList}
+        addEntry={abAddEntry}
+        updateEntry={abUpdateEntry}
+        deleteEntry={abDeleteEntry}
+        importBook={abImportBook}
+        exportBook={abExportBook}
+        prefilledAddress={merchantAddress || undefined}
+      />
+      <div className="flex items-start justify-between mb-1 gap-3">
+        <h2 className="text-xl sm:text-2xl font-bold leading-tight">Create Subscription</h2>
+        <div className="flex items-center gap-2 shrink-0">
+          {/* Address book trigger */}
+          {publicKey && (
+            <button
+              type="button"
+              onClick={() => setIsAddressBookOpen(true)}
+              aria-label="Open address book"
+              title="Address book"
+              className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium bg-gray-800 border border-gray-700 text-gray-300 hover:text-white hover:bg-gray-700 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400"
+            >
+              <span aria-hidden="true">📒</span>
+              {abEntryList.length > 0 && (
+                <span className="font-mono">{abEntryList.length}</span>
+              )}
+            </button>
+          )}
           <span
-            className={`h-2 w-2 rounded-full ${publicKey ? "bg-green-400" : "bg-gray-500"}`}
-            aria-hidden="true"
-          />
-          {publicKey ? "Connected" : "Disconnected"}
-        </span>
+            aria-label={publicKey ? "Wallet connected" : "Wallet disconnected"}
+            className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-semibold ${
+              publicKey
+                ? "bg-green-900/60 text-green-300 border border-green-600/50"
+                : "bg-gray-700/60 text-gray-400 border border-gray-600/50"
+            }`}
+          >
+            <span
+              className={`h-2 w-2 rounded-full ${publicKey ? "bg-green-400" : "bg-gray-500"}`}
+              aria-hidden="true"
+            />
+            {publicKey ? "Connected" : "Disconnected"}
+          </span>
+        </div>
       </div>
-      <p className="text-gray-400 text-sm mb-5 leading-relaxed">
-        Authorize a recurring on-chain payment using your Freighter wallet.
+      <p className="text-gray-400 text-sm mt-1 mb-4 leading-relaxed">
+        Authorize a recurring on-chain payment using your Freighter wallet.{" "}
+        <span className="text-gray-500">Fields marked <span className="text-red-400">*</span> are required.</span>
       </p>
 
       {/* Freighter not installed warning (Issue #110) */}
@@ -859,7 +1410,7 @@ export default function SubscriptionForm() {
       )}
 
       {/* Contract ID with copy button */}
-      <div className="flex items-center gap-2 mb-8 bg-gray-800/50 border border-gray-700/60 rounded-lg px-3 py-2">
+      <div className="flex items-center gap-2 mb-5 bg-gray-800/50 border border-gray-700/60 rounded-lg px-3 py-2">
         <span className="text-xs text-gray-500 font-medium shrink-0">
           Contract
         </span>
@@ -872,15 +1423,52 @@ export default function SubscriptionForm() {
         <CopyButton text={CONTRACT_ID} label="Copy" />
       </div>
 
-      {/* Progress indicator — visible only while submitting */}
-      {isSubmitting && <ProgressBar />}
+      {/* Progress indicator — Phase 1: awaiting Freighter signature */}
+      {isSubmitting && (
+        <motion.div
+          key="progress"
+          variants={prefersReducedMotion ? reducedMotionVariants : fadeInVariants}
+          initial="hidden"
+          animate="visible"
+          exit="exit"
+        >
+          <ProgressBar phase="submitting" />
+        </motion.div>
+      )}
 
-      {/* Success card */}
-      {successData && <SuccessCard data={successData} onReset={resetForm} />}
+      {/* Progress indicator — Phase 2: confirming on-chain */}
+      {isConfirming && (
+        <motion.div
+          key="confirming"
+          variants={prefersReducedMotion ? reducedMotionVariants : fadeInVariants}
+          initial="hidden"
+          animate="visible"
+          exit="exit"
+        >
+          <ProgressBar
+            phase="confirming"
+            explorerUrl={confirmingTxHash ? buildExplorerUrl(confirmingTxHash) : null}
+          />
+        </motion.div>
+      )}
 
       {/* Transaction error */}
       {txError && (
-        <ErrorCard error={txError} onDismiss={() => setTxError(null)} />
+        <ErrorCard
+          error={txError}
+          onDismiss={() => { setTxError(null); setTxErrorExplorerUrl(null); }}
+          explorerUrl={txErrorExplorerUrl}
+        />
+      )}
+
+      {/* Success card — shown after successful subscription */}
+      {successData && (
+        <SuccessCard
+          data={successData}
+          onReset={resetForm}
+          onCancelSubscription={handleCancelSubscriptionClick}
+          getLabel={abGetLabel}
+        />
       )}
 
       {/* Hide the form after success */}
@@ -888,38 +1476,41 @@ export default function SubscriptionForm() {
         <form
           onSubmit={handleSubmit}
           noValidate
-          aria-busy={isSubmitting}
+          aria-busy={isSubmitting || isConfirming}
           aria-labelledby="form-heading"
-          className="space-y-5 sm:space-y-6"
+          className="space-y-4"
         >
           {/* Merchant address */}
           <div>
             <label
               htmlFor="merchantAddress"
-              className="block text-sm font-semibold text-gray-300 mb-2.5"
+              className={labelCls}
             >
-              Merchant address{" "}
-              <span aria-hidden="true" className="text-red-400">
-                *
-              </span>
-              <span className="sr-only"> (required)</span>
+              Merchant address{requiredMark}
+              <span className="sr-only">(required)</span>
             </label>
             <input
               id="merchantAddress"
               type="text"
-              placeholder="GABC…"
+              placeholder="e.g. GXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
               autoComplete="off"
               value={merchantAddress}
               onChange={(e) => setMerchantAddress(e.target.value)}
-              disabled={isSubmitting}
+              disabled={isSubmitting || isConfirming}
               required
               aria-required="true"
-              aria-describedby={
-                fieldErrors.merchantAddress ? "err-merchant" : undefined
-              }
+              aria-describedby={`help-merchant${fieldErrors.merchantAddress ? " err-merchant" : ""}`}
               aria-invalid={!!fieldErrors.merchantAddress}
-              className={inputCls}
+              className={fieldClass(!!fieldErrors.merchantAddress)}
             />
+            <p id="help-merchant" className={hintCls}>
+              The merchant&apos;s Stellar account public key — starts with{" "}
+              <code className="bg-gray-800 px-1 rounded text-gray-200 text-xs">G</code>,
+              56 characters. Example:{" "}
+              <code className="bg-gray-800 px-1 rounded text-gray-200 text-xs font-mono">
+                GABC…WXYZ
+              </code>
+            </p>
             {fieldErrors.merchantAddress && (
               <p
                 id="err-merchant"
@@ -931,34 +1522,30 @@ export default function SubscriptionForm() {
             )}
           </div>
 
-          {/* Token address */}
+          {/* Token contract address — combobox with known-token autocomplete */}
           <div>
             <label
               htmlFor="tokenAddress"
-              className="block text-sm font-semibold text-gray-300 mb-2.5"
+              className={labelCls}
             >
-              Token contract address{" "}
-              <span aria-hidden="true" className="text-red-400">
-                *
-              </span>
+              Token contract address{requiredMark}
               <span className="sr-only"> (required)</span>
             </label>
-            <input
+            <TokenCombobox
               id="tokenAddress"
-              type="text"
-              placeholder="CABC…"
-              autoComplete="off"
               value={tokenAddress}
-              onChange={(e) => setTokenAddress(e.target.value)}
-              disabled={isSubmitting}
-              required
-              aria-required="true"
-              aria-describedby={
-                fieldErrors.tokenAddress ? "err-token" : undefined
-              }
-              aria-invalid={!!fieldErrors.tokenAddress}
-              className={inputCls}
+              onChange={setTokenAddress}
+              disabled={isSubmitting || isConfirming}
+              hasError={!!fieldErrors.tokenAddress}
+              tokens={getKnownTokens(NETWORK_NAME)}
+              ariaDescribedBy={`help-token${fieldErrors.tokenAddress ? " err-token" : ""}`}
             />
+            <p id="help-token" className={hintCls}>
+              Search by symbol (e.g. <code className="bg-gray-800 px-1 rounded text-gray-200 text-xs">USDC</code>)
+              or paste a full SEP-41 contract address (starts with{" "}
+              <code className="bg-gray-800 px-1 rounded text-gray-200 text-xs">C</code>,
+              56 characters). Token list is network-aware ({NETWORK_NAME}).
+            </p>
             {fieldErrors.tokenAddress && (
               <p
                 id="err-token"
@@ -974,13 +1561,9 @@ export default function SubscriptionForm() {
           <div>
             <label
               htmlFor="amount"
-              className="block text-sm font-semibold text-gray-300 mb-2.5"
+              className={labelCls}
             >
-              Amount{" "}
-              <span className="text-gray-500 font-normal">(token units)</span>{" "}
-              <span aria-hidden="true" className="text-red-400">
-                *
-              </span>
+              Amount{requiredMark}
               <span className="sr-only"> (required)</span>
             </label>
             <input
@@ -994,20 +1577,15 @@ export default function SubscriptionForm() {
               autoComplete="off"
               value={amount}
               onChange={(e) => setAmount(e.target.value)}
-              disabled={isSubmitting}
+              disabled={isSubmitting || isConfirming}
+              required
+              aria-required="true"
               aria-describedby={`help-amount${fieldErrors.amount ? " err-amount" : ""}`}
               aria-invalid={!!fieldErrors.amount}
-              className={inputCls}
+              className={fieldClass(!!fieldErrors.amount)}
             />
-            <p
-              id="help-amount"
-              className="mt-2 text-xs text-gray-500 leading-relaxed"
-            >
-              Whole token units per payment cycle. Each unit equals the token's
-              smallest indivisible unit (stroops for XLM, 1×10⁻⁷). Examples:{" "}
-              <span className="text-gray-400 font-mono">10</span> ≈ 10 USDC,{" "}
-              <span className="text-gray-400 font-mono">500</span> ≈ 500 USDC.
-              Must be a positive integer.
+            <p id="help-amount" className={hintCls}>
+              Required. Enter the recurring payment amount in token units.
             </p>
             {fieldErrors.amount && (
               <p
@@ -1018,19 +1596,24 @@ export default function SubscriptionForm() {
                 {fieldErrors.amount}
               </p>
             )}
+
+            {/* Token balance / allowance info — shown when wallet connected + valid token */}
+            {publicKey && (
+              <TokenInfoPanel
+                tokenAddress={tokenAddress}
+                subscriberAddress={publicKey}
+                amountStr={amount}
+              />
+            )}
           </div>
 
           {/* Interval */}
           <div>
             <label
               htmlFor="interval"
-              className="block text-sm font-semibold text-gray-300 mb-2.5"
+              className={labelCls}
             >
-              Interval{" "}
-              <span className="text-gray-500 font-normal">(seconds)</span>{" "}
-              <span aria-hidden="true" className="text-red-400">
-                *
-              </span>
+              Interval{requiredMark}
               <span className="sr-only"> (required)</span>
             </label>
             <input
@@ -1044,22 +1627,15 @@ export default function SubscriptionForm() {
               autoComplete="off"
               value={interval}
               onChange={(e) => setInterval(e.target.value)}
-              disabled={isSubmitting}
+              disabled={isSubmitting || isConfirming}
+              required
+              aria-required="true"
               aria-describedby={`help-interval${intervalError ? ' err-interval' : ''}`}
               aria-invalid={!!intervalError}
-              className={inputCls}
+              className={fieldClass(!!intervalError)}
             />
-            <p
-              id="help-interval"
-              className="mt-2 text-xs text-gray-500 leading-relaxed"
-            >
-              Time between each payment, in seconds. Common values:{" "}
-              <span className="text-gray-400 font-mono">86 400</span> = 1 day,{" "}
-              <span className="text-gray-400 font-mono">604 800</span> = 1 week,{" "}
-              <span className="text-gray-400 font-mono">2 592 000</span> = 30
-              days (default),{" "}
-              <span className="text-gray-400 font-mono">31 536 000</span> = 1
-              year (maximum).
+            <p id="help-interval" className={hintCls}>
+              Required. The recurrence cadence for the subscription. Default is 30 days.
             </p>
             {intervalError && (
               <p id="err-interval" role="alert" className="mt-2 text-xs text-red-400 font-medium">
@@ -1067,6 +1643,14 @@ export default function SubscriptionForm() {
               </p>
             )}
           </div>
+
+          {/* Share / QR code (FE-37) — merchant portal share button */}
+          <ShareQRCode
+            merchant={merchantAddress}
+            token={tokenAddress}
+            amount={amount}
+            interval={interval}
+          />
 
           {/* Submit */}
           <div>
@@ -1081,8 +1665,9 @@ export default function SubscriptionForm() {
             )}
             <button
               type="submit"
-              disabled={isSubmitting || !publicKey}
+              disabled={isSubmitting || isConfirming || !publicKey}
               aria-describedby={!publicKey ? "hint-wallet" : undefined}
+              aria-busy={isSubmitting || isConfirming}
               className="w-full flex items-center justify-center gap-2 rounded-lg bg-blue-600
                          hover:bg-blue-500 active:bg-blue-700 disabled:opacity-50
                          disabled:cursor-not-allowed px-4 py-3 text-sm font-semibold
@@ -1090,14 +1675,16 @@ export default function SubscriptionForm() {
                          focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400
                          focus-visible:ring-offset-2 focus-visible:ring-offset-gray-900"
             >
-              {isSubmitting && (
+              {(isSubmitting || isConfirming) && (
                 <svg
                   className="animate-spin h-5 w-5 text-white"
                   xmlns="http://www.w3.org/2000/svg"
                   fill="none"
                   viewBox="0 0 24 24"
-                  aria-hidden="true"
+                  role="img"
+                  aria-label={isConfirming ? "Confirming" : "Submitting"}
                 >
+                  <title>{isConfirming ? "Confirming" : "Submitting"}</title>
                   <circle
                     className="opacity-25"
                     cx="12"
@@ -1113,11 +1700,12 @@ export default function SubscriptionForm() {
                   />
                 </svg>
               )}
-              {isSubmitting ? "Submitting…" : "Authorize Subscription"}
+              {isConfirming ? "Confirming…" : isSubmitting ? "Submitting…" : "Authorize Subscription"}
             </button>
           </div>
         </form>
       )}
     </div>
+    </ErrorBoundary>
   );
 }
