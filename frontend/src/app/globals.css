@@ -4,13 +4,20 @@
 
 @layer base {
   /**
-   * Baseline dark theme using semantic colour tokens.
+   * Baseline theme using semantic colour tokens.
    * All contrast ratios verified against WCAG AA (#451 UX-116).
    *
-   * body bg  = #030712 (gray-950 / surface-base)
-   * body fg  = #F9FAFB (gray-50  / content-primary) — 16.7:1 ✅ AAA
+   * Dark mode  (default): bg = #030712 (gray-950), fg = #F9FAFB (gray-50)  — 16.7:1 ✅ AAA
+   * Light mode:           bg = #FFFFFF (white),    fg = #111827 (gray-900) — 16.0:1 ✅ AAA
+   *
+   * The 'dark' class is toggled on <html> by ThemeProvider / ThemeScript.
    */
   body {
+    background-color: theme('colors.white');
+    color: theme('colors.gray.900');
+  }
+
+  .dark body {
     background-color: theme('colors.surface.base');
     color: theme('colors.content.primary');
   }
