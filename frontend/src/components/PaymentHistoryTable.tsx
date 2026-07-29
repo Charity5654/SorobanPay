@@ -29,6 +29,7 @@
 
 import { type PaymentEvent } from '@/hooks/usePaymentHistory';
 import { truncateAddress } from '@/lib/utils';
+import { AddressDisplay } from '@/components/AddressDisplay';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -43,6 +44,11 @@ export interface PaymentHistoryTableProps {
   isConnected: boolean;
   /** "Testnet" or "Mainnet" — used for Stellar Expert links */
   networkName?: string;
+  /**
+   * Address book label lookup function.
+   * When provided, merchant addresses are displayed with their saved label.
+   */
+  getLabel?: (address: string) => string | null;
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -173,6 +179,7 @@ export default function PaymentHistoryTable({
   onRefresh,
   isConnected,
   networkName = 'Testnet',
+  getLabel = () => null,
 }: PaymentHistoryTableProps) {
   // 1. Disconnected
   if (!isConnected) {
@@ -259,6 +266,7 @@ export default function PaymentHistoryTable({
                 event={event}
                 rowIndex={idx + 1}
                 networkName={networkName}
+                getLabel={getLabel}
               />
             ))}
 
@@ -349,10 +357,12 @@ function EventRow({
   event,
   rowIndex,
   networkName,
+  getLabel,
 }: {
   event: PaymentEvent;
   rowIndex: number;
   networkName: string;
+  getLabel: (address: string) => string | null;
 }) {
   const txUrl = stellarExpertTxUrl(event.txHash, networkName);
 
@@ -367,13 +377,12 @@ function EventRow({
       </td>
 
       {/* Merchant */}
-      <td className="px-4 py-3 font-mono text-xs text-gray-300">
-        <span
-          title={event.merchant}
-          aria-label={`Merchant address: ${event.merchant}`}
-        >
-          {truncateAddress(event.merchant, 6)}
-        </span>
+      <td className="px-4 py-3 text-xs text-gray-300">
+        <AddressDisplay
+          address={event.merchant}
+          getLabel={getLabel}
+          truncateLen={6}
+        />
       </td>
 
       {/* Token */}

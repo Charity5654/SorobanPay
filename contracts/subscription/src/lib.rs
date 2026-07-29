@@ -286,6 +286,92 @@ impl SubscriptionProtocol {
         Ok(())
     }
 
+    /// Update amount and/or interval of an existing subscription in-place.
+    ///
+    /// Unlike cancel + re-subscribe, this entry point preserves `next_payment` so the
+    /// subscriber's current billing cycle is not disrupted and they cannot be charged
+    /// immediately after an upgrade/downgrade.
+    ///
+    /// # Authorization
+    /// Requires a valid signature from `subscriber`.
+    ///
+    /// # Parameters
+    /// - `subscriber`:   Account being charged.
+    /// - `merchant`:     Account receiving payments.
+    /// - `new_amount`:   Replacement payment amount. Must be > 0 and <= 10^18.
+    /// - `new_interval`: Replacement interval in seconds. Must be in [86400, 31536000].
+    ///
+    /// # Errors
+    /// - `ContractError::NoActiveSubscription` — no subscription exists for the pair.
+    /// - `ContractError::AmountMustBePositive` — if `new_amount <= 0`.
+    /// - `ContractError::AmountTooLarge`       — if `new_amount > 10^18`.
+    /// - `ContractError::IntervalTooShort`     — if `new_interval < 86400`.
+    /// - `ContractError::IntervalTooLong`      — if `new_interval > 31536000`.
+    pub fn update_subscription(
+        env: Env,
+        subscriber: Address,
+        merchant: Address,
+        new_amount: i128,
+        new_interval: u64,
+    ) -> Result<(), ContractError> {
+        // 1. Authorization — subscriber controls their own subscription terms.
+        subscriber.require_auth();
+
+        // 2. Verify subscription exists.
+        let key = DataKey::Subscription(subscriber.clone(), merchant.clone());
+        let mut data: SubscriptionData = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(ContractError::NoActiveSubscription)?;
+
+        // 3. Validate new amount (same rules as subscribe()).
+        if new_amount <= 0 {
+            return Err(ContractError::AmountMustBePositive);
+        }
+        if new_amount > MAX_AMOUNT {
+            return Err(ContractError::AmountTooLarge);
+        }
+
+        // 4. Validate new interval (same rules as subscribe()).
+        if new_interval < 86_400 {
+            return Err(ContractError::IntervalTooShort);
+        }
+        if new_interval > 31_536_000 {
+            return Err(ContractError::IntervalTooLong);
+        }
+
+        // 5. Capture old values for the event before overwriting.
+        let old_amount   = data.amount;
+        let old_interval = data.interval;
+
+        // 6. Update in-place — deliberately do NOT touch next_payment so the
+        //    subscriber's current billing cycle continues uninterrupted.
+        data.amount   = new_amount;
+        data.interval = new_interval;
+
+        // 7. Persist.
+        env.storage().persistent().set(&key, &data);
+
+        // 8. Extend TTL (same policy as subscribe()).
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, MIN_TTL_LEDGERS, MAX_TTL_LEDGERS);
+
+        // 9. Emit updated event with old and new values for off-chain indexing.
+        events::emit_updated(
+            &env,
+            &subscriber,
+            &merchant,
+            old_amount,
+            new_amount,
+            old_interval,
+            new_interval,
+        );
+
+        Ok(())
+    }
+
     /// Collect the next recurring payment for an active subscription.
     ///
     /// # Authorization
