@@ -1,6 +1,7 @@
 import { createHash, createHmac, randomUUID } from 'crypto';
 import prisma from '../lib/prisma';
 import { getTracer, withSpan, SpanKind } from '../lib/tracing';
+import { enqueueWebhookDelivery, getWebhookQueue } from './webhookQueue'; // BE-53
 
 export type WebhookEventType = 'payment.executed' | 'payment.failed' | 'subscription.cancelled';
 
@@ -50,28 +51,31 @@ export function signPayload(body: string, secret: string): string {
 
 /**
  * Deliver a webhook notification to all registered endpoints for the merchant.
- * Failed deliveries are retried up to MAX_ATTEMPTS times with exponential back-off.
  *
- * Each delivery includes:
- *   X-SorobanPay-Event-ID    — stable across retries (idempotency key for merchants)
- *   X-SorobanPay-Delivery-ID — unique per attempt (changes on every retry)
- *   X-SorobanPay-Signature   — HMAC-SHA256 if endpoint has a secret configured
+ * BE-53: When the BullMQ webhook queue is available (Redis connected), jobs are
+ * enqueued with 3-attempt exponential backoff (1m, 5m, 30m).
+ * Falls back to direct synchronous delivery when Redis is unavailable.
  */
 export async function notifyWebhooks(payload: WebhookPayload): Promise<void> {
   const endpoints = await prisma.webhookEndpoint.findMany({
     where: { merchant: payload.merchant, active: true },
   });
 
-  // Derive the stable Event ID once — shared across all endpoint deliveries
-  // for this same event occurrence.
   const eventId = payload.txHash
     ? deriveEventId(payload.txHash, payload.eventIndex ?? 0)
-    : randomUUID(); // fallback for events without a tx hash
+    : randomUUID();
+
+  const queue = getWebhookQueue();
 
   await Promise.all(
-    endpoints.map((ep: { id: number; url: string; secret: string | null }) =>
-      deliverWithRetry(ep, payload, eventId),
-    ),
+    endpoints.map((ep: { id: number; url: string; secret: string | null }) => {
+      if (queue) {
+        // BE-53: Enqueue via BullMQ for reliable delivery with backoff
+        return enqueueWebhookDelivery({ endpointId: ep.id, payload, eventId });
+      }
+      // Fallback: synchronous direct delivery (original behaviour)
+      return deliverWithRetry(ep, payload, eventId);
+    }),
   );
 }
 

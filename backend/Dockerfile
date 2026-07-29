@@ -1,44 +1,32 @@
-# ── Stage 1: Install dependencies ─────────────────────────────────────────────
-FROM node:20-alpine AS deps
+FROM node:20-alpine AS builder
+
 WORKDIR /app
 
-COPY package.json package-lock.json ./
+# Copy dependency manifests first for layer caching
+COPY package*.json ./
 RUN npm ci
 
-# ── Stage 2: Build TypeScript ─────────────────────────────────────────────────
-FROM node:20-alpine AS builder
-WORKDIR /app
-
-COPY --from=deps /app/node_modules ./node_modules
+# Copy source
 COPY . .
 
-# Compile TypeScript → dist/
-RUN npx tsc --outDir dist --module commonjs 2>/dev/null || \
-    echo "tsc not configured for standalone build — using ts-node at runtime"
+# Generate Prisma client
+RUN npx prisma generate
 
-# ── Stage 3: Production runner ─────────────────────────────────────────────────
-FROM node:20-alpine AS runner
+# ── Runtime image ────────────────────────────────────────────────────────────
+FROM node:20-alpine AS runtime
+
+RUN apk add --no-cache dumb-init
+
 WORKDIR /app
 
-ENV NODE_ENV=production \
-    PORT=4000
-
-# Non-root user
-RUN addgroup --system --gid 1001 nodejs && \
-    adduser  --system --uid 1001 appuser
-
-# Install only production deps
-COPY package.json package-lock.json ./
-RUN npm ci --omit=dev
-
-# Copy source (ts-node runs from source in case tsc build wasn't configured)
+# Copy built node_modules and source from builder
+COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/src ./src
-COPY --from=builder /app/prisma ./prisma 2>/dev/null || true
+COPY --from=builder /app/prisma ./prisma
+COPY package*.json ./
+COPY tsconfig.json ./
 
-USER appuser
-EXPOSE 4000
+EXPOSE 3001
 
-HEALTHCHECK --interval=30s --timeout=10s --start-period=20s --retries=3 \
-  CMD wget -qO- http://localhost:4000/health || exit 1
-
-CMD ["npx", "ts-node", "--transpile-only", "src/index.ts"]
+# Use dumb-init for correct signal handling (SIGTERM → graceful shutdown)
+CMD ["dumb-init", "node", "--require", "ts-node/register/transpile-only", "src/index.ts"]
