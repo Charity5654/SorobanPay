@@ -1,0 +1,51 @@
+# deploy/k8s/configmap.yaml
+# Non-secret configuration shared across all SorobanPay backend pods.
+# Sensitive values (DATABASE_URL, WEBHOOK_SECRET, ADMIN_JWT_SECRET, SMTP credentials)
+# are stored in secrets.yaml and injected separately.
+#
+# Update CONTRACT_ID and RPC_URL before applying to production.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: sorobanpay-config
+  namespace: sorobanpay
+  labels:
+    app.kubernetes.io/name: sorobanpay
+    app.kubernetes.io/component: config
+data:
+  # ── Soroban RPC ──────────────────────────────────────────────────────────────
+  # Testnet:  https://soroban-testnet.stellar.org
+  # Mainnet:  https://mainnet.stellar.validationcloud.io/v1/<YOUR_KEY>
+  RPC_URL: "https://soroban-testnet.stellar.org"
+
+  # Stellar network passphrase — must match RPC_URL above.
+  # Testnet:  Test SDF Network ; September 2015
+  # Mainnet:  Public Global Stellar Network ; September 2015
+  NETWORK_PASSPHRASE: "Test SDF Network ; September 2015"
+
+  # ── Contract ─────────────────────────────────────────────────────────────────
+  # Replace with the output of: bash deploy/deploy.sh
+  CONTRACT_ID: "CXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+
+  # ── Server ───────────────────────────────────────────────────────────────────
+  PORT: "3001"
+  API_BASE_URL: "https://api.sorobanpay.example.com"
+
+  # ── Rate limiting ────────────────────────────────────────────────────────────
+  # Enable when running behind an nginx/Envoy ingress that sets X-Forwarded-For.
+  RATE_LIMIT_TRUST_PROXY: "true"
+
+  # ── OpenTelemetry ────────────────────────────────────────────────────────────
+  OTEL_SDK_DISABLED: "false"
+  OTEL_SAMPLING_RATE: "1.0"
+  # Point to your OTLP collector (Jaeger, Tempo, etc.).
+  # Override per-environment via Kustomize overlays.
+  OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector.observability.svc.cluster.local:4318"
+  OTEL_SERVICE_NAME: "sorobanpay-backend"
+
+  # ── Email / SMTP ─────────────────────────────────────────────────────────────
+  # Set EMAIL_DRY_RUN=false and configure SMTP_* to send real emails.
+  EMAIL_DRY_RUN: "true"
+  SMTP_HOST: "smtp.example.com"
+  SMTP_PORT: "587"
+  SMTP_FROM: "noreply@sorobanpay.example.com"
