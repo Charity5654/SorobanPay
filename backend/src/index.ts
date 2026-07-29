@@ -25,6 +25,7 @@ import subscriptionsRouter from './routes/subscriptions';
 import webhooksRouter from './routes/webhooks';
 import notificationsRouter from './routes/notifications';
 import versionRouter from './routes/version';
+import analyticsRouter from './routes/analytics';   // FE-50 / BE-52
 import adminRouter from './routes/admin';
 import authRouter from './routes/auth';                        // BE-55: merchant auth
 import { buildHealthRouter } from './routes/health';
@@ -92,6 +93,7 @@ app.use('/api/v1/summaries',     summariesRouter);
 app.use('/api/v1/reconcile',     reconcileRouter);
 app.use('/api/v1/notifications', notificationsRouter);  // BE-68
 app.use('/api/v1/admin',         adminRouter);          // BE-75: admin dashboard
+app.use('/api/v1/analytics',     requireMerchant, analyticsRouter);  // FE-50: revenue analytics
 
 // ─── Prometheus metrics (unauthenticated — restrict to internal network) ─────
 app.get('/metrics', (_req, res) => {
@@ -106,6 +108,7 @@ app.use('/api/webhooks',      webhooksRouter);
 app.use('/api/summaries',     summariesRouter);
 app.use('/api/reconcile',     reconcileRouter);
 app.use('/api/notifications', notificationsRouter);
+app.use('/api/analytics',     analyticsRouter);        // FE-50: backward-compat alias
 
 // GET /api  →  same version manifest
 app.use('/api', versionRouter);
