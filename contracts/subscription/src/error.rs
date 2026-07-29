@@ -27,16 +27,18 @@ pub enum ContractError {
     SelfSubscription      = 10,
     /// `subscribe` called with `token` equal to the contract's own address
     InvalidTokenAddress   = 11,
+    AmountExceedsLimit    = 18,
+    GracePeriodActive     = 19,
     /// `batch_execute_payment` called with an empty subscribers vector
-    EmptyBatch            = 12,
+    EmptyBatch            = 13,
     /// `batch_execute_payment` called with more than BATCH_MAX_SIZE (50) subscribers
-    BatchTooLarge         = 13,
+    BatchTooLarge         = 14,
     /// `subscribe` called with allowance < amount in strict mode
-    InsufficientAllowance = 14,
+    InsufficientAllowance = 15,
     /// `migrate` called when contract is already at the current schema version
-    AlreadyMigrated       = 15,
+    AlreadyMigrated       = 16,
     /// `migrate` called by an address that is not the stored admin
-    NotAdmin              = 16,
+    NotAdmin              = 17,
     /// Admin address not initialised; call `initialize` first
-    NotInitialized        = 17,
+    NotInitialized        = 18,
 }
