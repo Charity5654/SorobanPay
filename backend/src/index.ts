@@ -17,6 +17,7 @@ import { PayoutSummaryGenerator } from './services/payoutSummaryGenerator';
 import { PaymentScheduler } from './services/paymentScheduler';
 import { createRetryScheduler } from './services/retryScheduler';
 import { retryQueue } from './services/retryQueue';
+import { startWebhookWorker, shutdownWebhookWorker } from './services/webhookQueue'; // BE-53
 import { apiLimiter } from './middleware/rateLimiter';
 import { versionMiddleware } from './middleware/versioning';
 import summariesRouter from './routes/summaries';
