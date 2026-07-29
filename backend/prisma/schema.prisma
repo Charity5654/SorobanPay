@@ -133,3 +133,34 @@ model NotificationPreference {
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 }
+
+// BE (payment-retry): Tracks individual retry attempts for failed payments.
+// status: "pending" | "processing" | "succeeded" | "failed" | "cancelled"
+model PaymentRetry {
+  id            Int       @id @default(autoincrement())
+  subscriber    String
+  merchant      String
+  amount        String    // token amount at time of failure (informational)
+  token         String    @default("")
+  attemptNumber Int       // 1-based: 1st retry, 2nd retry, 3rd retry
+  status        String    @default("pending")
+  scheduledAt   DateTime  // when this attempt should be executed
+  executedAt    DateTime? // when execution was actually attempted
+  error         String?   // last error message if status="failed"
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@index([subscriber, merchant, status])
+  @@index([scheduledAt, status])
+}
+
+// BE (payment-retry): Optional per-merchant retry configuration.
+// Falls back to RETRY_INTERVALS_DAYS env var when absent.
+model RetryConfig {
+  id              Int      @id @default(autoincrement())
+  merchant        String   @unique
+  intervalsDays   String   // comma-separated, e.g. "1,3,7"
+  webhookUrl      String?  // override webhook for max_retries_exceeded
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+}
