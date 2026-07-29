@@ -860,3 +860,149 @@ Display subscription UI     ❌         ❌          ✅
 - [Stellar JavaScript SDK](https://developers.stellar.org/docs/learn/stellar-sdk)
 - [Event Sourcing Pattern](https://martinfowler.com/eaaDev/EventSourcing.html)
 - [CQRS Pattern](https://martinfowler.com/bliki/CQRS.html)
+
+---
+
+## Delegated Subscribe Pattern (SC-24)
+
+In the default flow the subscriber signs the `subscribe()` transaction directly.
+For B2B platforms, relayer services, or smart-wallet integrations, it is often
+desirable for a trusted **operator contract** to create subscriptions on behalf of
+users who have pre-authorized it.
+
+### Problem
+
+1. **B2B onboarding** — A SaaS platform cannot activate recurring billing for its
+   newly signed-up users without each user submitting a transaction themselves.
+2. **Gasless / relayer patterns** — The EVM ecosystem supports meta-transactions
+   where a relayer pays gas while the user's intent is carried as a signature.
+   SorobanPay could not previously support an analogous pattern.
+3. **Smart wallet integration** — A user who controls their account via a
+   multisig or policy contract cannot easily invoke `subscribe()` without custom
+   tooling.
+
+### Solution: Operator Contract + Sub-Invocation Auth
+
+Soroban's authorization model allows a subscriber to satisfy `require_auth()` on
+a *nested* contract call.  The mechanism works as follows:
+
+```
+Transaction
+ ├── Auth entry 1: subscriber authorizes OperatorContract::delegate_subscribe(...)
+ └── Auth entry 2: subscriber authorizes SubscriptionProtocol::subscribe(...)
+                   (sub-invocation from operator → protocol)
+```
+
+When the operator contract calls `SubscriptionProtocol::subscribe()`, Soroban's
+host checks whether the subscriber provided a valid auth entry for that specific
+sub-invocation.  If it finds entry 2, `subscriber.require_auth()` succeeds even
+though the subscriber is not the transaction source.
+
+The subscriber's authorization is **fully parameter-scoped**: it covers exactly
+the `(subscriber, merchant, token, amount, interval)` tuple that was signed.
+The operator cannot substitute different values.
+
+### Example Operator Contract
+
+A reference implementation is provided in `contracts/operator-example/`.
+
+```
+contracts/operator-example/
+├── Cargo.toml          — package manifest with soroban-subscription-contract dev-dep
+└── src/
+    └── lib.rs          — OperatorContract + full test suite
+```
+
+The operator contract exposes four entry points:
+
+| Function | Auth required | Description |
+|----------|--------------|-------------|
+| `initialize(admin)` | — | One-time setup; stores admin, sets paused=false |
+| `pause()` | admin | Prevent new delegated subscriptions |
+| `unpause()` | admin | Re-enable delegated subscriptions |
+| `delegate_subscribe(protocol_id, subscriber, merchant, token, amount, interval)` | subscriber (sub-invocation) | Creates subscription on behalf of subscriber |
+
+View functions: `is_paused()`, `admin()`.
+
+### Step-by-Step Off-Chain Usage
+
+```text
+1. (once)  Subscriber approves token allowance:
+     token.approve(subscriber, protocol_id, amount * cycles, expiry)
+
+2. Subscriber signs a transaction with TWO auth entries:
+     a. {contract: operator_id, fn: "delegate_subscribe", args: [protocol_id, subscriber, merchant, token, amount, interval]}
+     b. {contract: protocol_id, fn: "subscribe", args: [subscriber, merchant, token, amount, interval]}
+
+3. Operator (or relayer) broadcasts the transaction and pays the fee.
+
+4. Soroban host:
+     i.  Calls OperatorContract::delegate_subscribe(...)
+     ii. Operator calls SubscriptionProtocol::subscribe(...)
+     iii. subscribe() calls subscriber.require_auth() — satisfied by auth entry b.
+     iv. Subscription is stored.  Events emitted from both contracts.
+```
+
+**JavaScript SDK example (building the auth entries):**
+
+```typescript
+import {
+  SorobanRpc, TransactionBuilder, Networks, Contract,
+  authorizeEntry, xdr, nativeToScVal, Address,
+} from "@stellar/stellar-sdk";
+
+// 1. Simulate to discover the exact auth entries required
+const sim = await server.simulateTransaction(tx);
+
+// 2. For each auth entry involving the subscriber, sign it
+const signedAuths = await Promise.all(
+  sim.result.auth.map(async (entry) => {
+    const addr = entry.credentials().address();
+    if (addr.address().toString() === subscriber.publicKey()) {
+      return authorizeEntry(entry, subscriber.keypair, validUntilLedger, Networks.TESTNET);
+    }
+    return entry; // operator/relayer entries remain unsigned (or signed by operator)
+  })
+);
+
+// 3. Assemble and broadcast
+```
+
+### Event Emitted by the Operator
+
+In addition to the standard `subscribe` event from the protocol contract, the
+operator contract emits a `delegated_subscribe` event for off-chain indexing:
+
+| Event | Topics | Data | Condition |
+|-------|--------|------|-----------|
+| `delegated_subscribe` | `(symbol("delegated_subscribe"), subscriber, merchant)` | `amount: i128` | On every successful delegation |
+
+Indexers can use this event to distinguish operator-originated subscriptions from
+direct subscriber subscriptions if needed.
+
+### Invariants Preserved
+
+- `SubscriptionProtocol::subscribe()` is **unchanged** — direct subscriber calls
+  continue to work exactly as before.
+- The protocol contract is the single source of truth for all subscriptions,
+  regardless of whether they were created directly or via an operator.
+- An operator contract can be paused without affecting existing subscriptions.
+  Subscribers can always cancel directly via the protocol.
+
+### Responsibility Matrix (updated)
+
+```
+                          Contract    Operator    Backend    Frontend
+──────────────────────────────────────────────────────────────────────
+Store subscription            ✅          ❌          ❌          ❌
+Execute payment               ✅          ❌          ❌          ❌
+Emit subscribe events         ✅          ✅*         ❌          ❌
+Create delegated subs         ❌          ✅          ❌          ❌
+Pause/unpause delegation      ❌          ✅          ❌          ❌
+Index events                  ❌          ❌          ✅          ❌
+Sign & submit transactions    ❌          ❌          ❌          ✅
+```
+
+\* The operator emits a `delegated_subscribe` event; the protocol emits the
+  standard `subscribe` event.
+
