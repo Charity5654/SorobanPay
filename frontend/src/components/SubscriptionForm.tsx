@@ -44,7 +44,8 @@ import {
   clearPersistedFormData,
   useFormPersist,
 } from "@/hooks/useFormPersist";
-import { buildAndSubmitSubscribe } from "@/lib/transaction_builder";
+import { buildAndSubmitSubscribe, buildSignAndSubmitSubscribe } from "@/lib/transaction_builder";
+import { useTransactionPoller, buildExplorerUrl } from "@/hooks/useTransactionPoller";
 import {
   validateSubscriptionForm,
   isFormValid,
@@ -60,7 +61,10 @@ import {
   RPC_URL,
 } from "@/constants/network";
 import { mapError } from "@/lib/errors";
-import { useToast } from "@/components/Toast";// ─── Types ────────────────────────────────────────────────────────────────────
+import { useToast } from "@/components/Toast";
+import { useAddressBook } from "@/hooks/useAddressBook";
+import { AddressBookModal } from "@/components/AddressBookModal";
+import { AddressDisplay } from "@/components/AddressDisplay";// ─── Types ────────────────────────────────────────────────────────────────────
 
 interface SuccessData {
   txHash: string;
@@ -293,13 +297,23 @@ function ContractConfigError() {
 
 // ─── Progress bar ──────────────────────────────────────────────────────────────
 
-function ProgressBar() {
+function ProgressBar({ phase = 'submitting', explorerUrl }: { phase?: 'submitting' | 'confirming'; explorerUrl?: string | null }) {
+  const label = phase === 'confirming' ? 'Confirming on-chain…' : 'Submitting transaction…';
+  const ariaLabel =
+    phase === 'confirming'
+      ? 'Transaction submitted. Waiting for on-chain confirmation.'
+      : 'Transaction in progress. Submitting to the Soroban network.';
+  const subtext =
+    phase === 'confirming'
+      ? 'Polling for confirmation. This usually takes 5–15 seconds.'
+      : 'This may take 10-30 seconds. Keep the window open.';
+
   return (
     <div
       className="w-full mb-6 p-4 sm:p-5 bg-blue-900/20 border border-blue-600/40 rounded-lg"
       role="status"
       aria-live="polite"
-      aria-label="Transaction in progress. Submitting to the Soroban network."
+      aria-label={ariaLabel}
     >
       <div className="flex justify-between items-center mb-3">
         <div className="flex items-center gap-2">
@@ -327,17 +341,17 @@ function ProgressBar() {
             />
           </svg>
           <span className="text-sm font-medium text-blue-300">
-            Submitting transaction…
+            {label}
           </span>
         </div>
         <span className="text-xs text-blue-200 animate-pulse" aria-hidden="true">
-          Processing on blockchain
+          {phase === 'confirming' ? 'On-chain verification' : 'Processing on blockchain'}
         </span>
       </div>
       <div
         className="h-2 w-full bg-gray-700 rounded-full overflow-hidden shadow-inner"
         role="progressbar"
-        aria-label="Transaction submission progress"
+        aria-label="Transaction progress"
         aria-valuemin={0}
         aria-valuemax={100}
         aria-valuenow={50}
@@ -346,8 +360,20 @@ function ProgressBar() {
         <div className="h-full bg-gradient-to-r from-blue-400 via-blue-500 to-blue-400 rounded-full animate-progress" aria-hidden="true" />
       </div>
       <p className="mt-2 text-xs text-gray-300 text-center" aria-live="off">
-        This may take 10-30 seconds. Keep the window open.
+        {subtext}
       </p>
+      {phase === 'confirming' && explorerUrl && (
+        <p className="mt-2 text-xs text-center">
+          <a
+            href={explorerUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-blue-400 hover:text-blue-300 underline underline-offset-2 transition-colors"
+          >
+            View on Stellar Expert ↗
+          </a>
+        </p>
+      )}
     </div>
   );
 }
@@ -358,10 +384,12 @@ function SuccessCard({
   data,
   onReset,
   onCancelSubscription,
+  getLabel,
 }: {
   data: SuccessData;
   onReset: () => void;
   onCancelSubscription: () => void;
+  getLabel: (address: string) => string | null;
 }) {
   const days = Math.round(Number(data.interval) / 86400);
   const [isDownloading, setIsDownloading] = useState(false);
@@ -424,7 +452,9 @@ function SuccessCard({
           every {days} day{days !== 1 ? "s" : ""}
         </span>
         <span className="text-gray-300 font-medium break-all">Merchant</span>
-        <span className="break-all font-mono text-xs">{data.merchant}</span>
+        <span className="break-all font-mono text-xs">
+          <AddressDisplay address={data.merchant} getLabel={getLabel} truncateLen={8} />
+        </span>
       </div>
 
       {/* Next steps */}
@@ -732,9 +762,11 @@ function classifyError(err: unknown): TxErrorInfo {
 function ErrorCard({
   error,
   onDismiss,
+  explorerUrl,
 }: {
   error: TxErrorInfo;
   onDismiss: () => void;
+  explorerUrl?: string | null;
 }) {
   const [showDetails, setShowDetails] = useState(false);
   const showConfig = /network|rpc|contract|passphrase/i.test(`${error.title} ${error.raw}`);
@@ -798,6 +830,23 @@ function ErrorCard({
         </dl>
       )}
 
+      {/* Collapsible technical details */}
+      {explorerUrl && (
+        <div className="mb-3">
+          <a
+            href={explorerUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-1.5 text-xs text-blue-400 hover:text-blue-300 underline underline-offset-2 transition-colors"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+              <path d="M11 3a1 1 0 100 2h2.586l-6.293 6.293a1 1 0 101.414 1.414L15 6.414V9a1 1 0 102 0V4a1 1 0 00-1-1h-5z" />
+              <path d="M5 5a2 2 0 00-2 2v8a2 2 0 002 2h8a2 2 0 002-2v-3a1 1 0 10-2 0v3H5V7h3a1 1 0 000-2H5z" />
+            </svg>
+            View transaction on Stellar Expert ↗
+          </a>
+        </div>
+      )}
       {/* Collapsible technical details */}
       <button
         type="button"
@@ -1076,13 +1125,61 @@ export default function SubscriptionForm({ initialValues }: SubscriptionFormProp
   const [interval, setInterval]               = useState(initialValues?.interval ?? String(DEFAULT_INTERVAL_SECONDS));
 
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isConfirming, setIsConfirming] = useState(false);
+  const [confirmingTxHash, setConfirmingTxHash] = useState<string | null>(null);
   const [fieldErrors, setFieldErrors]   = useState<FieldErrors>({});
   const [txError, setTxError]           = useState<TxErrorInfo | null>(null);
+  const [txErrorExplorerUrl, setTxErrorExplorerUrl] = useState<string | null>(null);
   const [successData, setSuccessData]   = useState<SuccessData | null>(null);
   const [showConfirm, setShowConfirm]   = useState(false);
   // Cancel subscription confirmation modal
   const [showCancelConfirm, setShowCancelConfirm] = useState(false);
   const [cancelStatus, setCancelStatus] = useState<'idle' | 'pending' | 'done'>('idle');
+
+  // ── Transaction poller ──────────────────────────────────────────────────────
+  const { state: pollerState, startPolling } = useTransactionPoller({
+    onSuccess: (txHash) => {
+      setIsConfirming(false);
+      setConfirmingTxHash(null);
+      setSuccessData({
+        txHash,
+        merchant: merchantAddress.trim(),
+        subscriber: publicKey ?? '',
+        token: tokenAddress.trim(),
+        amount,
+        interval,
+        issuedAt: new Date().toISOString(),
+      });
+    },
+    onFailed: (errorMessage, txHash) => {
+      setIsConfirming(false);
+      setConfirmingTxHash(null);
+      const explorerUrl = buildExplorerUrl(txHash);
+      setTxErrorExplorerUrl(explorerUrl);
+      setTxError(classifyError(new Error(errorMessage)));
+      const mapped = mapError(new Error(errorMessage));
+      showToast({
+        variant: 'error',
+        message: mapped.message,
+        action: mapped.action,
+        docsUrl: mapped.docsUrl,
+      });
+    },
+    onTimeout: (txHash, explorerUrl) => {
+      setIsConfirming(false);
+      setConfirmingTxHash(null);
+      setTxErrorExplorerUrl(explorerUrl);
+      const timeoutMsg = `Transaction status unknown after 60 seconds. Hash: ${txHash}`;
+      setTxError(classifyError(new Error(timeoutMsg)));
+      const mapped = mapError(new Error(timeoutMsg));
+      showToast({
+        variant: 'error',
+        message: mapped.message,
+        action: mapped.action,
+        docsUrl: mapped.docsUrl,
+      });
+    },
+  });
 
   // Guard: must have a valid contract address before rendering the form
   // (placed after hooks so rules-of-hooks is satisfied)
@@ -1116,6 +1213,9 @@ export default function SubscriptionForm({ initialValues }: SubscriptionFormProp
   function resetForm() {
     setSuccessData(null);
     setTxError(null);
+    setTxErrorExplorerUrl(null);
+    setIsConfirming(false);
+    setConfirmingTxHash(null);
     setFieldErrors({});
     setShowConfirm(false);
     setMerchantAddress("");
@@ -1174,8 +1274,12 @@ export default function SubscriptionForm({ initialValues }: SubscriptionFormProp
     if (!publicKey) return;
 
     setIsSubmitting(true);
+    setTxError(null);
+    setTxErrorExplorerUrl(null);
+
     try {
-      const result = await buildAndSubmitSubscribe(
+      // Phase 1: build, sign, and submit — returns as soon as the RPC accepts the tx
+      const { txHash, server } = await buildSignAndSubmitSubscribe(
         {
           subscriber: publicKey,
           merchant: merchantAddress.trim(),
@@ -1189,26 +1293,23 @@ export default function SubscriptionForm({ initialValues }: SubscriptionFormProp
         RPC_URL,
       );
 
-      setSuccessData({
-        txHash: result.txHash,
-        merchant: merchantAddress.trim(),
-        subscriber: publicKey,
-        token: tokenAddress.trim(),
-        amount,
-        interval,
-        issuedAt: new Date().toISOString(),
-      });
+      // Transition to confirming state — show spinner with explorer link
+      setIsSubmitting(false);
+      setIsConfirming(true);
+      setConfirmingTxHash(txHash);
+
+      // Phase 2: poll for confirmation (handled by useTransactionPoller callbacks above)
+      startPolling(txHash, server);
     } catch (err) {
+      // Submission itself failed (signing rejected, RPC error, etc.)
       const mapped = mapError(err);
       setTxError(classifyError(err));
-      // Also show a toast notification (UX-113)
       showToast({
         variant: 'error',
         message: mapped.message,
         action: mapped.action,
         docsUrl: mapped.docsUrl,
       });
-    } finally {
       setIsSubmitting(false);
     }
   }
@@ -1226,22 +1327,52 @@ export default function SubscriptionForm({ initialValues }: SubscriptionFormProp
           onCancel={() => setShowConfirm(false)}
         />
       )}
+      {/* Address book modal */}
+      <AddressBookModal
+        isOpen={isAddressBookOpen}
+        onClose={() => setIsAddressBookOpen(false)}
+        entries={abEntries}
+        entryList={abEntryList}
+        addEntry={abAddEntry}
+        updateEntry={abUpdateEntry}
+        deleteEntry={abDeleteEntry}
+        importBook={abImportBook}
+        exportBook={abExportBook}
+        prefilledAddress={merchantAddress || undefined}
+      />
       <div className="flex items-start justify-between mb-1 gap-3">
         <h2 className="text-xl sm:text-2xl font-bold leading-tight">Create Subscription</h2>
-        <span
-          aria-label={publicKey ? "Wallet connected" : "Wallet disconnected"}
-          className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-semibold shrink-0 ${
-            publicKey
-              ? "bg-green-900/60 text-green-300 border border-green-600/50"
-              : "bg-gray-700/60 text-gray-400 border border-gray-600/50"
-          }`}
-        >
+        <div className="flex items-center gap-2 shrink-0">
+          {/* Address book trigger */}
+          {publicKey && (
+            <button
+              type="button"
+              onClick={() => setIsAddressBookOpen(true)}
+              aria-label="Open address book"
+              title="Address book"
+              className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium bg-gray-800 border border-gray-700 text-gray-300 hover:text-white hover:bg-gray-700 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400"
+            >
+              <span aria-hidden="true">📒</span>
+              {abEntryList.length > 0 && (
+                <span className="font-mono">{abEntryList.length}</span>
+              )}
+            </button>
+          )}
           <span
-            className={`h-2 w-2 rounded-full ${publicKey ? "bg-green-400" : "bg-gray-500"}`}
-            aria-hidden="true"
-          />
-          {publicKey ? "Connected" : "Disconnected"}
-        </span>
+            aria-label={publicKey ? "Wallet connected" : "Wallet disconnected"}
+            className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-semibold ${
+              publicKey
+                ? "bg-green-900/60 text-green-300 border border-green-600/50"
+                : "bg-gray-700/60 text-gray-400 border border-gray-600/50"
+            }`}
+          >
+            <span
+              className={`h-2 w-2 rounded-full ${publicKey ? "bg-green-400" : "bg-gray-500"}`}
+              aria-hidden="true"
+            />
+            {publicKey ? "Connected" : "Disconnected"}
+          </span>
+        </div>
       </div>
       <p className="text-gray-400 text-sm mt-1 mb-4 leading-relaxed">
         Authorize a recurring on-chain payment using your Freighter wallet.{" "}
@@ -1292,7 +1423,7 @@ export default function SubscriptionForm({ initialValues }: SubscriptionFormProp
         <CopyButton text={CONTRACT_ID} label="Copy" />
       </div>
 
-      {/* Progress indicator — visible only while submitting */}
+      {/* Progress indicator — Phase 1: awaiting Freighter signature */}
       {isSubmitting && (
         <motion.div
           key="progress"
@@ -1301,13 +1432,43 @@ export default function SubscriptionForm({ initialValues }: SubscriptionFormProp
           animate="visible"
           exit="exit"
         >
-          <ProgressBar />
+          <ProgressBar phase="submitting" />
+        </motion.div>
+      )}
+
+      {/* Progress indicator — Phase 2: confirming on-chain */}
+      {isConfirming && (
+        <motion.div
+          key="confirming"
+          variants={prefersReducedMotion ? reducedMotionVariants : fadeInVariants}
+          initial="hidden"
+          animate="visible"
+          exit="exit"
+        >
+          <ProgressBar
+            phase="confirming"
+            explorerUrl={confirmingTxHash ? buildExplorerUrl(confirmingTxHash) : null}
+          />
         </motion.div>
       )}
 
       {/* Transaction error */}
       {txError && (
-        <ErrorCard error={txError} onDismiss={() => setTxError(null)} />
+        <ErrorCard
+          error={txError}
+          onDismiss={() => { setTxError(null); setTxErrorExplorerUrl(null); }}
+          explorerUrl={txErrorExplorerUrl}
+        />
+      )}
+
+      {/* Success card — shown after successful subscription */}
+      {successData && (
+        <SuccessCard
+          data={successData}
+          onReset={resetForm}
+          onCancelSubscription={handleCancelSubscriptionClick}
+          getLabel={abGetLabel}
+        />
       )}
 
       {/* Hide the form after success */}
@@ -1315,7 +1476,7 @@ export default function SubscriptionForm({ initialValues }: SubscriptionFormProp
         <form
           onSubmit={handleSubmit}
           noValidate
-          aria-busy={isSubmitting}
+          aria-busy={isSubmitting || isConfirming}
           aria-labelledby="form-heading"
           className="space-y-4"
         >
@@ -1335,7 +1496,7 @@ export default function SubscriptionForm({ initialValues }: SubscriptionFormProp
               autoComplete="off"
               value={merchantAddress}
               onChange={(e) => setMerchantAddress(e.target.value)}
-              disabled={isSubmitting}
+              disabled={isSubmitting || isConfirming}
               required
               aria-required="true"
               aria-describedby={`help-merchant${fieldErrors.merchantAddress ? " err-merchant" : ""}`}
@@ -1374,7 +1535,7 @@ export default function SubscriptionForm({ initialValues }: SubscriptionFormProp
               id="tokenAddress"
               value={tokenAddress}
               onChange={setTokenAddress}
-              disabled={isSubmitting}
+              disabled={isSubmitting || isConfirming}
               hasError={!!fieldErrors.tokenAddress}
               tokens={getKnownTokens(NETWORK_NAME)}
               ariaDescribedBy={`help-token${fieldErrors.tokenAddress ? " err-token" : ""}`}
@@ -1416,7 +1577,7 @@ export default function SubscriptionForm({ initialValues }: SubscriptionFormProp
               autoComplete="off"
               value={amount}
               onChange={(e) => setAmount(e.target.value)}
-              disabled={isSubmitting}
+              disabled={isSubmitting || isConfirming}
               required
               aria-required="true"
               aria-describedby={`help-amount${fieldErrors.amount ? " err-amount" : ""}`}
@@ -1466,7 +1627,7 @@ export default function SubscriptionForm({ initialValues }: SubscriptionFormProp
               autoComplete="off"
               value={interval}
               onChange={(e) => setInterval(e.target.value)}
-              disabled={isSubmitting}
+              disabled={isSubmitting || isConfirming}
               required
               aria-required="true"
               aria-describedby={`help-interval${intervalError ? ' err-interval' : ''}`}
@@ -1504,9 +1665,9 @@ export default function SubscriptionForm({ initialValues }: SubscriptionFormProp
             )}
             <button
               type="submit"
-              disabled={isSubmitting || !publicKey}
+              disabled={isSubmitting || isConfirming || !publicKey}
               aria-describedby={!publicKey ? "hint-wallet" : undefined}
-              aria-busy={isSubmitting}
+              aria-busy={isSubmitting || isConfirming}
               className="w-full flex items-center justify-center gap-2 rounded-lg bg-blue-600
                          hover:bg-blue-500 active:bg-blue-700 disabled:opacity-50
                          disabled:cursor-not-allowed px-4 py-3 text-sm font-semibold
@@ -1514,16 +1675,16 @@ export default function SubscriptionForm({ initialValues }: SubscriptionFormProp
                          focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400
                          focus-visible:ring-offset-2 focus-visible:ring-offset-gray-900"
             >
-              {isSubmitting && (
+              {(isSubmitting || isConfirming) && (
                 <svg
                   className="animate-spin h-5 w-5 text-white"
                   xmlns="http://www.w3.org/2000/svg"
                   fill="none"
                   viewBox="0 0 24 24"
                   role="img"
-                  aria-label="Submitting"
+                  aria-label={isConfirming ? "Confirming" : "Submitting"}
                 >
-                  <title>Submitting</title>
+                  <title>{isConfirming ? "Confirming" : "Submitting"}</title>
                   <circle
                     className="opacity-25"
                     cx="12"
@@ -1539,13 +1700,11 @@ export default function SubscriptionForm({ initialValues }: SubscriptionFormProp
                   />
                 </svg>
               )}
-              {isSubmitting ? "Submitting…" : "Authorize Subscription"}
+              {isConfirming ? "Confirming…" : isSubmitting ? "Submitting…" : "Authorize Subscription"}
             </button>
           </div>
         </form>
-          </motion.div>
-        )}
-      </AnimatePresence>
+      )}
     </div>
     </ErrorBoundary>
   );

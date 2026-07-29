@@ -8,12 +8,11 @@
  *   2. Build transaction with contract call
  *   3. prepareTransaction (simulates and fills resource fees)
  *   4. Sign with Freighter via signTx()
- *   5. Submit and poll for confirmation (up to 60 seconds)
+ *   5. Submit → returns txHash immediately (caller handles polling via
+ *      useTransactionPoller for the 'confirming' intermediate UI state)
  *
- * Exported builders:
- *   - buildAndSubmitSubscribe      — subscriber creates/updates a subscription
- *   - buildAndSubmitExecutePayment — merchant collects a single due payment
- *   - buildAndSubmitBatchExecutePayment — merchant collects multiple due payments
+ * The legacy buildAndSubmitSubscribe remains exported for backward compatibility
+ * but delegates to the two-phase helpers below.
  */
 
 import {
@@ -22,7 +21,6 @@ import {
   BASE_FEE,
   nativeToScVal,
   Address,
-  xdr,
 } from '@stellar/stellar-sdk';
 import { SorobanRpc } from '@stellar/stellar-sdk';
 import { signTx } from './wallet_manager';
@@ -51,79 +49,42 @@ export interface SubscribeResult {
 }
 
 /**
- * Parameters for a merchant-initiated payment collection.
- * The merchant must be the signer (publicKey) of this transaction.
+ * Intermediate result returned after the transaction is submitted but before
+ * it has been confirmed. The caller should pass `txHash` and `server` to
+ * `useTransactionPoller.startPolling()` to track the confirmation.
  */
-export interface ExecutePaymentParams {
-  /** Subscriber Stellar G-address */
-  subscriber: string;
-  /** Merchant Stellar G-address — must match the connected wallet */
-  merchant: string;
-}
-
-/** Result of a successful execute_payment transaction */
-export interface ExecutePaymentResult {
-  /** Transaction hash on Stellar network */
+export interface SubmitResult {
+  /** Transaction hash (available immediately after sendTransaction) */
   txHash: string;
-}
-
-/**
- * One entry in a batch payment collection request.
- * Each entry targets a distinct (subscriber, merchant) pair.
- */
-export interface BatchPaymentEntry {
-  /** Subscriber Stellar G-address */
-  subscriber: string;
-  /** Merchant Stellar G-address */
-  merchant: string;
-}
-
-/**
- * Result of a batch execute_payment transaction.
- * All entries are submitted as separate transactions and results are
- * reported per-entry so partial success is visible to the UI.
- */
-export interface BatchExecutePaymentResult {
-  /** Per-entry results in the same order as the input entries array */
-  results: Array<{
-    subscriber: string;
-    merchant: string;
-    /** Transaction hash when the individual collection succeeded */
-    txHash?: string;
-    /** Error message when the individual collection failed */
-    error?: string;
-  }>;
-  /** Number of successfully collected payments */
-  successCount: number;
-  /** Number of failed payment attempts */
-  failureCount: number;
+  /** The SorobanRpc.Server instance used — pass to startPolling() */
+  server: SorobanRpc.Server;
 }
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
+/** @deprecated Use useTransactionPoller (exponential backoff) instead */
 const POLL_INTERVAL_MS = 1_000;
+/** @deprecated Use useTransactionPoller (exponential backoff) instead */
 const MAX_POLL_ATTEMPTS = 60; // 60 seconds total
 
-// ── Main function ─────────────────────────────────────────────────────────────
+// ── Phase 1: build, sign, and submit ─────────────────────────────────────────
 
 /**
- * Build, sign, and submit a `subscribe` transaction to the SorobanPay contract.
+ * Build, sign, and submit a `subscribe` transaction.
  *
- * @param params            Subscription parameters
- * @param contractId        Deployed SorobanPay contract address
- * @param publicKey         Connected subscriber's public key (from Freighter)
- * @param networkPassphrase Stellar network passphrase
- * @param rpcUrl            Soroban RPC endpoint URL
- * @returns                 Transaction hash of the confirmed transaction
- * @throws                  On any failure: construction, signing, submission, or timeout
+ * Returns the transaction hash and server instance as soon as the transaction
+ * is accepted by the RPC (status !== 'ERROR'). The caller is responsible for
+ * polling for confirmation — use `useTransactionPoller.startPolling()`.
+ *
+ * @throws On validation failure, signing rejection, or submission error.
  */
-export async function buildAndSubmitSubscribe(
+export async function buildSignAndSubmitSubscribe(
   params: SubscribeParams,
   contractId: string,
   publicKey: string,
   networkPassphrase: string,
-  rpcUrl: string
-): Promise<SubscribeResult> {
+  rpcUrl: string,
+): Promise<SubmitResult> {
   // 0. Validate addresses before making any network calls
   if (!isValidGAddress(params.subscriber)) {
     throw new Error(`Invalid subscriber address: ${params.subscriber}`);
@@ -154,8 +115,8 @@ export async function buildAndSubmitSubscribe(
         new Address(params.merchant).toScVal(),
         new Address(params.token).toScVal(),
         nativeToScVal(BigInt(params.amount), { type: 'i128' }),
-        nativeToScVal(BigInt(params.interval), { type: 'u64' })
-      )
+        nativeToScVal(BigInt(params.interval), { type: 'u64' }),
+      ),
     )
     .setTimeout(30)
     .build();
@@ -178,21 +139,56 @@ export async function buildAndSubmitSubscribe(
 
   if (sendResult.status === 'ERROR') {
     throw new Error(
-      `Transaction submission failed: ${sendResult.errorResult?.toXDR('base64') ?? 'unknown error'}`
+      `Transaction submission failed: ${sendResult.errorResult?.toXDR('base64') ?? 'unknown error'}`,
     );
   }
 
-  // 6. Poll for confirmation
-  const txHash = await pollForConfirmation(server, sendResult.hash);
-
-  return { txHash };
+  // Return immediately — polling is handled by useTransactionPoller
+  return { txHash: sendResult.hash, server };
 }
 
-// ── Polling helper ────────────────────────────────────────────────────────────
+// ── Legacy all-in-one function (backward compatibility) ───────────────────────
 
+/**
+ * Build, sign, submit, and poll a `subscribe` transaction to completion.
+ *
+ * @deprecated Prefer `buildSignAndSubmitSubscribe` + `useTransactionPoller`
+ * for the two-phase flow with intermediate 'confirming' state.
+ *
+ * @param params            Subscription parameters
+ * @param contractId        Deployed SorobanPay contract address
+ * @param publicKey         Connected subscriber's public key (from Freighter)
+ * @param networkPassphrase Stellar network passphrase
+ * @param rpcUrl            Soroban RPC endpoint URL
+ * @returns                 Transaction hash of the confirmed transaction
+ * @throws                  On any failure: construction, signing, submission, or timeout
+ */
+export async function buildAndSubmitSubscribe(
+  params: SubscribeParams,
+  contractId: string,
+  publicKey: string,
+  networkPassphrase: string,
+  rpcUrl: string,
+): Promise<SubscribeResult> {
+  const { txHash, server } = await buildSignAndSubmitSubscribe(
+    params,
+    contractId,
+    publicKey,
+    networkPassphrase,
+    rpcUrl,
+  );
+
+  // Legacy in-process polling (fixed 1 s interval)
+  const confirmedHash = await pollForConfirmation(server, txHash);
+  return { txHash: confirmedHash };
+}
+
+// ── Legacy polling helper ─────────────────────────────────────────────────────
+
+/** @deprecated Use useTransactionPoller (exponential backoff) instead */
 async function pollForConfirmation(
   server: SorobanRpc.Server,
-  hash: string
+  hash: string,
 ): Promise<string> {
   for (let attempt = 0; attempt < MAX_POLL_ATTEMPTS; attempt++) {
     await sleep(POLL_INTERVAL_MS);
@@ -206,7 +202,7 @@ async function pollForConfirmation(
     if (result.status === SorobanRpc.Api.GetTransactionStatus.FAILED) {
       const meta = (result as SorobanRpc.Api.GetFailedTransactionResponse).resultMetaXdr;
       throw new Error(
-        `Transaction failed on-chain: ${meta ?? 'no result meta available'}`
+        `Transaction failed on-chain: ${meta ?? 'no result meta available'}`,
       );
     }
 
@@ -214,7 +210,7 @@ async function pollForConfirmation(
   }
 
   throw new Error(
-    `Transaction confirmation timeout after ${MAX_POLL_ATTEMPTS} seconds. Hash: ${hash}`
+    `Transaction confirmation timeout after ${MAX_POLL_ATTEMPTS} seconds. Hash: ${hash}`,
   );
 }
 
