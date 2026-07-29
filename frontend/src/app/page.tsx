@@ -3,9 +3,12 @@
 /**
  * page.tsx — Home page (Dashboard)
  *
- * Renders the wallet connect/disconnect button and the subscription form.
- * Includes an onboarding guide for first-time users and global keyboard
- * shortcut support (react-hotkeys-hook).
+ * Mobile-first responsive layout (UX-114).
+ * - Single-column on mobile, max-w-lg centred on desktop
+ * - Bottom nav bar on mobile (BottomNavBar component)
+ * - Touch targets >= 44px (WCAG 2.5.5)
+ * - No horizontal overflow at 375px
+ * - pb-20 on mobile to clear the bottom nav bar
  *
  * Requirements: 9.1, 9.5, 9.6, 10.1
  * FE-47: Mounted guard prevents React hydration mismatches from wallet state.
@@ -562,7 +565,7 @@ export default function Home() {
           tabIndex={-1}
         >
           {publicKey ? (
-            <SubscriptionForm />
+            <SubscriptionWizard />
           ) : (
             <div className="rounded-2xl border border-gray-200 dark:border-gray-800 bg-gray-50/40 dark:bg-gray-900/40 p-8 text-center space-y-3">
               <p className="text-2xl" aria-hidden="true">🔒</p>
