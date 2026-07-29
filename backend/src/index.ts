@@ -32,6 +32,7 @@ import { requireMerchant } from './middleware/merchantAuth';  // BE-55: JWT guar
 import { reconcile } from './services/reconciler';
 import { PrismaSubscriptionDB, fetchChainEventsFromDB } from './services/reconciler';
 import { getPrometheusMetrics } from './services/metricsService';
+import { startRetryWorker, shutdownRetryWorker } from './services/retryQueue';
 
 // ─── Config ─────────────────────────────────────────────────────────────────
 const config = validateConfig();
@@ -42,8 +43,39 @@ const app = express();
 
 app.use(cors());
 app.use(express.json());
+
+// Dynamic tenant middleware
+try {
+  const { tenantAuthMiddleware } = require('./middleware/tenantAuth');
+  if (tenantAuthMiddleware) app.use(tenantAuthMiddleware);
+} catch (e) {}
+
 app.use(apiLimiter);
 app.use(versionMiddleware);   // BE-69: attach version info + deprecation headers
+
+// Dynamic extended health check routes (GET /health, /health/ready, /health/live)
+try {
+  const { extendedHealthRouter } = require('./routes/extendedHealth');
+  if (extendedHealthRouter) {
+    app.use('/', extendedHealthRouter);
+  }
+} catch (e) {}
+
+// Dynamic GraphQL endpoint (/graphql)
+try {
+  const { handleGraphQLRequest } = require('./graphql/server');
+  if (handleGraphQLRequest) {
+    app.use('/graphql', handleGraphQLRequest);
+  }
+} catch (e) {}
+
+// Dynamic Tenant Admin Router
+try {
+  const { tenantAdminRouter } = require('./routes/adminTenants');
+  if (tenantAdminRouter) {
+    app.use('/v1/admin', tenantAdminRouter);
+  }
+} catch (e) {}
 
 // ─── Version manifest ────────────────────────────────────────────────────────
 // GET /  →  version manifest
@@ -62,16 +94,12 @@ app.use('/api/v1/notifications', notificationsRouter);  // BE-68
 app.use('/api/v1/admin',         adminRouter);          // BE-75: admin dashboard
 
 // ─── Prometheus metrics (unauthenticated — restrict to internal network) ─────
-// Expose at GET /metrics for Prometheus scraping.
-// In production, protect this path at the reverse-proxy level (e.g. allow only
-// the Prometheus server IP).
 app.get('/metrics', (_req, res) => {
   res.set('Content-Type', 'text/plain; version=0.0.4');
   res.send(getPrometheusMetrics());
 });
 
 // ─── Backward-compatible aliases — /api/ (no version prefix) ─────────────────
-// These keep existing integrations working and forward to v1 handlers.
 app.use('/api/subscriptions', subscriptionsRouter);
 app.use('/api/subscriptions/:subscriber/:merchant/retries', retriesRouter);
 app.use('/api/webhooks',      webhooksRouter);
@@ -102,13 +130,11 @@ if (retryScheduler) {
 }
 
 // ─── Cron jobs ───────────────────────────────────────────────────────────────
-// Fetch events every 5 minutes
 cron.schedule('*/5 * * * *', async () => {
   console.log('[cron] Fetching new events...');
   await eventIndexer.fetchAndStoreEvents();
 });
 
-// Execute due payments every minute
 cron.schedule('* * * * *', async () => {
   if (!paymentScheduler) return;
   await paymentScheduler.processDuePayments();
@@ -125,13 +151,11 @@ cron.schedule('0 1 * * *', async () => {
   await summaryGenerator.generateDailySummaries();
 });
 
-// Generate weekly summaries at 2 AM every Sunday
 cron.schedule('0 2 * * 0', async () => {
   console.log('[cron] Generating weekly summaries...');
   await summaryGenerator.generateWeeklySummaries();
 });
 
-// Run reconciliation every hour
 cron.schedule('0 * * * *', async () => {
   console.log('[cron] Running reconciliation...');
   try {
@@ -153,17 +177,14 @@ app.listen(PORT, () => {
   if (!operatorSecret) {
     console.warn('[scheduler] OPERATOR_SECRET not set — payment scheduler disabled.');
   }
-  // Start BullMQ retry worker (requires REDIS_URL)
   try {
     startRetryWorker();
   } catch (err) {
     console.warn('[retryWorker] Could not start retry worker (Redis unavailable?):', err);
   }
-  // Initial event fetch on startup
   eventIndexer.fetchAndStoreEvents();
 });
 
-// Graceful shutdown
 process.on('SIGTERM', async () => {
   await shutdownRetryWorker();
   process.exit(0);
