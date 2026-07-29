@@ -9,6 +9,8 @@ export interface AppConfig {
   networkPassphrase: string;
   port: number;
   databaseUrl: string;
+  /** Redis URL for BullMQ payment retry queue. undefined = retry queue disabled. */
+  redisUrl: string | undefined;
 }
 
 const CONTRACT_ID_RE = /^C[A-Z2-7]{55}$/;
@@ -58,6 +60,20 @@ export function validateConfig(env: NodeJS.ProcessEnv = process.env): AppConfig 
     errors.push('DATABASE_URL is required');
   }
 
+  // REDIS_URL is optional. When provided it must be a valid redis:// or rediss:// URL.
+  const REDIS_URL_RE = /^rediss?:\/\/.+/;
+  const rawRedisUrl = env.REDIS_URL;
+  let redisUrl: string | undefined;
+  if (rawRedisUrl) {
+    if (!REDIS_URL_RE.test(rawRedisUrl)) {
+      errors.push(
+        `REDIS_URL must be a valid redis:// or rediss:// URL, got: ${rawRedisUrl}`,
+      );
+    } else {
+      redisUrl = rawRedisUrl;
+    }
+  }
+
   const rawPort = env.PORT;
   const port = rawPort ? parseInt(rawPort, 10) : 3001;
   if (isNaN(port) || port < 1 || port > 65535) {
@@ -68,5 +84,5 @@ export function validateConfig(env: NodeJS.ProcessEnv = process.env): AppConfig 
     throw new ConfigValidationError(errors);
   }
 
-  return { rpcUrl, contractId, networkPassphrase, databaseUrl, port };
+  return { rpcUrl, contractId, networkPassphrase, databaseUrl, port, redisUrl };
 }
