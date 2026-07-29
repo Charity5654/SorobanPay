@@ -6,12 +6,14 @@ import { validateConfig } from './lib/config';
 import { EventIndexer } from './services/eventIndexer';
 import { PayoutSummaryGenerator } from './services/payoutSummaryGenerator';
 import { PaymentScheduler } from './services/paymentScheduler';
+import { YieldCalculationEngine } from './services/yieldCalculationEngine';
 import summariesRouter from './routes/summaries';
 import subscriptionsRouter from './routes/subscriptions';
 import auditLogsRouter from './routes/auditLogs';
 import { apiLimiter } from './middleware/rateLimiter';
 
 const app = express();
+const config = validateConfig(process.env);
 const { port: PORT, rpcUrl, contractId } = config;
 
 // Middleware
@@ -25,12 +27,15 @@ app.use('/api/subscriptions', subscriptionsRouter);
 app.use('/api/audit-logs', auditLogsRouter);
 
 // Initialize services
-const rpcUrl = process.env.RPC_URL || 'https://soroban-testnet.stellar.org';
-const contractId = process.env.CONTRACT_ID || '';
 const networkPassphrase = process.env.NETWORK_PASSPHRASE || 'Test SDF Network ; September 2015';
 
 const eventIndexer = new EventIndexer(rpcUrl, contractId);
 const summaryGenerator = new PayoutSummaryGenerator();
+const yieldEngine = new YieldCalculationEngine({
+  onFailure: (context) => {
+    console.error(`[yield-engine] Calculation failed for ${context.positionId}: ${context.error}`);
+  },
+});
 
 // Payment scheduler — only active when operator secret is configured
 const operatorSecret = process.env.OPERATOR_SECRET;
@@ -61,6 +66,20 @@ cron.schedule('0 1 * * *', async () => {
 cron.schedule('0 2 * * 0', async () => {
   console.log('Generating weekly summaries...');
   await summaryGenerator.generateWeeklySummaries();
+});
+
+// Recalculate active vault positions every hour
+cron.schedule('0 * * * *', async () => {
+  console.log('Updating vault yield positions...');
+  const samplePositions: Array<{
+    id: string;
+    principal: number;
+    status: 'active' | 'deactivated' | 'closed';
+    yieldSources: Array<{ name: string; apy: number; weight?: number }>;
+    lastCalculatedAt: Date;
+  }> = [];
+
+  await yieldEngine.processBatch(samplePositions);
 });
 
 // Start server
