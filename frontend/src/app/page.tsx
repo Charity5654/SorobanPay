@@ -31,6 +31,8 @@ import { useKeyboardShortcuts, SECTION_IDS } from '@/hooks/useKeyboardShortcuts'
 import { useAccountBalance } from '@/hooks/useAccountBalance';
 import { useFriendbot } from '@/hooks/useFriendbot';
 import { NETWORK_NAME } from '@/constants/network';
+import { useAddressBook } from '@/hooks/useAddressBook';
+import { AddressBookModal } from '@/components/AddressBookModal';
 
 // ─── Live-region for screen-reader announcements ──────────────────────────────
 
@@ -269,6 +271,19 @@ export default function Home() {
   const [copied, setCopied] = useState(false);
   const { isHelpOpen, openHelp, closeHelp } = useKeyboardShortcuts();
 
+  // Address book
+  const {
+    entries: abEntries,
+    entryList: abEntryList,
+    addEntry: abAddEntry,
+    updateEntry: abUpdateEntry,
+    deleteEntry: abDeleteEntry,
+    getLabel: abGetLabel,
+    importBook: abImportBook,
+    exportBook: abExportBook,
+  } = useAddressBook(publicKey);
+  const [isAddressBookOpen, setIsAddressBookOpen] = useState(false);
+
   // XLM balance — re-fetched whenever refreshTrigger increments
   const [balanceRefreshTrigger, setBalanceRefreshTrigger] = useState(0);
   const { balance, isLoading: isLoadingBalance } = useAccountBalance({
@@ -343,6 +358,19 @@ export default function Home() {
 
       {/* Shortcuts help modal */}
       <ShortcutsHelpModal isOpen={isHelpOpen} onClose={closeHelp} />
+
+      {/* Address book modal */}
+      <AddressBookModal
+        isOpen={isAddressBookOpen}
+        onClose={() => setIsAddressBookOpen(false)}
+        entries={abEntries}
+        entryList={abEntryList}
+        addEntry={abAddEntry}
+        updateEntry={abUpdateEntry}
+        deleteEntry={abDeleteEntry}
+        importBook={abImportBook}
+        exportBook={abExportBook}
+      />
 
       <main className="min-h-screen flex flex-col items-center px-4 py-12">
         {/* Onboarding guide */}
@@ -439,13 +467,26 @@ export default function Home() {
                   </span>
                 </div>
                 {/* Req 9.6 — disconnect clears key */}
-                <button
-                  onClick={disconnect}
-                  className="text-xs text-gray-400 hover:text-red-600 dark:hover:text-red-400 transition-colors flex-shrink-0
-                             focus:outline-none focus:ring-1 focus:ring-red-400 rounded px-2 py-1"
-                >
-                  Disconnect
-                </button>
+                <div className="flex items-center gap-2 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => setIsAddressBookOpen(true)}
+                    aria-label="Open address book"
+                    title="Address book"
+                    className="text-xs text-gray-400 hover:text-blue-400 dark:hover:text-blue-300 transition-colors focus:outline-none focus:ring-1 focus:ring-blue-400 rounded px-2 py-1 inline-flex items-center gap-1"
+                  >
+                    <span aria-hidden="true">📒</span>
+                    {abEntryList.length > 0 && (
+                      <span className="font-mono">{abEntryList.length}</span>
+                    )}
+                  </button>
+                  <button
+                    onClick={disconnect}
+                    className="text-xs text-gray-400 hover:text-red-600 dark:hover:text-red-400 transition-colors focus:outline-none focus:ring-1 focus:ring-red-400 rounded px-2 py-1"
+                  >
+                    Disconnect
+                  </button>
+                </div>
               </div>
 
               {/* Balance row */}

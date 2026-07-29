@@ -61,7 +61,10 @@ import {
   RPC_URL,
 } from "@/constants/network";
 import { mapError } from "@/lib/errors";
-import { useToast } from "@/components/Toast";// ─── Types ────────────────────────────────────────────────────────────────────
+import { useToast } from "@/components/Toast";
+import { useAddressBook } from "@/hooks/useAddressBook";
+import { AddressBookModal } from "@/components/AddressBookModal";
+import { AddressDisplay } from "@/components/AddressDisplay";// ─── Types ────────────────────────────────────────────────────────────────────
 
 interface SuccessData {
   txHash: string;
@@ -381,10 +384,12 @@ function SuccessCard({
   data,
   onReset,
   onCancelSubscription,
+  getLabel,
 }: {
   data: SuccessData;
   onReset: () => void;
   onCancelSubscription: () => void;
+  getLabel: (address: string) => string | null;
 }) {
   const days = Math.round(Number(data.interval) / 86400);
   const [isDownloading, setIsDownloading] = useState(false);
@@ -447,7 +452,9 @@ function SuccessCard({
           every {days} day{days !== 1 ? "s" : ""}
         </span>
         <span className="text-gray-300 font-medium break-all">Merchant</span>
-        <span className="break-all font-mono text-xs">{data.merchant}</span>
+        <span className="break-all font-mono text-xs">
+          <AddressDisplay address={data.merchant} getLabel={getLabel} truncateLen={8} />
+        </span>
       </div>
 
       {/* Next steps */}
@@ -1320,22 +1327,52 @@ export default function SubscriptionForm({ initialValues }: SubscriptionFormProp
           onCancel={() => setShowConfirm(false)}
         />
       )}
+      {/* Address book modal */}
+      <AddressBookModal
+        isOpen={isAddressBookOpen}
+        onClose={() => setIsAddressBookOpen(false)}
+        entries={abEntries}
+        entryList={abEntryList}
+        addEntry={abAddEntry}
+        updateEntry={abUpdateEntry}
+        deleteEntry={abDeleteEntry}
+        importBook={abImportBook}
+        exportBook={abExportBook}
+        prefilledAddress={merchantAddress || undefined}
+      />
       <div className="flex items-start justify-between mb-1 gap-3">
         <h2 className="text-xl sm:text-2xl font-bold leading-tight">Create Subscription</h2>
-        <span
-          aria-label={publicKey ? "Wallet connected" : "Wallet disconnected"}
-          className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-semibold shrink-0 ${
-            publicKey
-              ? "bg-green-900/60 text-green-300 border border-green-600/50"
-              : "bg-gray-700/60 text-gray-400 border border-gray-600/50"
-          }`}
-        >
+        <div className="flex items-center gap-2 shrink-0">
+          {/* Address book trigger */}
+          {publicKey && (
+            <button
+              type="button"
+              onClick={() => setIsAddressBookOpen(true)}
+              aria-label="Open address book"
+              title="Address book"
+              className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium bg-gray-800 border border-gray-700 text-gray-300 hover:text-white hover:bg-gray-700 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400"
+            >
+              <span aria-hidden="true">📒</span>
+              {abEntryList.length > 0 && (
+                <span className="font-mono">{abEntryList.length}</span>
+              )}
+            </button>
+          )}
           <span
-            className={`h-2 w-2 rounded-full ${publicKey ? "bg-green-400" : "bg-gray-500"}`}
-            aria-hidden="true"
-          />
-          {publicKey ? "Connected" : "Disconnected"}
-        </span>
+            aria-label={publicKey ? "Wallet connected" : "Wallet disconnected"}
+            className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-semibold ${
+              publicKey
+                ? "bg-green-900/60 text-green-300 border border-green-600/50"
+                : "bg-gray-700/60 text-gray-400 border border-gray-600/50"
+            }`}
+          >
+            <span
+              className={`h-2 w-2 rounded-full ${publicKey ? "bg-green-400" : "bg-gray-500"}`}
+              aria-hidden="true"
+            />
+            {publicKey ? "Connected" : "Disconnected"}
+          </span>
+        </div>
       </div>
       <p className="text-gray-400 text-sm mt-1 mb-4 leading-relaxed">
         Authorize a recurring on-chain payment using your Freighter wallet.{" "}
@@ -1421,6 +1458,16 @@ export default function SubscriptionForm({ initialValues }: SubscriptionFormProp
           error={txError}
           onDismiss={() => { setTxError(null); setTxErrorExplorerUrl(null); }}
           explorerUrl={txErrorExplorerUrl}
+        />
+      )}
+
+      {/* Success card — shown after successful subscription */}
+      {successData && (
+        <SuccessCard
+          data={successData}
+          onReset={resetForm}
+          onCancelSubscription={handleCancelSubscriptionClick}
+          getLabel={abGetLabel}
         />
       )}
 
