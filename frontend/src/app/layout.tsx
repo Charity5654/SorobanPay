@@ -3,7 +3,7 @@ import type { ReactNode } from 'react';
 import { NextIntlClientProvider } from 'next-intl';
 import { getMessages } from 'next-intl/server';
 import { WalletProvider } from '@/context/WalletContext';
-import { ThemeProvider, ThemeScript } from '@/context/ThemeContext';
+import { NotificationProvider } from '@/context/NotificationContext';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
 import { LanguageSelector } from '@/components/LanguageSelector';
 import { DarkModeToggle } from '@/components/DarkModeToggle';

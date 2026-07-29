@@ -56,6 +56,8 @@ function LiveRegion() {
     };
   }, []);
 
+// ─── Navigation ───────────────────────────────────────────────────────────────
+function Nav() {
   return (
     <div aria-live="polite" aria-atomic="true" className="sr-only" role="status">
       {message}
@@ -63,72 +65,148 @@ function LiveRegion() {
   );
 }
 
-// ─── Keyboard shortcut trigger button ─────────────────────────────────────────
-
-function ShortcutsTriggerButton({ onClick }: { onClick: () => void }) {
+// ─── Section 1: Hero ──────────────────────────────────────────────────────────
+function Hero() {
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      aria-label="Show keyboard shortcuts (press ? to toggle)"
-      aria-keyshortcuts="?"
-      title="Keyboard shortcuts (?)"
-      className="
-        fixed bottom-5 right-5 z-40
-        flex items-center justify-center
-        h-10 w-10 rounded-full
-        border border-gray-300 dark:border-gray-600
-        bg-white dark:bg-gray-800
-        text-gray-600 dark:text-gray-300
-        hover:bg-gray-100 dark:hover:bg-gray-700
-        hover:text-gray-900 dark:hover:text-white
-        focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400
-        transition-colors shadow-lg
-      "
+    <section
+      aria-labelledby="hero-heading"
+      className="relative overflow-hidden bg-gray-950 px-4 pb-24 pt-20 sm:px-8 sm:pb-32 sm:pt-28"
     >
-      <span aria-hidden="true" className="text-base font-bold leading-none select-none">?</span>
-    </button>
+      {/* Background gradient blobs */}
+      <div
+        className="pointer-events-none absolute -top-40 left-1/2 h-[600px] w-[600px] -translate-x-1/2 rounded-full bg-blue-600/10 blur-3xl"
+        aria-hidden="true"
+      />
+      <div
+        className="pointer-events-none absolute bottom-0 right-0 h-[400px] w-[400px] rounded-full bg-indigo-600/10 blur-3xl"
+        aria-hidden="true"
+      />
+
+      <div className={`${CONTAINER} relative text-center`}>
+        {/* Badge */}
+        <span className="mb-6 inline-flex items-center gap-2 rounded-full border border-blue-500/30 bg-blue-500/10 px-4 py-1.5 text-xs font-semibold uppercase tracking-widest text-blue-300">
+          <span className="h-1.5 w-1.5 rounded-full bg-blue-400" aria-hidden="true" />
+          Built on Stellar Soroban
+        </span>
+
+        {/* Headline */}
+        <h1
+          id="hero-heading"
+          className="mx-auto mt-4 max-w-3xl text-4xl font-extrabold leading-tight tracking-tight text-white sm:text-5xl lg:text-6xl"
+        >
+          Recurring payments on Stellar —{' '}
+          <span className="bg-gradient-to-r from-blue-400 to-indigo-400 bg-clip-text text-transparent">
+            non-custodial, on-chain.
+          </span>
+        </h1>
+
+        {/* Subheadline */}
+        <p className="mx-auto mt-6 max-w-2xl text-lg text-gray-400 leading-relaxed">
+          SorobanPay enables SaaS billing, creator subscriptions, and recurring donations
+          directly on Stellar. No custodial wallets, no pre-authorized transaction arrays —
+          just smart contracts and SEP-41 tokens.
+        </p>
+
+        {/* CTAs */}
+        <div className="mt-10 flex flex-col items-center justify-center gap-4 sm:flex-row">
+          <Link
+            href="/app"
+            className="w-full rounded-xl bg-blue-600 px-8 py-4 text-sm font-bold text-white shadow-lg shadow-blue-600/20 hover:bg-blue-500 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400 sm:w-auto"
+          >
+            Get Started — Free
+          </Link>
+          <a
+            href="https://github.com/Chrisland58/SorobanPay"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="w-full rounded-xl border border-gray-700 px-8 py-4 text-sm font-bold text-gray-300 hover:border-gray-500 hover:text-white transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400 sm:w-auto"
+          >
+            View on GitHub ↗
+          </a>
+        </div>
+
+        {/* Trust badges */}
+        <div className="mt-12 flex flex-wrap items-center justify-center gap-6 text-xs text-gray-600">
+          <span className="flex items-center gap-1.5">
+            <span aria-hidden="true">🔒</span> Non-custodial
+          </span>
+          <span className="flex items-center gap-1.5">
+            <span aria-hidden="true">⚡</span> Permissionless
+          </span>
+          <span className="flex items-center gap-1.5">
+            <span aria-hidden="true">📖</span> Open source · MIT
+          </span>
+          <span className="flex items-center gap-1.5">
+            <span aria-hidden="true">🔗</span> SEP-41 compatible
+          </span>
+        </div>
+      </div>
+    </section>
   );
 }
 
-// ─── Onboarding card ──────────────────────────────────────────────────────────
+// ─── Section 2: How it works ──────────────────────────────────────────────────
+function HowItWorks() {
+  const steps = [
+    {
+      number: '01',
+      emoji: '✍️',
+      title: 'Subscribe',
+      description:
+        'Set your merchant address, token contract, amount, and interval. Sign once with Freighter — the contract does the rest.',
+    },
+    {
+      number: '02',
+      emoji: '⚡',
+      title: 'Payments run automatically',
+      description:
+        'Merchants collect payments on-chain when the interval elapses. Tokens transfer directly subscriber → merchant. No custodians.',
+    },
+    {
+      number: '03',
+      emoji: '🔓',
+      title: 'Cancel anytime',
+      description:
+        'Remove your subscription instantly with a single on-chain transaction. You stay in full control — always.',
+    },
+  ];
 
-function OnboardingCard({ freighterInstalled }: { freighterInstalled: boolean }) {
   return (
-    <div className="w-full max-w-lg rounded-2xl border border-gray-200 dark:border-gray-800 bg-gradient-to-br from-slate-50/80 via-white/90 to-slate-50/95 dark:from-slate-950/80 dark:via-slate-900/90 dark:to-slate-950/95 p-6 shadow-xl mb-6">
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <p className="text-xs uppercase tracking-[0.28em] text-blue-600 dark:text-blue-300 font-semibold">
-            First-time onboarding
+    <section
+      id="how-it-works"
+      aria-labelledby="how-heading"
+      className={`${SECTION} bg-gray-900/50`}
+    >
+      <div className={CONTAINER}>
+        <div className="text-center mb-14">
+          <p className="text-xs uppercase tracking-widest text-blue-400 font-semibold mb-3">
+            How it works
+          </p>
+          <h2
+            id="how-heading"
+            className="text-3xl font-extrabold tracking-tight text-white sm:text-4xl"
+          >
+            Recurring payments in 3 steps
+          </h2>
+          <p className="mt-4 text-gray-400 max-w-xl mx-auto">
+            From wallet connection to on-chain subscription in under a minute.
           </p>
           <h2 className="mt-3 text-2xl font-bold text-gray-900 dark:text-white">
             Launch your first recurring payment
           </h2>
         </div>
-        <span className="rounded-full bg-blue-500/10 px-3 py-1 text-xs font-semibold uppercase tracking-[0.18em] text-blue-700 dark:text-blue-200 border border-blue-500/20">
-          3 steps
-        </span>
-      </div>
 
-      <ol className="mt-6 space-y-4 text-sm text-gray-600 dark:text-gray-300">
-        <li className="rounded-2xl border border-gray-200 dark:border-gray-800 bg-gray-50/70 dark:bg-gray-900/70 p-4">
-          <div className="flex items-center justify-between gap-3 mb-2">
-            <span className="inline-flex h-7 min-w-[1.75rem] items-center justify-center rounded-full bg-blue-600 text-xs font-semibold text-white">
-              1
-            </span>
-            <span className="text-xs text-blue-600 dark:text-blue-200 uppercase tracking-[0.18em] font-semibold">
-              Wallet setup
-            </span>
-          </div>
-          <p className="text-gray-600 dark:text-gray-300">
-            Install Freighter and switch it to Testnet. Then connect your wallet with the button below.
-          </p>
-          {!freighterInstalled && (
-            <a
-              href="https://www.freighter.app"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="mt-3 inline-flex rounded-lg bg-blue-600 px-3 py-2 text-xs font-semibold text-white hover:bg-blue-500"
+        <div className="relative grid gap-6 sm:grid-cols-3">
+          {/* Connector line — desktop only */}
+          <div
+            className="pointer-events-none absolute top-14 left-[calc(16.67%+1rem)] right-[calc(16.67%+1rem)] hidden h-px bg-gradient-to-r from-blue-600/40 via-blue-400/40 to-blue-600/40 sm:block"
+            aria-hidden="true"
+          />
+
+          {steps.map((step, i) => (
+            <div
+              key={i}
+              className="relative rounded-2xl border border-gray-800 bg-gray-900 p-6 text-center shadow-lg"
             >
               Install Freighter
             </a>
@@ -270,11 +348,16 @@ export default function Home() {
         {/* Onboarding guide */}
         <OnboardingGuide isConnected={!!publicKey} />
 
-        {/* Header */}
-        <div className="w-full max-w-lg mb-8 text-center">
-          <h1 className="text-4xl font-extrabold tracking-tight mb-2">SorobanPay</h1>
-          <p className="text-gray-500 dark:text-gray-400 text-sm">
-            Decentralized recurring payments on Stellar
+  return (
+    <section
+      id="use-cases"
+      aria-labelledby="usecases-heading"
+      className={`${SECTION} bg-gray-900/40`}
+    >
+      <div className={CONTAINER}>
+        <div className="text-center mb-14">
+          <p className="text-xs uppercase tracking-widest text-blue-400 font-semibold mb-3">
+            Use cases
           </p>
           <p className="text-gray-400 dark:text-gray-600 text-xs mt-1">
             Press{' '}
@@ -423,8 +506,12 @@ export default function Home() {
                 </div>
               )}
             </div>
-          )}
+          ))}
         </div>
+      </div>
+    </section>
+  );
+}
 
         {/* ── Subscription form section ───────────────────────────────────── */}
         <section
@@ -505,29 +592,129 @@ export default function Home() {
               </p>
             )}
           </div>
-        </section>
+        </div>
+      </div>
+    </section>
+  );
+}
 
-        {/* ── Dashboard section (coming soon) ─────────────────────────────── */}
-        {/* id is referenced by the D shortcut in useKeyboardShortcuts */}
-        <section
-          id={SECTION_IDS.dashboard}
-          aria-label="Dashboard"
-          className="w-full max-w-lg mt-6 mb-16"
-          tabIndex={-1}
+// ─── Section 6: CTA banner ────────────────────────────────────────────────────
+function CTABanner() {
+  return (
+    <section
+      aria-label="Get started call to action"
+      className="relative overflow-hidden bg-blue-600 px-4 py-16 sm:px-8"
+    >
+      <div
+        className="pointer-events-none absolute inset-0 bg-gradient-to-br from-blue-500 via-blue-600 to-indigo-700"
+        aria-hidden="true"
+      />
+      <div className="relative mx-auto max-w-2xl text-center">
+        <h2 className="text-3xl font-extrabold tracking-tight text-white sm:text-4xl">
+          Start building today
+        </h2>
+        <p className="mt-4 text-blue-100 leading-relaxed">
+          Deploy to Stellar testnet in under 5 minutes. Free, open source, and non-custodial.
+        </p>
+        <div className="mt-8 flex flex-col items-center justify-center gap-4 sm:flex-row">
+          <Link
+            href="/app"
+            className="w-full rounded-xl bg-white px-8 py-4 text-sm font-bold text-blue-700 shadow-lg hover:bg-blue-50 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-white sm:w-auto"
+          >
+            Launch App →
+          </Link>
+          <a
+            href="https://github.com/Chrisland58/SorobanPay"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="w-full rounded-xl border border-white/40 px-8 py-4 text-sm font-bold text-white hover:bg-white/10 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-white sm:w-auto"
+          >
+            View Source ↗
+          </a>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+// ─── Section 6: Footer ────────────────────────────────────────────────────────
+function Footer() {
+  return (
+    <footer className="border-t border-gray-800 bg-gray-950 px-4 py-10 sm:px-8">
+      <div className="mx-auto flex max-w-6xl flex-col items-center justify-between gap-6 text-sm text-gray-500 sm:flex-row">
+        <Link
+          href="/"
+          className="flex items-center gap-2 font-extrabold text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400 rounded"
         >
-          <div className="rounded-2xl border border-dashed border-gray-300 dark:border-gray-700 bg-gray-50/20 dark:bg-gray-900/20 p-6 text-center space-y-3">
-            <p className="text-2xl" aria-hidden="true">📊</p>
-            <p className="text-gray-700 dark:text-gray-300 font-semibold text-sm">Dashboard</p>
-            <p className="text-gray-500 text-xs leading-relaxed max-w-xs mx-auto">
-              Overview of your subscription portfolio, payment timelines, and
-              account health metrics.
-            </p>
-            <span className="inline-block mt-1 px-3 py-1 rounded-full bg-gray-100 dark:bg-gray-800 text-gray-400 dark:text-gray-600 text-xs font-medium border border-gray-200 dark:border-gray-700">
-              Coming soon
-            </span>
-          </div>
-        </section>
+          <span
+            className="inline-flex h-7 w-7 items-center justify-center rounded-lg bg-blue-600 text-xs font-black text-white"
+            aria-hidden="true"
+          >
+            S
+          </span>
+          SorobanPay
+        </Link>
+
+        <nav aria-label="Footer navigation">
+          <ul className="flex flex-wrap items-center justify-center gap-6" role="list">
+            <li>
+              <a
+                href="https://github.com/Chrisland58/SorobanPay"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="hover:text-white transition-colors"
+              >
+                GitHub
+              </a>
+            </li>
+            <li>
+              <a
+                href="https://github.com/Chrisland58/SorobanPay#quick-start-testnet-demo--5-minutes"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="hover:text-white transition-colors"
+              >
+                Docs
+              </a>
+            </li>
+            <li>
+              <a
+                href="https://github.com/Chrisland58/SorobanPay/blob/main/CHANGELOG.md"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="hover:text-white transition-colors"
+              >
+                Changelog
+              </a>
+            </li>
+            <li>
+              <Link href="/app" className="hover:text-white transition-colors">
+                Launch App
+              </Link>
+            </li>
+          </ul>
+        </nav>
+
+        <p className="text-xs">© 2024 SorobanPay. MIT License.</p>
+      </div>
+    </footer>
+  );
+}
+
+// ─── Page ─────────────────────────────────────────────────────────────────────
+export default function LandingPage() {
+  return (
+    <>
+      <Nav />
+      <main>
+        <Hero />
+        <HowItWorks />
+        <Features />
+        <UseCases />
+        <DeveloperQuickstart />
+        <CTABanner />
       </main>
+      <Footer />
     </>
   );
 }
