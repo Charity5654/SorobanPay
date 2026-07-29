@@ -1,373 +1,465 @@
 /**
- * RetryQueue — automated payment retry scheduling via BullMQ.
+ * Payment Retry Queue — BullMQ-backed scheduler for failed subscription payments.
  *
- * Triggered by `payment_transfer_failure` events in the event indexer.
- *
- * Retry schedule (configurable via RETRY_INTERVALS_DAYS env var):
- *   - Attempt 1: +1 day from failure
- *   - Attempt 2: +3 days from failure
- *   - Attempt 3: +7 days from failure
- *
- * On max retries exceeded a `max_retries_exceeded` webhook event is fired
- * to all registered endpoints for the merchant.
- *
- * The service is a no-op (all methods return immediately) when REDIS_URL is
- * not configured, so deployments without Redis are unaffected.
+ * Flow:
+ *   1. payment_transfer_failure event → enqueueRetries() creates up to MAX_RETRIES
+ *      jobs in the Bull queue, each delayed by the configured schedule.
+ *   2. The worker (processRetryJob) fires on each job's delay, calls the merchant's
+ *      retry webhook, and updates the DB record.
+ *   3. After MAX_RETRIES exhausted without success, a max_retries_exceeded webhook
+ *      is emitted and the subscription is flagged for manual review.
+ *   4. cancelRetries() removes pending jobs from the queue and marks DB rows cancelled.
  */
 
 import { Queue, Worker, Job, QueueEvents } from 'bullmq';
-import type { ConnectionOptions } from 'bullmq';
+import IORedis from 'ioredis';
 import prisma from '../lib/prisma';
 import { notifyWebhooks } from './webhookNotifier';
 import logger from '../lib/logger';
 
-// ─── Constants ────────────────────────────────────────────────────────────────
-
-export const RETRY_QUEUE_NAME = 'payment-retries';
-export const MAX_RETRY_ATTEMPTS = 3;
-
-/** Default retry intervals in days (configurable via RETRY_INTERVALS_DAYS). */
-const DEFAULT_INTERVALS_DAYS = [1, 3, 7];
-
-// ─── Types ────────────────────────────────────────────────────────────────────
+// ─── Types ───────────────────────────────────────────────────────────────────
 
 export interface RetryJobData {
   subscriber: string;
   merchant: string;
-  token: string;
   amount: string;
-  attemptNumber: number;
+  token: string;
+  attemptNumber: number;  // 1-indexed
+  retryId: number;        // payment_retries row id
 }
 
-// ─── Module-level singletons (created once per process) ──────────────────────
+export type RetryStatus = 'pending' | 'succeeded' | 'failed' | 'cancelled';
 
+export interface PaymentRetryRecord {
+  id: number;
+  subscriber: string;
+  merchant: string;
+  amount: string;
+  token: string;
+  attemptNumber: number;
+  status: RetryStatus;
+  scheduledAt: Date;
+  attemptedAt: Date | null;
+  error: string | null;
+  jobId: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+// ─── Config ──────────────────────────────────────────────────────────────────
+
+/** Maximum number of retry attempts after the initial failure. */
+export const MAX_RETRIES = 3;
+
+/**
+ * Default retry schedule in milliseconds after the original failure event.
+ * Index 0 = first retry (after 1 day), index 1 = second (3 days), etc.
+ * Override via RETRY_DELAYS_MS env var as comma-separated values (ms).
+ */
+export function getRetryDelays(): number[] {
+  const envVal = process.env.RETRY_DELAYS_MS;
+  if (envVal) {
+    const parsed = envVal.split(',').map((v) => parseInt(v.trim(), 10));
+    if (parsed.every((n) => !isNaN(n) && n > 0)) return parsed;
+    logger.warn('[retryQueue] RETRY_DELAYS_MS is malformed — using defaults');
+  }
+  const DAY_MS = 24 * 60 * 60 * 1000;
+  return [DAY_MS, 3 * DAY_MS, 7 * DAY_MS];
+}
+
+export const QUEUE_NAME = 'payment-retries';
+
+// ─── Redis / Queue singletons ─────────────────────────────────────────────────
+
+let _connection: IORedis | null = null;
 let _queue: Queue<RetryJobData> | null = null;
 let _worker: Worker<RetryJobData> | null = null;
-let _redisConnection: ConnectionOptions | null = null;
 
-// ─── Helpers ─────────────────────────────────────────────────────────────────
-
-/** Parse RETRY_INTERVALS_DAYS env var, falling back to defaults. */
-export function parseIntervalDays(raw: string | undefined): number[] {
-  if (!raw) return DEFAULT_INTERVALS_DAYS;
-  const parsed = raw
-    .split(',')
-    .map((s) => parseInt(s.trim(), 10))
-    .filter((n) => !isNaN(n) && n > 0);
-  if (parsed.length === 0) return DEFAULT_INTERVALS_DAYS;
-  // Cap to MAX_RETRY_ATTEMPTS entries
-  return parsed.slice(0, MAX_RETRY_ATTEMPTS);
+export function getRedisConnection(): IORedis {
+  if (!_connection) {
+    const redisUrl = process.env.REDIS_URL ?? 'redis://localhost:6379';
+    _connection = new IORedis(redisUrl, { maxRetriesPerRequest: null });
+    _connection.on('error', (err) => logger.error('[redis] connection error', { err }));
+  }
+  return _connection;
 }
 
-/** Build the ioredis connection options from a redis:// URL string. */
-function connectionOptionsFromUrl(url: string): ConnectionOptions {
-  const parsed = new URL(url);
-  const opts: ConnectionOptions = {
-    host: parsed.hostname || 'localhost',
-    port: parsed.port ? parseInt(parsed.port, 10) : 6379,
-    // BullMQ connects with lazyConnect so we pass credentials explicitly
-    ...(parsed.password ? { password: parsed.password } : {}),
-    ...(parsed.username && parsed.username !== '' ? { username: parsed.username } : {}),
-    ...(parsed.pathname && parsed.pathname !== '/' ? { db: parseInt(parsed.pathname.slice(1), 10) || 0 } : {}),
-  };
-  return opts;
-}
-
-// ─── Public API ───────────────────────────────────────────────────────────────
-
-/**
- * Initialise the BullMQ queue and worker singletons.
- * Must be called once at process start when REDIS_URL is configured.
- * Safe to call multiple times — subsequent calls are no-ops.
- */
-export function initRetryQueue(redisUrl: string): void {
-  if (_queue) return; // already initialised
-
-  _redisConnection = connectionOptionsFromUrl(redisUrl);
-
-  _queue = new Queue<RetryJobData>(RETRY_QUEUE_NAME, {
-    connection: _redisConnection,
-    defaultJobOptions: {
-      // BullMQ's built-in retry is disabled — we manage retries explicitly in
-      // the DB-level schedule so the queue acts as a delayed job runner only.
-      attempts: 1,
-      removeOnComplete: { age: 60 * 60 * 24 * 30 }, // keep for 30 days
-      removeOnFail: { age: 60 * 60 * 24 * 30 },
-    },
-  });
-
-  _worker = new Worker<RetryJobData>(
-    RETRY_QUEUE_NAME,
-    processRetryJob,
-    { connection: _redisConnection },
-  );
-
-  _worker.on('failed', (job, err) => {
-    logger.error({
-      event: 'retry_queue.worker_error',
-      jobId: job?.id,
-      error: err instanceof Error ? err.message : String(err),
+export function getRetryQueue(): Queue<RetryJobData> {
+  if (!_queue) {
+    _queue = new Queue<RetryJobData>(QUEUE_NAME, {
+      connection: getRedisConnection(),
+      defaultJobOptions: {
+        removeOnComplete: 200,
+        removeOnFail: 500,
+        attempts: 1, // BullMQ-level retries disabled; we schedule each attempt as a separate job
+      },
     });
-  });
-
-  logger.info({ event: 'retry_queue.initialised', queueName: RETRY_QUEUE_NAME });
+  }
+  return _queue;
 }
 
+// ─── Enqueue retries ─────────────────────────────────────────────────────────
+
 /**
- * Schedule up to MAX_RETRY_ATTEMPTS delayed jobs for a failed payment.
- * Creates one `payment_retries` DB row per attempt (PENDING status).
+ * Schedule up to MAX_RETRIES retry jobs for a failed payment.
+ * Idempotent: skips scheduling if pending retries already exist for this pair.
  *
- * Idempotent: if rows already exist for this (subscriber, merchant) pair
- * with any status other than CANCELLED, scheduling is skipped.
+ * @returns array of created PaymentRetryRecord ids
  */
-export async function scheduleRetries(
+export async function enqueueRetries(
   subscriber: string,
   merchant: string,
   amount: string,
   token: string,
-): Promise<void> {
-  if (!_queue) {
-    logger.warn({ event: 'retry_queue.not_initialised', subscriber, merchant });
-    return;
-  }
-
-  // Guard: do not re-schedule if PENDING/PROCESSING/SUCCEEDED rows already exist
-  const existing = await prisma.paymentRetry.findFirst({
-    where: {
+): Promise<number[]> {
+  // Idempotency: don't double-schedule if pending retries already exist
+  const existingPending = await getRawRetries(subscriber, merchant);
+  const hasPending = existingPending.some((r) => r.status === 'pending');
+  if (hasPending) {
+    logger.warn('[retryQueue] pending retries already exist — skipping re-enqueue', {
       subscriber,
       merchant,
-      status: { in: ['PENDING', 'PROCESSING', 'SUCCEEDED'] },
-    },
-  });
-
-  if (existing) {
-    logger.debug({ event: 'retry_queue.skip_duplicate', subscriber, merchant });
-    return;
+    });
+    return [];
   }
 
-  const intervalDays = parseIntervalDays(process.env.RETRY_INTERVALS_DAYS);
-  const now = new Date();
+  const delays = getRetryDelays();
+  const now = Date.now();
+  const queue = getRetryQueue();
+  const createdIds: number[] = [];
 
-  for (let i = 0; i < Math.min(intervalDays.length, MAX_RETRY_ATTEMPTS); i++) {
+  for (let i = 0; i < Math.min(MAX_RETRIES, delays.length); i++) {
+    const delayMs = delays[i];
+    const scheduledAt = new Date(now + delayMs);
     const attemptNumber = i + 1;
-    const delayMs = intervalDays[i] * 24 * 60 * 60 * 1000;
-    const scheduledAt = new Date(now.getTime() + delayMs);
 
-    const jobData: RetryJobData = { subscriber, merchant, token, amount, attemptNumber };
+    // Insert DB row first (without job_id — we update after enqueueing)
+    const row = await createRetryRecord({
+      subscriber,
+      merchant,
+      amount,
+      token,
+      attemptNumber,
+      scheduledAt,
+    });
 
-    // Add delayed job to BullMQ
-    const job = await _queue.add(
-      `retry:${subscriber}:${merchant}:${attemptNumber}`,
+    // Add job to BullMQ with the configured delay
+    const jobData: RetryJobData = {
+      subscriber,
+      merchant,
+      amount,
+      token,
+      attemptNumber,
+      retryId: row.id,
+    };
+
+    const job = await queue.add(
+      `retry-${subscriber}-${merchant}-${attemptNumber}`,
       jobData,
       { delay: delayMs },
     );
 
-    // Persist to DB — upsert so re-runs are idempotent
-    await prisma.paymentRetry.upsert({
-      where: {
-        subscriber_merchant_attempt: { subscriber, merchant, attemptNumber },
-      },
-      create: {
-        subscriber,
-        merchant,
-        token,
-        amount,
-        attemptNumber,
-        scheduledAt,
-        status: 'PENDING',
-        jobId: job.id ?? null,
-      },
-      update: {
-        // Only update if currently CANCELLED (re-schedule allowed)
-        jobId: job.id ?? null,
-        scheduledAt,
-        status: 'PENDING',
-        errorMessage: null,
-        executedAt: null,
-      },
-    });
+    // Back-fill the jobId on the DB row
+    await updateRetryRecord(row.id, { jobId: job.id ?? null });
 
-    logger.info({
-      event: 'retry_queue.scheduled',
-      subscriber,
-      merchant,
+    createdIds.push(row.id);
+    logger.info('[retryQueue] scheduled retry', {
+      retryId: row.id,
+      jobId: job.id,
       attemptNumber,
       scheduledAt: scheduledAt.toISOString(),
-      jobId: job.id,
+      subscriber,
+      merchant,
     });
   }
+
+  return createdIds;
 }
 
+// ─── Cancel retries ───────────────────────────────────────────────────────────
+
 /**
- * Cancel all PENDING retry jobs for a (subscriber, merchant) pair.
- * Marks DB rows as CANCELLED and removes the BullMQ jobs.
- * Returns the number of jobs cancelled.
+ * Cancel all pending retry jobs for a subscription pair.
+ * Removes jobs from BullMQ and marks DB rows as 'cancelled'.
  */
-export async function cancelRetries(subscriber: string, merchant: string): Promise<number> {
-  const pendingRows = await prisma.paymentRetry.findMany({
-    where: { subscriber, merchant, status: 'PENDING' },
-  });
+export async function cancelRetries(subscriber: string, merchant: string): Promise<void> {
+  const retries = await getRawRetries(subscriber, merchant);
+  const pending = retries.filter((r) => r.status === 'pending');
+  const queue = getRetryQueue();
 
-  if (pendingRows.length === 0) return 0;
-
-  let cancelled = 0;
-  for (const row of pendingRows) {
-    // Remove from queue if job ID is known
-    if (row.jobId && _queue) {
+  for (const retry of pending) {
+    if (retry.jobId) {
       try {
-        const job = await _queue.getJob(row.jobId);
-        if (job) await job.remove();
+        const job = await Job.fromId<RetryJobData>(queue, retry.jobId);
+        await job?.remove();
       } catch (err) {
-        // Job may have already been dequeued; log and continue
-        logger.warn({
-          event: 'retry_queue.cancel_job_not_found',
-          jobId: row.jobId,
-          error: err instanceof Error ? err.message : String(err),
+        logger.warn('[retryQueue] could not remove BullMQ job', {
+          jobId: retry.jobId,
+          retryId: retry.id,
+          err,
         });
       }
     }
-
-    await prisma.paymentRetry.update({
-      where: { id: row.id },
-      data: { status: 'CANCELLED' },
-    });
-
-    cancelled++;
+    await updateRetryRecord(retry.id, { status: 'cancelled' });
   }
 
-  logger.info({ event: 'retry_queue.cancelled', subscriber, merchant, count: cancelled });
-  return cancelled;
+  logger.info('[retryQueue] cancelled retries', { subscriber, merchant, count: pending.length });
 }
 
-/**
- * Gracefully shut down the worker and queue (call on process exit).
- */
-export async function closeRetryQueue(): Promise<void> {
-  await _worker?.close();
-  await _queue?.close();
-  _worker = null;
-  _queue = null;
-  logger.info({ event: 'retry_queue.closed' });
-}
-
-// ─── Job processor ────────────────────────────────────────────────────────────
+// ─── Job processor ───────────────────────────────────────────────────────────
 
 /**
- * BullMQ job processor — executes a single retry attempt.
- *
- * Strategy: The backend does not hold the merchant's operator key, so the
- * "retry" here means notifying the merchant webhook that a retry is due and
- * marking the subscription for review. If a payment.retry webhook is
- * delivered, the merchant's system can trigger execute_payment.
- *
- * The DB row is updated to reflect the outcome.
+ * Process a single retry job:
+ *   1. Mark attempt in DB (attemptedAt = now, status = 'failed' tentatively).
+ *   2. Call merchant's retry webhook.
+ *   3. On webhook success → mark 'succeeded', cancel remaining pending retries.
+ *   4. If this is the last attempt and still failing → emit max_retries_exceeded.
  */
-async function processRetryJob(job: Job<RetryJobData>): Promise<void> {
-  const { subscriber, merchant, token, amount, attemptNumber } = job.data;
+export async function processRetryJob(job: Job<RetryJobData>): Promise<void> {
+  const { subscriber, merchant, amount, token, attemptNumber, retryId } = job.data;
 
-  logger.info({
-    event: 'retry_queue.processing',
+  logger.info('[retryQueue] processing retry job', {
     jobId: job.id,
+    retryId,
+    attemptNumber,
     subscriber,
     merchant,
-    attemptNumber,
   });
 
-  // Mark as PROCESSING
-  await prisma.paymentRetry.updateMany({
-    where: { subscriber, merchant, attemptNumber, status: 'PENDING' },
-    data: { status: 'PROCESSING' },
-  });
-
-  const executedAt = new Date();
+  // Mark as in-progress (set attemptedAt)
+  await updateRetryRecord(retryId, { attemptedAt: new Date() });
 
   try {
-    // Notify merchant webhook about the retry attempt
+    // Call the merchant's registered retry webhook
     await notifyWebhooks({
-      event: 'payment.failed',     // extends existing webhook contract
+      event: 'payment.failed',
       subscriber,
       merchant,
       amount,
       timestamp: Date.now(),
-      traceContext: JSON.stringify({
-        retryAttempt: attemptNumber,
-        maxAttempts: MAX_RETRY_ATTEMPTS,
-        token,
-      }),
+      txHash: undefined,
     });
 
-    // Mark as SUCCEEDED (webhook delivered)
-    await prisma.paymentRetry.updateMany({
-      where: { subscriber, merchant, attemptNumber, status: 'PROCESSING' },
-      data: { status: 'SUCCEEDED', executedAt },
-    });
+    // Webhook delivery succeeded — mark this retry as succeeded
+    await updateRetryRecord(retryId, { status: 'succeeded' });
 
-    logger.info({
-      event: 'retry_queue.attempt_succeeded',
+    // Cancel all remaining pending retries for this subscription
+    const remaining = await getRawRetries(subscriber, merchant);
+    const pendingAfterThis = remaining.filter(
+      (r) => r.status === 'pending' && r.id !== retryId,
+    );
+    for (const r of pendingAfterThis) {
+      const queue = getRetryQueue();
+      if (r.jobId) {
+        try {
+          const j = await Job.fromId<RetryJobData>(queue, r.jobId);
+          await j?.remove();
+        } catch {
+          // best-effort
+        }
+      }
+      await updateRetryRecord(r.id, { status: 'cancelled' });
+    }
+
+    logger.info('[retryQueue] retry succeeded — cancelled remaining', {
       subscriber,
       merchant,
-      attemptNumber,
+      cancelledCount: pendingAfterThis.length,
     });
-
-    // After the last attempt succeeds, fire max_retries_exceeded webhook
-    if (attemptNumber >= MAX_RETRY_ATTEMPTS) {
-      await fireMaxRetriesExceeded(subscriber, merchant, token, amount);
-    }
   } catch (err) {
-    const errorMessage = err instanceof Error ? err.message : String(err);
+    const errorMsg = err instanceof Error ? err.message : String(err);
+    logger.error('[retryQueue] retry job failed', { retryId, attemptNumber, err: errorMsg });
 
-    logger.error({
-      event: 'retry_queue.attempt_failed',
-      jobId: job.id,
-      subscriber,
-      merchant,
-      attemptNumber,
-      error: errorMessage,
+    await updateRetryRecord(retryId, {
+      status: 'failed',
+      error: errorMsg,
     });
 
-    await prisma.paymentRetry.updateMany({
-      where: { subscriber, merchant, attemptNumber, status: 'PROCESSING' },
-      data: { status: 'FAILED', executedAt, errorMessage },
-    });
-
-    // Still fire max_retries_exceeded if this was the last slot
-    if (attemptNumber >= MAX_RETRY_ATTEMPTS) {
-      await fireMaxRetriesExceeded(subscriber, merchant, token, amount).catch((e) =>
-        logger.error({ event: 'retry_queue.max_retries_webhook_error', error: String(e) }),
-      );
+    // Check whether max retries is exceeded
+    if (attemptNumber >= MAX_RETRIES) {
+      await emitMaxRetriesExceeded(subscriber, merchant, amount, token);
     }
-
-    throw err; // let BullMQ record the job as failed
   }
 }
 
+// ─── Max retries exceeded ────────────────────────────────────────────────────
+
 /**
- * Fire the `max_retries_exceeded` webhook event to all merchant endpoints.
- * Called after the final retry attempt regardless of outcome.
+ * Emit the max_retries_exceeded webhook event.
+ * Uses the existing notifyWebhooks infrastructure but with the 'payment.failed'
+ * event type plus extra metadata in the payload so merchants can distinguish it.
  */
-async function fireMaxRetriesExceeded(
+export async function emitMaxRetriesExceeded(
   subscriber: string,
   merchant: string,
-  token: string,
   amount: string,
+  token: string,
 ): Promise<void> {
-  logger.info({ event: 'retry_queue.max_retries_exceeded', subscriber, merchant });
-
-  await notifyWebhooks({
-    event: 'payment.failed',
+  logger.warn('[retryQueue] max retries exceeded — emitting max_retries_exceeded webhook', {
     subscriber,
     merchant,
-    amount,
-    timestamp: Date.now(),
-    traceContext: JSON.stringify({
-      eventType: 'max_retries_exceeded',
-      maxAttempts: MAX_RETRY_ATTEMPTS,
-      token,
-    }),
   });
+
+  try {
+    await notifyWebhooks({
+      event: 'payment.failed',
+      subscriber,
+      merchant,
+      amount,
+      timestamp: Date.now(),
+      // Extra context surfaced in the payload JSON so merchants know this is the escalation signal
+      txHash: 'max_retries_exceeded',
+    });
+  } catch (err) {
+    logger.error('[retryQueue] failed to emit max_retries_exceeded webhook', { err });
+  }
 }
 
-// ─── Exported for testing ─────────────────────────────────────────────────────
+// ─── Worker startup ───────────────────────────────────────────────────────────
 
-/** Exposed for unit tests only. */
-export { processRetryJob as _processRetryJob };
+/**
+ * Start the BullMQ worker that processes retry jobs.
+ * Call this once during server startup (after Redis is available).
+ * Returns the worker instance so callers can shut it down gracefully.
+ */
+export function startRetryWorker(): Worker<RetryJobData> {
+  if (_worker) return _worker;
+
+  _worker = new Worker<RetryJobData>(
+    QUEUE_NAME,
+    processRetryJob,
+    {
+      connection: getRedisConnection(),
+      concurrency: 5,
+    },
+  );
+
+  _worker.on('completed', (job) => {
+    logger.info('[retryWorker] job completed', { jobId: job.id });
+  });
+
+  _worker.on('failed', (job, err) => {
+    logger.error('[retryWorker] job failed', { jobId: job?.id, err });
+  });
+
+  logger.info('[retryWorker] started');
+  return _worker;
+}
+
+/**
+ * Gracefully shut down the worker and close the Redis connection.
+ * Call during server shutdown.
+ */
+export async function shutdownRetryWorker(): Promise<void> {
+  if (_worker) {
+    await _worker.close();
+    _worker = null;
+  }
+  if (_queue) {
+    await _queue.close();
+    _queue = null;
+  }
+  if (_connection) {
+    await _connection.quit();
+    _connection = null;
+  }
+  logger.info('[retryWorker] shut down');
+}
+
+// ─── DB helpers (raw SQL since PaymentRetry not in generated client) ──────────
+
+export async function getRawRetries(
+  subscriber: string,
+  merchant: string,
+): Promise<PaymentRetryRecord[]> {
+  const rows = await prisma.$queryRaw<PaymentRetryRecord[]>`
+    SELECT
+      id,
+      subscriber,
+      merchant,
+      amount,
+      token,
+      attempt_number    AS "attemptNumber",
+      status,
+      scheduled_at      AS "scheduledAt",
+      attempted_at      AS "attemptedAt",
+      error,
+      job_id            AS "jobId",
+      created_at        AS "createdAt",
+      updated_at        AS "updatedAt"
+    FROM payment_retries
+    WHERE subscriber = ${subscriber}
+      AND merchant   = ${merchant}
+    ORDER BY attempt_number ASC
+  `;
+  return rows;
+}
+
+interface CreateRetryInput {
+  subscriber: string;
+  merchant: string;
+  amount: string;
+  token: string;
+  attemptNumber: number;
+  scheduledAt: Date;
+}
+
+async function createRetryRecord(input: CreateRetryInput): Promise<PaymentRetryRecord> {
+  const rows = await prisma.$queryRaw<PaymentRetryRecord[]>`
+    INSERT INTO payment_retries
+      (subscriber, merchant, amount, token, attempt_number, status, scheduled_at, updated_at)
+    VALUES
+      (${input.subscriber}, ${input.merchant}, ${input.amount}, ${input.token},
+       ${input.attemptNumber}, 'pending', ${input.scheduledAt}, now())
+    RETURNING
+      id,
+      subscriber,
+      merchant,
+      amount,
+      token,
+      attempt_number    AS "attemptNumber",
+      status,
+      scheduled_at      AS "scheduledAt",
+      attempted_at      AS "attemptedAt",
+      error,
+      job_id            AS "jobId",
+      created_at        AS "createdAt",
+      updated_at        AS "updatedAt"
+  `;
+  return rows[0];
+}
+
+interface UpdateRetryInput {
+  status?: RetryStatus;
+  attemptedAt?: Date;
+  error?: string;
+  jobId?: string | null;
+}
+
+async function updateRetryRecord(id: number, updates: UpdateRetryInput): Promise<void> {
+  // Build SET clause dynamically to avoid overwriting unset fields
+  const setClauses: string[] = ['updated_at = now()'];
+  const values: unknown[] = [];
+  let idx = 1;
+
+  if (updates.status !== undefined) {
+    setClauses.push(`status = $${idx++}`);
+    values.push(updates.status);
+  }
+  if (updates.attemptedAt !== undefined) {
+    setClauses.push(`attempted_at = $${idx++}`);
+    values.push(updates.attemptedAt);
+  }
+  if (updates.error !== undefined) {
+    setClauses.push(`error = $${idx++}`);
+    values.push(updates.error);
+  }
+  if (updates.jobId !== undefined) {
+    setClauses.push(`job_id = $${idx++}`);
+    values.push(updates.jobId);
+  }
+
+  values.push(id);
+  const sql = `UPDATE payment_retries SET ${setClauses.join(', ')} WHERE id = $${idx}`;
+  await prisma.$executeRawUnsafe(sql, ...values);
+}

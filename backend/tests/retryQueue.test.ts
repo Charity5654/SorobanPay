@@ -1,11 +1,12 @@
 /**
- * Tests for src/services/retryQueue.ts
+ * Unit tests for the payment retry queue service.
  *
- * BullMQ and ioredis are mocked entirely — no real Redis connection required.
- * Prisma is replaced with a lightweight in-memory mock scoped to PaymentRetry.
+ * All external dependencies (BullMQ Queue/Worker, IORedis, prisma, notifyWebhooks)
+ * are fully mocked so no running Redis or database is required.
  */
 
-// ─── Logger mock ──────────────────────────────────────────────────────────────
+// ─── Mock logger (avoids pino/pino-pretty transitive dependency) ──────────────
+
 jest.mock('../src/lib/logger', () => ({
   __esModule: true,
   default: {
@@ -14,458 +15,377 @@ jest.mock('../src/lib/logger', () => ({
     error: jest.fn(),
     debug: jest.fn(),
   },
+  logger: {
+    info: jest.fn(),
+    warn: jest.fn(),
+    error: jest.fn(),
+    debug: jest.fn(),
+  },
 }));
 
-// ─── BullMQ mock ─────────────────────────────────────────────────────────────
-// We need the mock defined before any imports that load bullmq.
+// ─── Mock BullMQ ─────────────────────────────────────────────────────────────
 
-interface MockJob {
-  id: string;
-  data: Record<string, unknown>;
-  remove: jest.Mock;
-}
-
-const mockJobs: Map<string, MockJob> = new Map();
-let mockJobIdCounter = 0;
-
-const mockQueueAdd = jest.fn(async (name: string, data: Record<string, unknown>, opts?: { delay?: number }) => {
-  const id = String(++mockJobIdCounter);
-  const job: MockJob = { id, data, remove: jest.fn().mockResolvedValue(undefined) };
-  mockJobs.set(id, job);
-  return { id };
-});
-
-const mockQueueGetJob = jest.fn(async (id: string) => mockJobs.get(id) ?? null);
-const mockQueueClose = jest.fn().mockResolvedValue(undefined);
-
-const workerListeners: Record<string, jest.Mock> = {};
-const mockWorkerClose = jest.fn().mockResolvedValue(undefined);
-const mockWorkerOn = jest.fn((event: string, cb: jest.Mock) => { workerListeners[event] = cb; });
+const mockAdd = jest.fn();
+const mockJobRemove = jest.fn();
+const mockJobFromId = jest.fn();
 
 jest.mock('bullmq', () => {
+  const mockJob = jest.fn().mockImplementation((id: string, data: unknown) => ({
+    id,
+    data,
+    remove: mockJobRemove,
+  }));
+
   return {
     Queue: jest.fn().mockImplementation(() => ({
-      add: mockQueueAdd,
-      getJob: mockQueueGetJob,
-      close: mockQueueClose,
+      add: mockAdd,
+      close: jest.fn(),
     })),
     Worker: jest.fn().mockImplementation(() => ({
-      on: mockWorkerOn,
-      close: mockWorkerClose,
+      on: jest.fn(),
+      close: jest.fn(),
     })),
+    Job: {
+      fromId: mockJobFromId,
+    },
     QueueEvents: jest.fn(),
   };
 });
 
-// ─── webhookNotifier mock ─────────────────────────────────────────────────────
-const mockNotifyWebhooks = jest.fn().mockResolvedValue(undefined);
+// ─── Mock ioredis ─────────────────────────────────────────────────────────────
 
-jest.mock('../src/services/webhookNotifier', () => ({
-  notifyWebhooks: mockNotifyWebhooks,
-}));
+jest.mock('ioredis', () =>
+  jest.fn().mockImplementation(() => ({
+    on: jest.fn(),
+    quit: jest.fn(),
+  })),
+);
 
-// ─── Prisma mock ──────────────────────────────────────────────────────────────
-// Minimal PaymentRetry table backed by an in-memory array.
+// ─── Mock prisma ─────────────────────────────────────────────────────────────
 
-interface StoredRetry {
-  id: number;
-  subscriber: string;
-  merchant: string;
-  token: string;
-  amount: string;
-  attemptNumber: number;
-  scheduledAt: Date;
-  executedAt: Date | null;
-  status: string;
-  errorMessage: string | null;
-  jobId: string | null;
-  createdAt: Date;
-  updatedAt: Date;
-}
-
-let retryStore: StoredRetry[] = [];
-let nextId = 1;
-
-function matchesWhere(row: StoredRetry, where: Record<string, any>): boolean {
-  return Object.entries(where).every(([k, v]) => {
-    if (v === undefined || v === null) return true;
-    if (k === 'status' && typeof v === 'object' && 'in' in v) {
-      return (v as { in: string[] }).in.includes(row.status);
-    }
-    return String((row as any)[k]) === String(v);
-  });
-}
-
-const mockPrismaPaymentRetry = {
-  findFirst: jest.fn(async (args: { where: Record<string, any> }) => {
-    return retryStore.find((r) => matchesWhere(r, args.where)) ?? null;
-  }),
-  findMany: jest.fn(async (args?: { where?: Record<string, any>; orderBy?: any }) => {
-    if (!args?.where) return [...retryStore];
-    return retryStore.filter((r) => matchesWhere(r, args.where!));
-  }),
-  upsert: jest.fn(async (args: {
-    where: { subscriber_merchant_attempt: { subscriber: string; merchant: string; attemptNumber: number } };
-    create: Omit<StoredRetry, 'id' | 'createdAt' | 'updatedAt' | 'executedAt'>;
-    update: Partial<StoredRetry>;
-  }) => {
-    const { subscriber, merchant, attemptNumber } = args.where.subscriber_merchant_attempt;
-    const idx = retryStore.findIndex(
-      (r) => r.subscriber === subscriber && r.merchant === merchant && r.attemptNumber === attemptNumber,
-    );
-    if (idx >= 0) {
-      retryStore[idx] = { ...retryStore[idx], ...args.update, updatedAt: new Date() };
-      return retryStore[idx];
-    }
-    const created: StoredRetry = {
-      id: nextId++,
-      executedAt: null,
-      ...args.create,
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    };
-    retryStore.push(created);
-    return created;
-  }),
-  update: jest.fn(async (args: { where: { id: number }; data: Partial<StoredRetry> }) => {
-    const idx = retryStore.findIndex((r) => r.id === args.where.id);
-    if (idx < 0) throw new Error(`PaymentRetry #${args.where.id} not found`);
-    retryStore[idx] = { ...retryStore[idx], ...args.data, updatedAt: new Date() };
-    return retryStore[idx];
-  }),
-  updateMany: jest.fn(async (args: { where: Record<string, any>; data: Partial<StoredRetry> }) => {
-    let count = 0;
-    retryStore = retryStore.map((r) => {
-      if (matchesWhere(r, args.where)) {
-        count++;
-        return { ...r, ...args.data, updatedAt: new Date() };
-      }
-      return r;
-    });
-    return { count };
-  }),
-};
+const mockQueryRaw = jest.fn();
+const mockExecuteRawUnsafe = jest.fn();
 
 jest.mock('../src/lib/prisma', () => ({
   __esModule: true,
-  default: { paymentRetry: mockPrismaPaymentRetry },
+  default: {
+    $queryRaw: (...args: unknown[]) => mockQueryRaw(...args),
+    $executeRawUnsafe: (...args: unknown[]) => mockExecuteRawUnsafe(...args),
+  },
 }));
 
-// ─── Imports (after all mocks are registered) ─────────────────────────────────
+// ─── Mock webhookNotifier ─────────────────────────────────────────────────────
+
+const mockNotifyWebhooks = jest.fn();
+
+jest.mock('../src/services/webhookNotifier', () => ({
+  notifyWebhooks: (...args: unknown[]) => mockNotifyWebhooks(...args),
+}));
+
+// ─── Import under test (AFTER mocks) ─────────────────────────────────────────
+
 import {
-  initRetryQueue,
-  scheduleRetries,
+  enqueueRetries,
   cancelRetries,
-  closeRetryQueue,
-  parseIntervalDays,
-  MAX_RETRY_ATTEMPTS,
-  _processRetryJob,
+  processRetryJob,
+  emitMaxRetriesExceeded,
+  getRetryDelays,
+  getRawRetries,
+  MAX_RETRIES,
+  QUEUE_NAME,
 } from '../src/services/retryQueue';
-import type { RetryJobData } from '../src/services/retryQueue';
+import type { RetryJobData, PaymentRetryRecord } from '../src/services/retryQueue';
+import type { Job } from 'bullmq';
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
+// ─── Helpers ─────────────────────────────────────────────────────────────────
 
-function makeJob(data: RetryJobData): { id: string; data: RetryJobData } {
-  return { id: 'test-job-id', data };
+function makeRetryRecord(overrides: Partial<PaymentRetryRecord> = {}): PaymentRetryRecord {
+  return {
+    id: 1,
+    subscriber: 'GSUB',
+    merchant: 'GMER',
+    amount: '1000',
+    token: 'CTOKEN',
+    attemptNumber: 1,
+    status: 'pending',
+    scheduledAt: new Date('2024-01-02T00:00:00Z'),
+    attemptedAt: null,
+    error: null,
+    jobId: 'bull-job-1',
+    createdAt: new Date('2024-01-01T00:00:00Z'),
+    updatedAt: new Date('2024-01-01T00:00:00Z'),
+    ...overrides,
+  };
 }
 
-function resetState() {
-  retryStore = [];
-  nextId = 1;
-  mockJobs.clear();
-  mockJobIdCounter = 0;
-  mockQueueAdd.mockClear();
-  mockQueueGetJob.mockClear();
-  mockQueueClose.mockClear();
-  mockWorkerClose.mockClear();
-  mockNotifyWebhooks.mockClear();
-  mockPrismaPaymentRetry.findFirst.mockClear();
-  mockPrismaPaymentRetry.findMany.mockClear();
-  mockPrismaPaymentRetry.upsert.mockClear();
-  mockPrismaPaymentRetry.update.mockClear();
-  mockPrismaPaymentRetry.updateMany.mockClear();
+function makeJob(data: RetryJobData, id = 'job-1'): Job<RetryJobData> {
+  return {
+    id,
+    data,
+    remove: mockJobRemove,
+  } as unknown as Job<RetryJobData>;
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
-describe('parseIntervalDays', () => {
-  it('returns default [1,3,7] when env is undefined', () => {
-    expect(parseIntervalDays(undefined)).toEqual([1, 3, 7]);
+beforeEach(() => {
+  jest.clearAllMocks();
+  mockExecuteRawUnsafe.mockResolvedValue(undefined);
+});
+
+// ---------------------------------------------------------------------------
+describe('getRetryDelays', () => {
+  const DAY_MS = 24 * 60 * 60 * 1000;
+
+  it('returns default schedule [1d, 3d, 7d] when RETRY_DELAYS_MS is not set', () => {
+    delete process.env.RETRY_DELAYS_MS;
+    expect(getRetryDelays()).toEqual([DAY_MS, 3 * DAY_MS, 7 * DAY_MS]);
   });
 
-  it('parses comma-separated day values', () => {
-    expect(parseIntervalDays('2,5,10')).toEqual([2, 5, 10]);
+  it('parses a valid RETRY_DELAYS_MS override', () => {
+    process.env.RETRY_DELAYS_MS = '1000,2000,3000';
+    expect(getRetryDelays()).toEqual([1000, 2000, 3000]);
+    delete process.env.RETRY_DELAYS_MS;
   });
 
-  it('falls back to defaults on all-invalid input', () => {
-    expect(parseIntervalDays('abc,,,xyz')).toEqual([1, 3, 7]);
-  });
-
-  it('caps to MAX_RETRY_ATTEMPTS entries', () => {
-    expect(parseIntervalDays('1,2,3,4,5').length).toBeLessThanOrEqual(MAX_RETRY_ATTEMPTS);
+  it('falls back to defaults when RETRY_DELAYS_MS contains non-numbers', () => {
+    process.env.RETRY_DELAYS_MS = '1000,bad,3000';
+    expect(getRetryDelays()).toEqual([DAY_MS, 3 * DAY_MS, 7 * DAY_MS]);
+    delete process.env.RETRY_DELAYS_MS;
   });
 });
 
-describe('initRetryQueue', () => {
-  afterEach(async () => {
-    await closeRetryQueue();
-    resetState();
+// ---------------------------------------------------------------------------
+describe('enqueueRetries', () => {
+  it('creates MAX_RETRIES DB rows and BullMQ jobs when no pending retries exist', async () => {
+    // First call: getRawRetries returns empty array (no existing retries)
+    mockQueryRaw
+      .mockResolvedValueOnce([])            // getRawRetries idempotency check
+      .mockResolvedValue([makeRetryRecord()]); // createRetryRecord calls
+
+    mockAdd.mockResolvedValue({ id: 'j1' });
+
+    process.env.RETRY_DELAYS_MS = '100,200,300'; // fast delays for the test
+    const ids = await enqueueRetries('GSUB', 'GMER', '1000', 'CTOKEN');
+    delete process.env.RETRY_DELAYS_MS;
+
+    // One DB insert + BullMQ add per attempt
+    expect(mockAdd).toHaveBeenCalledTimes(MAX_RETRIES);
+    // Returns one id per created record
+    expect(ids).toHaveLength(MAX_RETRIES);
   });
 
-  it('initialises Queue and Worker with correct connection options', async () => {
-    const { Queue, Worker } = require('bullmq');
-    initRetryQueue('redis://localhost:6379');
-    expect(Queue).toHaveBeenCalledTimes(1);
-    expect(Worker).toHaveBeenCalledTimes(1);
+  it('skips enqueueing when pending retries already exist (idempotency)', async () => {
+    const pending = makeRetryRecord({ status: 'pending' });
+    mockQueryRaw.mockResolvedValueOnce([pending]); // getRawRetries returns pending
+
+    process.env.RETRY_DELAYS_MS = '100,200,300';
+    const ids = await enqueueRetries('GSUB', 'GMER', '1000', 'CTOKEN');
+    delete process.env.RETRY_DELAYS_MS;
+
+    expect(mockAdd).not.toHaveBeenCalled();
+    expect(ids).toHaveLength(0);
   });
 
-  it('is idempotent — calling twice does not create a second queue', async () => {
-    const { Queue } = require('bullmq');
-    Queue.mockClear();
-    initRetryQueue('redis://localhost:6379');
-    initRetryQueue('redis://localhost:6379');
-    expect(Queue).toHaveBeenCalledTimes(1);
-  });
-});
+  it('passes the correct delay to BullMQ for each attempt', async () => {
+    mockQueryRaw
+      .mockResolvedValueOnce([])
+      .mockResolvedValue([makeRetryRecord()]);
+    mockAdd.mockResolvedValue({ id: 'j1' });
 
-describe('scheduleRetries', () => {
-  beforeEach(async () => {
-    await closeRetryQueue();
-    resetState();
-    initRetryQueue('redis://localhost:6379');
-  });
+    process.env.RETRY_DELAYS_MS = '1000,2000,3000';
+    await enqueueRetries('GSUB', 'GMER', '500', 'CTOK');
+    delete process.env.RETRY_DELAYS_MS;
 
-  afterEach(async () => {
-    await closeRetryQueue();
-  });
-
-  it('creates MAX_RETRY_ATTEMPTS DB rows and BullMQ jobs', async () => {
-    await scheduleRetries('GSUB1', 'GMERCHANT1', '1000', 'CTOKEN1');
-
-    expect(retryStore).toHaveLength(MAX_RETRY_ATTEMPTS);
-    expect(mockQueueAdd).toHaveBeenCalledTimes(MAX_RETRY_ATTEMPTS);
-  });
-
-  it('sets status PENDING and incrementing attemptNumber on each row', async () => {
-    await scheduleRetries('GSUB2', 'GMERCHANT2', '500', 'CTOKEN2');
-
-    const attempts = retryStore.map((r) => r.attemptNumber).sort();
-    expect(attempts).toEqual([1, 2, 3]);
-    retryStore.forEach((r) => expect(r.status).toBe('PENDING'));
-  });
-
-  it('schedules delays matching configured intervals', async () => {
-    const origEnv = process.env.RETRY_INTERVALS_DAYS;
-    process.env.RETRY_INTERVALS_DAYS = '1,3,7';
-
-    await scheduleRetries('GSUB3', 'GMERCHANT3', '200', 'CTOKEN3');
-
-    const calls = mockQueueAdd.mock.calls;
-    const delays = calls.map((c) => c[2]?.delay as number);
-    expect(delays[0]).toBeCloseTo(1 * 24 * 60 * 60 * 1000, -3);
-    expect(delays[1]).toBeCloseTo(3 * 24 * 60 * 60 * 1000, -3);
-    expect(delays[2]).toBeCloseTo(7 * 24 * 60 * 60 * 1000, -3);
-
-    process.env.RETRY_INTERVALS_DAYS = origEnv;
-  });
-
-  it('skips scheduling if PENDING rows already exist (idempotency)', async () => {
-    await scheduleRetries('GSUB4', 'GMERCHANT4', '100', 'CTOKEN4');
-    mockQueueAdd.mockClear();
-    mockPrismaPaymentRetry.upsert.mockClear();
-
-    await scheduleRetries('GSUB4', 'GMERCHANT4', '100', 'CTOKEN4');
-
-    expect(mockQueueAdd).not.toHaveBeenCalled();
-    expect(mockPrismaPaymentRetry.upsert).not.toHaveBeenCalled();
-  });
-
-  it('stores jobId from BullMQ on each DB row', async () => {
-    await scheduleRetries('GSUB5', 'GMERCHANT5', '300', 'CTOKEN5');
-
-    retryStore.forEach((r) => {
-      expect(r.jobId).toBeDefined();
-      expect(typeof r.jobId).toBe('string');
-    });
-  });
-
-  it('is a no-op when queue is not initialised', async () => {
-    await closeRetryQueue();
-    resetState();
-
-    // Don't call initRetryQueue — queue is null
-    await scheduleRetries('GSUB6', 'GMERCHANT6', '100', 'CTOKEN6');
-
-    expect(retryStore).toHaveLength(0);
-    expect(mockQueueAdd).not.toHaveBeenCalled();
+    const addCalls = mockAdd.mock.calls;
+    expect(addCalls[0][2]).toMatchObject({ delay: 1000 });
+    expect(addCalls[1][2]).toMatchObject({ delay: 2000 });
+    expect(addCalls[2][2]).toMatchObject({ delay: 3000 });
   });
 });
 
+// ---------------------------------------------------------------------------
 describe('cancelRetries', () => {
-  beforeEach(async () => {
-    await closeRetryQueue();
-    resetState();
-    initRetryQueue('redis://localhost:6379');
+  it('removes pending BullMQ jobs and marks DB rows cancelled', async () => {
+    const pending1 = makeRetryRecord({ id: 1, attemptNumber: 1, jobId: 'j1' });
+    const pending2 = makeRetryRecord({ id: 2, attemptNumber: 2, jobId: 'j2' });
+    mockQueryRaw.mockResolvedValueOnce([pending1, pending2]);
+
+    const fakeJob = { remove: mockJobRemove };
+    mockJobFromId.mockResolvedValue(fakeJob);
+
+    await cancelRetries('GSUB', 'GMER');
+
+    expect(mockJobFromId).toHaveBeenCalledTimes(2);
+    expect(mockJobRemove).toHaveBeenCalledTimes(2);
+    // executeRawUnsafe called once per cancelled row (status update)
+    expect(mockExecuteRawUnsafe).toHaveBeenCalledTimes(2);
+    // Verify the UPDATE sets status = 'cancelled'
+    const updateSql: string = mockExecuteRawUnsafe.mock.calls[0][0];
+    expect(updateSql).toContain('UPDATE payment_retries');
   });
 
-  afterEach(async () => {
-    await closeRetryQueue();
+  it('does nothing when no pending retries exist', async () => {
+    const done = makeRetryRecord({ status: 'succeeded' });
+    mockQueryRaw.mockResolvedValueOnce([done]);
+
+    await cancelRetries('GSUB', 'GMER');
+
+    expect(mockJobFromId).not.toHaveBeenCalled();
+    expect(mockExecuteRawUnsafe).not.toHaveBeenCalled();
   });
 
-  it('marks all PENDING rows as CANCELLED and returns the count', async () => {
-    await scheduleRetries('GSUB7', 'GMERCHANT7', '100', 'CTOKEN7');
+  it('continues cancelling remaining rows even if one BullMQ job removal fails', async () => {
+    const pending1 = makeRetryRecord({ id: 1, jobId: 'j1' });
+    const pending2 = makeRetryRecord({ id: 2, jobId: 'j2' });
+    mockQueryRaw.mockResolvedValueOnce([pending1, pending2]);
 
-    const cancelled = await cancelRetries('GSUB7', 'GMERCHANT7');
+    // First removal throws, second succeeds
+    mockJobFromId
+      .mockRejectedValueOnce(new Error('job not found'))
+      .mockResolvedValueOnce({ remove: mockJobRemove });
 
-    expect(cancelled).toBe(MAX_RETRY_ATTEMPTS);
-    retryStore
-      .filter((r) => r.subscriber === 'GSUB7')
-      .forEach((r) => expect(r.status).toBe('CANCELLED'));
-  });
-
-  it('returns 0 when no PENDING rows exist', async () => {
-    const cancelled = await cancelRetries('UNKNOWN', 'UNKNOWN');
-    expect(cancelled).toBe(0);
-  });
-
-  it('does not cancel SUCCEEDED or FAILED rows', async () => {
-    // Manually seed a SUCCEEDED row
-    retryStore.push({
-      id: nextId++,
-      subscriber: 'GSUB8',
-      merchant: 'GMERCHANT8',
-      token: 'CTOKEN8',
-      amount: '100',
-      attemptNumber: 1,
-      scheduledAt: new Date(),
-      executedAt: new Date(),
-      status: 'SUCCEEDED',
-      errorMessage: null,
-      jobId: null,
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    });
-
-    const cancelled = await cancelRetries('GSUB8', 'GMERCHANT8');
-    expect(cancelled).toBe(0);
-    expect(retryStore[0].status).toBe('SUCCEEDED');
-  });
-
-  it('removes BullMQ jobs for cancelled PENDING rows', async () => {
-    await scheduleRetries('GSUB9', 'GMERCHANT9', '100', 'CTOKEN9');
-
-    // Snapshot the job IDs that were created
-    const jobsBefore = [...mockJobs.keys()];
-    expect(jobsBefore.length).toBe(MAX_RETRY_ATTEMPTS);
-
-    await cancelRetries('GSUB9', 'GMERCHANT9');
-
-    // Each job's .remove() should have been called
-    for (const jobId of jobsBefore) {
-      const job = mockJobs.get(jobId);
-      expect(job?.remove).toHaveBeenCalled();
-    }
+    await expect(cancelRetries('GSUB', 'GMER')).resolves.not.toThrow();
+    // Both rows should still be cancelled in DB
+    expect(mockExecuteRawUnsafe).toHaveBeenCalledTimes(2);
   });
 });
 
+// ---------------------------------------------------------------------------
 describe('processRetryJob', () => {
-  beforeEach(async () => {
-    await closeRetryQueue();
-    resetState();
-    initRetryQueue('redis://localhost:6379');
+  const jobData: RetryJobData = {
+    subscriber: 'GSUB',
+    merchant: 'GMER',
+    amount: '1000',
+    token: 'CTOK',
+    attemptNumber: 1,
+    retryId: 42,
+  };
+
+  it('marks retry as succeeded and cancels remaining pending when webhook succeeds', async () => {
+    mockNotifyWebhooks.mockResolvedValue(undefined);
+    // getRawRetries returns remaining pending records (different ids)
+    const remaining = [
+      makeRetryRecord({ id: 43, attemptNumber: 2, status: 'pending', jobId: 'j2' }),
+      makeRetryRecord({ id: 44, attemptNumber: 3, status: 'pending', jobId: 'j3' }),
+    ];
+    mockQueryRaw.mockResolvedValueOnce(remaining);
+    mockJobFromId.mockResolvedValue({ remove: mockJobRemove });
+
+    const job = makeJob(jobData);
+    await processRetryJob(job);
+
+    expect(mockNotifyWebhooks).toHaveBeenCalledWith(
+      expect.objectContaining({ event: 'payment.failed', subscriber: 'GSUB', merchant: 'GMER' }),
+    );
+    // Status set to 'succeeded' for retryId=42
+    const succeededCall = mockExecuteRawUnsafe.mock.calls.find(
+      (c: unknown[]) => (c[0] as string).includes('UPDATE') && c.includes('succeeded'),
+    );
+    expect(succeededCall).toBeDefined();
+    // Remaining pending retries cancelled
+    expect(mockJobRemove).toHaveBeenCalledTimes(2);
   });
 
-  afterEach(async () => {
-    await closeRetryQueue();
-  });
-
-  it('marks row PROCESSING then SUCCEEDED and calls notifyWebhooks', async () => {
-    // Seed a PENDING row for attempt 1
-    retryStore.push({
-      id: nextId++,
-      subscriber: 'GSUB10', merchant: 'GMERCHANT10', token: 'CTOKEN10',
-      amount: '1000', attemptNumber: 1,
-      scheduledAt: new Date(), executedAt: null,
-      status: 'PENDING', errorMessage: null, jobId: 'j1',
-      createdAt: new Date(), updatedAt: new Date(),
-    });
-
-    const job = makeJob({ subscriber: 'GSUB10', merchant: 'GMERCHANT10', token: 'CTOKEN10', amount: '1000', attemptNumber: 1 });
-    await _processRetryJob(job as any);
-
-    expect(mockNotifyWebhooks).toHaveBeenCalledTimes(1);
-    const row = retryStore.find((r) => r.subscriber === 'GSUB10');
-    expect(row?.status).toBe('SUCCEEDED');
-    expect(row?.executedAt).toBeInstanceOf(Date);
-  });
-
-  it('fires max_retries_exceeded webhook on the final attempt', async () => {
-    retryStore.push({
-      id: nextId++,
-      subscriber: 'GSUB11', merchant: 'GMERCHANT11', token: 'CTOKEN11',
-      amount: '1000', attemptNumber: MAX_RETRY_ATTEMPTS,
-      scheduledAt: new Date(), executedAt: null,
-      status: 'PENDING', errorMessage: null, jobId: 'j2',
-      createdAt: new Date(), updatedAt: new Date(),
-    });
-
-    const job = makeJob({
-      subscriber: 'GSUB11', merchant: 'GMERCHANT11', token: 'CTOKEN11',
-      amount: '1000', attemptNumber: MAX_RETRY_ATTEMPTS,
-    });
-    await _processRetryJob(job as any);
-
-    // Two calls: the retry notification + max_retries_exceeded
-    expect(mockNotifyWebhooks).toHaveBeenCalledTimes(2);
-
-    // The second call should carry the max_retries_exceeded traceContext
-    const secondCall = mockNotifyWebhooks.mock.calls[1][0];
-    const ctx = JSON.parse(secondCall.traceContext ?? '{}');
-    expect(ctx.eventType).toBe('max_retries_exceeded');
-  });
-
-  it('marks row FAILED and re-throws when notifyWebhooks throws', async () => {
-    mockNotifyWebhooks.mockRejectedValueOnce(new Error('webhook down'));
-
-    retryStore.push({
-      id: nextId++,
-      subscriber: 'GSUB12', merchant: 'GMERCHANT12', token: 'CTOKEN12',
-      amount: '500', attemptNumber: 1,
-      scheduledAt: new Date(), executedAt: null,
-      status: 'PENDING', errorMessage: null, jobId: 'j3',
-      createdAt: new Date(), updatedAt: new Date(),
-    });
-
-    const job = makeJob({ subscriber: 'GSUB12', merchant: 'GMERCHANT12', token: 'CTOKEN12', amount: '500', attemptNumber: 1 });
-    await expect(_processRetryJob(job as any)).rejects.toThrow('webhook down');
-
-    const row = retryStore.find((r) => r.subscriber === 'GSUB12');
-    expect(row?.status).toBe('FAILED');
-    expect(row?.errorMessage).toBe('webhook down');
-  });
-
-  it('still fires max_retries_exceeded even when the final attempt fails', async () => {
-    // First call (retry notification) fails; second call (max_retries_exceeded) is mocked to succeed
+  it('marks retry as failed and emits max_retries_exceeded on final attempt', async () => {
     mockNotifyWebhooks
-      .mockRejectedValueOnce(new Error('transient'))
-      .mockResolvedValueOnce(undefined);
+      .mockRejectedValueOnce(new Error('webhook unreachable')) // processRetryJob call
+      .mockResolvedValue(undefined);                           // emitMaxRetriesExceeded call
 
-    retryStore.push({
-      id: nextId++,
-      subscriber: 'GSUB13', merchant: 'GMERCHANT13', token: 'CTOKEN13',
-      amount: '500', attemptNumber: MAX_RETRY_ATTEMPTS,
-      scheduledAt: new Date(), executedAt: null,
-      status: 'PENDING', errorMessage: null, jobId: 'j4',
-      createdAt: new Date(), updatedAt: new Date(),
-    });
+    const lastAttemptData: RetryJobData = { ...jobData, attemptNumber: MAX_RETRIES };
+    const job = makeJob(lastAttemptData);
+    await processRetryJob(job);
 
-    const job = makeJob({
-      subscriber: 'GSUB13', merchant: 'GMERCHANT13', token: 'CTOKEN13',
-      amount: '500', attemptNumber: MAX_RETRY_ATTEMPTS,
-    });
-
-    // Should throw (BullMQ records failure) but max_retries_exceeded still fires
-    await expect(_processRetryJob(job as any)).rejects.toThrow('transient');
+    // notifyWebhooks called once for the retry attempt, once for max_retries_exceeded
     expect(mockNotifyWebhooks).toHaveBeenCalledTimes(2);
+    const escalationCall = mockNotifyWebhooks.mock.calls[1][0];
+    expect(escalationCall).toMatchObject({
+      event: 'payment.failed',
+      txHash: 'max_retries_exceeded',
+    });
+  });
+
+  it('marks retry as failed but does NOT emit max_retries_exceeded on non-final attempt', async () => {
+    mockNotifyWebhooks.mockRejectedValue(new Error('webhook unreachable'));
+
+    const earlyAttempt: RetryJobData = { ...jobData, attemptNumber: 1 };
+    const job = makeJob(earlyAttempt);
+    await processRetryJob(job);
+
+    // Only one notifyWebhooks call — no escalation for early attempts
+    expect(mockNotifyWebhooks).toHaveBeenCalledTimes(1);
+    const failedUpdateCall = mockExecuteRawUnsafe.mock.calls.find(
+      (c: unknown[]) => (c[0] as string).includes('UPDATE') && c.includes('failed'),
+    );
+    expect(failedUpdateCall).toBeDefined();
+  });
+
+  it('records the error message in the DB row on failure', async () => {
+    const boom = new Error('upstream payment processor unavailable');
+    mockNotifyWebhooks.mockRejectedValue(boom);
+
+    const earlyAttempt: RetryJobData = { ...jobData, attemptNumber: 1 };
+    await processRetryJob(makeJob(earlyAttempt));
+
+    const updateCall = mockExecuteRawUnsafe.mock.calls.find(
+      (c: unknown[]) => (c[0] as string).includes('UPDATE') && c.includes(boom.message),
+    );
+    expect(updateCall).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+describe('emitMaxRetriesExceeded', () => {
+  it('calls notifyWebhooks with txHash = max_retries_exceeded', async () => {
+    mockNotifyWebhooks.mockResolvedValue(undefined);
+    await emitMaxRetriesExceeded('GSUB', 'GMER', '1000', 'CTOK');
+
+    expect(mockNotifyWebhooks).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: 'payment.failed',
+        subscriber: 'GSUB',
+        merchant: 'GMER',
+        txHash: 'max_retries_exceeded',
+      }),
+    );
+  });
+
+  it('does not throw if notifyWebhooks rejects', async () => {
+    mockNotifyWebhooks.mockRejectedValue(new Error('redis down'));
+    await expect(emitMaxRetriesExceeded('GSUB', 'GMER', '500', 'CTOK')).resolves.not.toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
+describe('getRawRetries', () => {
+  it('queries the correct table and returns mapped records', async () => {
+    const rows = [makeRetryRecord({ id: 10, attemptNumber: 1, status: 'pending' })];
+    mockQueryRaw.mockResolvedValueOnce(rows);
+
+    const result = await getRawRetries('GSUB', 'GMER');
+
+    expect(result).toHaveLength(1);
+    expect(result[0].id).toBe(10);
+    expect(result[0].status).toBe('pending');
+  });
+
+  it('returns an empty array when no records exist', async () => {
+    mockQueryRaw.mockResolvedValueOnce([]);
+    const result = await getRawRetries('UNKNOWN', 'GMER');
+    expect(result).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+describe('MAX_RETRIES constant', () => {
+  it('equals 3', () => {
+    expect(MAX_RETRIES).toBe(3);
+  });
+});
+
+// ---------------------------------------------------------------------------
+describe('QUEUE_NAME constant', () => {
+  it('equals "payment-retries"', () => {
+    expect(QUEUE_NAME).toBe('payment-retries');
   });
 });

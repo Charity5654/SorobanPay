@@ -1,20 +1,16 @@
 import { MockRpcServer } from './helpers/mockRpcServer';
 import { InMemoryPrismaClient } from './helpers/inMemoryDb';
 
-// Mock pino-based logger (pino is not installed in the test environment)
+// ─── Mock logger (prevents pino-pretty transitive load in test env) ───────────
 jest.mock('../src/lib/logger', () => ({
   __esModule: true,
-  default: {
-    info: jest.fn(),
-    warn: jest.fn(),
-    error: jest.fn(),
-    debug: jest.fn(),
-  },
+  default: { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() },
+  logger:  { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() },
 }));
 
-// Mock retryQueue so bullmq/ioredis are never loaded during this test suite
+// ─── Mock retryQueue (prevents Redis/BullMQ from loading in unit tests) ──────
 jest.mock('../src/services/retryQueue', () => ({
-  scheduleRetries: jest.fn().mockResolvedValue(undefined),
+  enqueueRetries: jest.fn().mockResolvedValue([]),
 }));
 
 jest.mock('@stellar/stellar-sdk', () => {
