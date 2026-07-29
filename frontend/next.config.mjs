@@ -105,6 +105,8 @@ const withPWA = withPWAInit({
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
+  // Enables standalone output for Docker deployments (#457)
+  output: 'standalone',
 
   // Suppress Stellar SDK build warnings in Next.js
   webpack: (config) => {
