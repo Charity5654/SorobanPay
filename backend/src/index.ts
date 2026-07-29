@@ -189,6 +189,7 @@ app.listen(PORT, () => {
 });
 
 process.on('SIGTERM', async () => {
+  eventIndexer.stopPolling();   // BE-51: stop cursor-based polling
   await shutdownRetryWorker();
   process.exit(0);
 });
