@@ -1119,6 +1119,44 @@ For guidance on storing backend secrets safely (database credentials, RPC API ke
 
 ---
 
+## Documentation
+
+| Document | Description |
+|----------|-------------|
+| [docs/faq.md](docs/faq.md) | Frequently asked questions for integrators |
+| [docs/deployment.md](docs/deployment.md) | Production deployment guide (mainnet, Docker, Kubernetes, monitoring) |
+| [docs/saas-integration-guide.md](docs/saas-integration-guide.md) | End-to-end SaaS billing integration guide with Node.js examples |
+
+---
+
+## Use Cases
+
+- **SaaS billing** — See [docs/saas-integration-guide.md](docs/saas-integration-guide.md) for a complete walkthrough: contract deployment, event indexing, webhooks, plan changes, cancellations, and revenue reporting.
+- **Creator subscriptions** — Fans grant a one-time allowance; creators collect recurring payments on-chain without custodial wallets.
+- **Recurring donations** — DAOs and nonprofits accept on-chain pledges with configurable intervals (daily to annual).
+
+---
+
+## Frontend
+
+### Storybook (component documentation)
+
+```bash
+cd frontend
+npm run storybook
+```
+
+Opens Storybook at http://localhost:6006. Stories are available for all UI components including `SubscriptionForm`, `SuccessCard`, `WalletBadge`, skeleton loaders, and error boundary fallback. Each story includes accessibility checks via the axe-core panel.
+
+Build a static Storybook:
+
+```bash
+cd frontend
+npm run storybook:build
+```
+
+---
+
 ## Contributing
 
 We welcome contributions! Whether you want to report a bug, suggest an enhancement, or submit code changes, here's how to get started.
@@ -1186,6 +1224,43 @@ npm run dev
 | `contract` | Changes to the Soroban smart contract |
 | `frontend` | Changes to the Next.js frontend |
 | `deployment` | Changes to build or deploy scripts |
+| `dependencies` | Dependency updates (Dependabot) |
+| `security` | Security advisories and vulnerability fixes |
+| `major-update` | Major-version bump requiring manual review |
+
+### Dependency management (Dependabot)
+
+Dependabot is configured to open pull requests for outdated dependencies every Monday:
+
+| Ecosystem | Directory | Schedule | Grouping |
+|-----------|-----------|----------|----------|
+| npm | `frontend/` | Weekly (Monday) | `@stellar/*` grouped into one PR |
+| npm | `backend/` | Weekly (Monday) | — |
+| Cargo | `contracts/subscription/` | Weekly (Monday) | — |
+| GitHub Actions | `/` | Monthly | — |
+
+**Merge policy:**
+
+- **Patch and minor updates** — automatically approved and squash-merged once all CI checks pass. No manual action required.
+- **Major updates** — opened as a PR with the `major-update` label and left for manual review. CI must still pass before merge.
+- **GitHub Actions updates** — automatically approved and squash-merged (Actions use immutable tag or SHA pins; breaking changes do not follow semver).
+
+**Weekly security scanning (OPS-121):**
+
+A separate [security-audit workflow](.github/workflows/security-audit.yml) runs every Monday at 04:00 UTC independently of Dependabot PRs:
+
+- `npm audit --audit-level=high` in both `frontend/` and `backend/`
+- `cargo audit` in `contracts/subscription/`
+
+If any HIGH or CRITICAL advisory is found, the workflow fails and automatically opens a GitHub issue labelled `security` + `dependencies` so the team is alerted immediately. Audit reports are uploaded as workflow artifacts for detailed inspection.
+
+**Responding to security issues:**
+
+1. Check the opened issue for the advisory details and CVE link.
+2. For npm: run `npm audit fix` in the relevant directory, or pin to a safe version manually.
+3. For Cargo: update the crate version in `Cargo.toml`, run `cargo update`, and commit the updated `Cargo.lock`.
+4. If no fix exists yet, add an `[advisories]` ignore entry in `audit.toml` with a written justification and a link to the upstream issue.
+5. Close the GitHub issue once the advisory is resolved.
 
 ---
 

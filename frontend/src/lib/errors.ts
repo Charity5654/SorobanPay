@@ -106,7 +106,8 @@ const PATTERN_RULES: PatternRule[] = [
     pattern: /timeout|timed out|confirmation timeout/i,
     mapped: {
       message: 'The network is slow or the transaction timed out.',
-      action: 'Wait a moment and try again. Your form data has been preserved.',
+      action:
+        'The transaction may still confirm — check the explorer link for the current status. Your form data has been preserved.',
     },
   },
   // RPC 5xx / service unavailable
@@ -183,7 +184,11 @@ const FALLBACK_ERROR: MappedError = {
 export function mapError(err: unknown): MappedError {
   const raw = err instanceof Error ? err.message : String(err);
 
-  // 1. Try to extract a contract error code (e.g. "Contract error: 7" or "Error(Contract, #7)")
+  // 1. Try to extract a contract error code from various message formats:
+  //    - "contract error: 7"
+  //    - "Error(Contract, #7)"
+  //    - "ContractError(7)"
+  //    - "contract error #7" (emitted by useTransactionPoller extractFailureMessage)
   const contractCodeMatch = raw.match(
     /contract\s+error[:\s#]+(\d+)|Error\(Contract,\s*#(\d+)\)|ContractError\((\d+)\)/i,
   );
