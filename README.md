@@ -1119,6 +1119,44 @@ For guidance on storing backend secrets safely (database credentials, RPC API ke
 
 ---
 
+## Documentation
+
+| Document | Description |
+|----------|-------------|
+| [docs/faq.md](docs/faq.md) | Frequently asked questions for integrators |
+| [docs/deployment.md](docs/deployment.md) | Production deployment guide (mainnet, Docker, Kubernetes, monitoring) |
+| [docs/saas-integration-guide.md](docs/saas-integration-guide.md) | End-to-end SaaS billing integration guide with Node.js examples |
+
+---
+
+## Use Cases
+
+- **SaaS billing** — See [docs/saas-integration-guide.md](docs/saas-integration-guide.md) for a complete walkthrough: contract deployment, event indexing, webhooks, plan changes, cancellations, and revenue reporting.
+- **Creator subscriptions** — Fans grant a one-time allowance; creators collect recurring payments on-chain without custodial wallets.
+- **Recurring donations** — DAOs and nonprofits accept on-chain pledges with configurable intervals (daily to annual).
+
+---
+
+## Frontend
+
+### Storybook (component documentation)
+
+```bash
+cd frontend
+npm run storybook
+```
+
+Opens Storybook at http://localhost:6006. Stories are available for all UI components including `SubscriptionForm`, `SuccessCard`, `WalletBadge`, skeleton loaders, and error boundary fallback. Each story includes accessibility checks via the axe-core panel.
+
+Build a static Storybook:
+
+```bash
+cd frontend
+npm run storybook:build
+```
+
+---
+
 ## Contributing
 
 We welcome contributions! Whether you want to report a bug, suggest an enhancement, or submit code changes, here's how to get started.
