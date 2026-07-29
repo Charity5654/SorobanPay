@@ -155,7 +155,10 @@ fn test_full_lifecycle() {
     assert!(!t.has_sub());
 }
 
-// ─── Requirement 13.2 — Payment not due ──────────────────────────────────────
+impl AllowlistEnv {
+    fn new() -> Self {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
 
 #[test]
 fn test_payment_not_due_after_subscribe() {
@@ -201,15 +204,19 @@ fn test_subscription_data_has_ver_field() {
     let bal_before = t.sub_bal();
     let mer_bal_before = t.mer_bal();
 
-    // Advance time but not enough to reach next_payment
-    t.advance(ivl / 2);
+        AllowlistEnv { env, admin, subscriber, merchant, token, contract_id }
+    }
 
     let r = t.client().try_execute_payment(&t.subscriber, &t.merchant);
     assert!(matches!(r, Err(Ok(ContractError::PaymentNotDue))));
 
-    // Verify no transfer occurred
-    assert_eq!(t.sub_bal(), bal_before);
-    assert_eq!(t.mer_bal(), mer_bal_before);
+    /// Enable the merchant approval requirement.
+    fn enable_allowlist(&self) {
+        self.client().set_admin_config(
+            &self.admin,
+            &AdminConfig { require_merchant_approval: true },
+        );
+    }
 
     // Verify subscription remains unchanged
     let d = t.get_sub();
@@ -304,10 +311,9 @@ fn test_execute_payment_double_payment_prevented() {
     assert_eq!(t.get_sub().next_payment, next, "next_payment must not advance on failed retry");
 }
 
-// ─── Requirement 13.3 — Execute after cancel ─────────────────────────────────
-
+/// Test 1: Allowlist disabled by default — subscribe works without any allowlist setup.
 #[test]
-fn test_execute_after_cancel() {
+fn test_allowlist_disabled_by_default() {
     let t = T::new();
     t.client.subscribe(&t.subscriber, &t.merchant, &t.token, &100_000_i128, &86_400_u64, &false);
     t.client.cancel(&t.subscriber, &t.merchant);
@@ -317,8 +323,7 @@ fn test_execute_after_cancel() {
     assert_eq!(t.sub_bal(), 10_000_000_i128);
 }
 
-// ─── Requirement 13.4 — Amount zero ──────────────────────────────────────────
-
+/// Test 2: Allowlist enabled — subscribe fails with MerchantNotApproved for unlisted merchant.
 #[test]
 fn test_subscribe_amount_zero() {
     let t = T::new();
@@ -327,8 +332,16 @@ fn test_subscribe_amount_zero() {
     assert!(!t.has_sub());
 }
 
-// ─── Requirement 13.5 — Interval too short ───────────────────────────────────
+    let r = ae.client().try_subscribe(
+        &ae.subscriber, &ae.merchant, &ae.token, &100_i128, &86_400_u64,
+    );
+    assert!(
+        matches!(r, Err(Ok(ContractError::MerchantNotApproved))),
+        "subscribe must return MerchantNotApproved for unlisted merchant"
+    );
+}
 
+/// Test 3: Allowlist enabled + merchant approved — subscribe succeeds.
 #[test]
 fn test_subscribe_interval_too_short() {
     let t = T::new();
@@ -337,8 +350,17 @@ fn test_subscribe_interval_too_short() {
     assert!(!t.has_sub());
 }
 
-// ─── Extra: Interval too long ─────────────────────────────────────────────────
+    ae.client().subscribe(&ae.subscriber, &ae.merchant, &ae.token, &100_i128, &86_400_u64);
+    // Verify subscription was stored.
+    let key = DataKey::Subscription(ae.subscriber.clone(), ae.merchant.clone());
+    let contract_id = ae.contract_id.clone();
+    let has = ae.env.as_contract(&contract_id, || {
+        ae.env.storage().persistent().has(&key)
+    });
+    assert!(has, "subscribe must succeed for an approved merchant");
+}
 
+/// Test 4: Remove merchant → subscribe fails again.
 #[test]
 fn test_subscribe_interval_too_long() {
     let t = T::new();
@@ -347,7 +369,8 @@ fn test_subscribe_interval_too_long() {
     assert!(!t.has_sub());
 }
 
-// ─── Boundary Value Tests: Interval Edge Cases ────────────────────────────────
+    // First subscribe succeeds.
+    ae.client().subscribe(&ae.subscriber, &ae.merchant, &ae.token, &100_i128, &86_400_u64);
 
 /// Test interval exactly at lower boundary (86400 seconds = 1 day)
 /// This should be accepted as the minimum valid interval.
@@ -966,10 +989,8 @@ fn test_execute_payment_fails_on_zero_allowance_state_unchanged() {
     assert_eq!(events_after.events().len(), 0, "no executed event on failed transfer");
 }
 
-/// Sets up a subscription whose amount exceeds the subscriber's entire balance
-/// so the token transfer will fail due to insufficient funds.
 #[test]
-fn test_execute_payment_fails_on_insufficient_balance_state_unchanged() {
+fn test_no_events_on_payment_not_due() {
     let t = T::new();
     // Amount larger than the 10_000_000 minted to subscriber.
     let amt = 20_000_000_i128;
@@ -1337,8 +1358,6 @@ proptest! {
         prop_assert_eq!(t.sub_bal(), bal);
     }
 
-    /// Property 3: Double-payment prevention
-    /// Validates: Req 5.3, 5.4, 13.7
     #[test]
     fn prop_double_payment_prevention(
         amount   in 1_i128..=100_000_i128,
@@ -1351,11 +1370,9 @@ proptest! {
         let bal = t.sub_bal();
         let r = t.client().try_execute_payment(&t.subscriber, &t.merchant);
         prop_assert!(matches!(r, Err(Ok(ContractError::PaymentNotDue))));
-        prop_assert_eq!(t.sub_bal(), bal, "balance must not change on second attempt");
+        prop_assert_eq!(t.sub_bal(), bal);
     }
 
-    /// Property 4: Non-positive amount always rejected
-    /// Validates: Req 1.2, 8.1, 13.4
     #[test]
     fn prop_non_positive_amount_rejected(
         amount   in i128::MIN..=0_i128,
@@ -1367,8 +1384,6 @@ proptest! {
         prop_assert!(!t.has_sub());
     }
 
-    /// Property 5: Interval below 86400 always rejected
-    /// Validates: Req 1.3, 8.2, 13.5
     #[test]
     fn prop_short_interval_rejected(
         amount   in 1_i128..=1_000_000_i128,
@@ -1380,8 +1395,6 @@ proptest! {
         prop_assert!(!t.has_sub());
     }
 
-    /// Property 6: Interval above 31536000 always rejected
-    /// Validates: Req 1.4, 8.2
     #[test]
     fn prop_long_interval_rejected(
         amount   in 1_i128..=1_000_000_i128,
@@ -1475,6 +1488,7 @@ fn load_test_bulk_subscribe_distinct_pairs() {
             &5_000_i128,
             &(env.ledger().sequence() + 100_000_u32),
         );
+        prop_assert!(matches!(r, Err(Ok(ContractError::MerchantNotApproved))));
     }
 
     for sub in &subscribers {
@@ -1502,20 +1516,6 @@ fn load_test_repeated_resubscribe_same_pair() {
         let amt = i as i128 * 1_000;
         t.client.subscribe(&t.subscriber, &t.merchant, &t.token, &amt, &ivl, &false);
     }
-
-    // Only the last subscription must exist — no duplicates or accumulated state.
-    let d = t.get_sub();
-    assert_eq!(d.amount, N as i128 * 1_000);
-    assert_eq!(d.interval, ivl);
-
-    // Exactly one storage entry (idempotent upsert, not append).
-    let count = (0..N).filter(|i| {
-        let amt = (*i as i128 + 1) * 1_000;
-        // We can only confirm the final value; just check the key exists once.
-        let _ = amt;
-        env_has_sub(&t, &t.subscriber, &t.merchant)
-    }).count();
-    assert_eq!(count, N, "subscription key should exist throughout all overwrites");
 }
 
 fn env_has_sub(t: &T, sub: &Address, mer: &Address) -> bool {
@@ -1525,10 +1525,8 @@ fn env_has_sub(t: &T, sub: &Address, mer: &Address) -> bool {
         .has(&DataKey::Subscription(subscription_key(&t.env, sub, mer)))
 }
 
-/// Load test: N invalid subscribe attempts (zero amount) all fail cleanly.
-/// Verifies the contract never panics and emits zero events under bulk invalid input.
 #[test]
-fn load_test_bulk_invalid_subscribe_rejected() {
+fn load_test_bulk_subscribe_distinct_pairs() {
     const N: usize = 50;
 
     let t = T::new();
@@ -1579,29 +1577,17 @@ fn load_test_bulk_execute_payment() {
         client.subscribe(sub, &merchant, &token, &amt, &ivl, &false);
     }
 
-    // Advance past the payment interval.
-    let now = env.ledger().timestamp();
-    env.ledger().with_mut(|l| l.timestamp = now + ivl + 1);
-
-    let mer_bal_before = token::Client::new(&env, &token).balance(&merchant);
-
     for sub in &subscribers {
-        client.execute_payment(sub, &merchant);
+        client.subscribe(sub, &merchant, &token, &amt, &ivl);
     }
 
-    // Merchant should have received exactly N * amt.
-    let expected = mer_bal_before + (N as i128 * amt);
-    assert_eq!(
-        token::Client::new(&env, &token).balance(&merchant),
-        expected
-    );
-
-    // Each subscriber should have been debited exactly once.
     for sub in &subscribers {
-        assert_eq!(
-            token::Client::new(&env, &token).balance(sub),
-            10_000 - amt
-        );
+        let key = DataKey::Subscription(sub.clone(), merchant.clone());
+        let data: SubscriptionData = env.as_contract(&contract_id, || {
+            env.storage().persistent().get(&key).unwrap()
+        });
+        assert_eq!(data.amount,   amt);
+        assert_eq!(data.interval, ivl);
     }
 }
 

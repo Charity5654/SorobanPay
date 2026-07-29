@@ -27,6 +27,9 @@
 import type { Config } from 'tailwindcss';
 
 const config: Config = {
+  // Enable class-based dark mode so ThemeProvider can toggle the 'dark' class
+  // on <html> and persist user preference in localStorage. (Issue #xxx UX-dark)
+  darkMode: 'class',
   content: [
     './src/pages/**/*.{js,ts,jsx,tsx,mdx}',
     './src/components/**/*.{js,ts,jsx,tsx,mdx}',

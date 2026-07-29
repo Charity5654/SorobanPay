@@ -8,10 +8,24 @@ import prisma from '../lib/prisma';
  *   Query params:
  *     merchant {string} — required merchant Stellar address
  *     period   {string} — '30d' | '90d' | 'all'  (default: '30d')
+ *
+ * Response:
+ * {
+ *   period: string,
+ *   merchant: string,
+ *   mrr: { month: string, label: string, revenue: string, paymentCount: number }[],
+ *   activeSubscribers: number,
+ *   totalRevenue: string,
+ *   successRate: number,    // 0-100
+ *   executedCount: number,
+ *   failureCount: number,
+ *   events: Event[]        // raw events for client-side computation
+ * }
  */
 
 const router = Router();
 
+/** Returns a Date representing `days` ago from now, or null for 'all'. */
 function cutoffDate(period: string): Date | null {
   if (period === 'all') return null;
   const days = period === '90d' ? 90 : 30;
@@ -20,19 +34,26 @@ function cutoffDate(period: string): Date | null {
   return d;
 }
 
+/**
+ * Format a ledger Unix timestamp (seconds, BigInt) to "YYYY-MM" month key.
+ */
 function ledgerToMonthKey(ledgerTs: bigint): string {
   const d = new Date(Number(ledgerTs) * 1000);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  return `${y}-${m}`;
 }
 
+/**
+ * Format a "YYYY-MM" key to a short label like "Jan 24".
+ */
 function monthKeyToLabel(key: string): string {
   const [year, month] = key.split('-').map(Number);
-  return new Date(year, month - 1, 1).toLocaleDateString('en-US', {
-    month: 'short',
-    year: '2-digit',
-  });
+  const d = new Date(year, month - 1, 1);
+  return d.toLocaleDateString('en-US', { month: 'short', year: '2-digit' });
 }
 
+// GET /v1/analytics/revenue?merchant=...&period=30d|90d|all
 router.get('/revenue', async (req: Request, res: Response) => {
   const merchant = req.query.merchant as string | undefined;
   const period = (req.query.period as string) || '30d';
@@ -40,31 +61,45 @@ router.get('/revenue', async (req: Request, res: Response) => {
   if (!merchant) {
     return res.status(400).json({ error: 'merchant query parameter is required' });
   }
-  if (!['30d', '90d', 'all'].includes(period)) {
-    return res.status(400).json({ error: 'period must be 30d, 90d, or all' });
+
+  const validPeriods = ['30d', '90d', 'all'];
+  if (!validPeriods.includes(period)) {
+    return res
+      .status(400)
+      .json({ error: `period must be one of: ${validPeriods.join(', ')}` });
   }
 
   try {
     const cutoff = cutoffDate(period);
+
+    // ── Build WHERE clause ─────────────────────────────────────────────────
     const dateFilter =
       cutoff !== null
         ? { ledgerTimestamp: { gte: BigInt(Math.floor(cutoff.getTime() / 1000)) } }
         : {};
 
+    // Fetch all relevant events for this merchant
     const events = await prisma.event.findMany({
-      where: { merchant, ...dateFilter },
+      where: {
+        merchant,
+        ...dateFilter,
+      },
       orderBy: { ledgerTimestamp: 'asc' },
     });
 
-    // MRR by month
-    const mrrMap = new Map<string, { revenue: bigint; paymentCount: number }>();
+    // ── MRR by month ───────────────────────────────────────────────────────
+    const mrrMap = new Map<
+      string,
+      { revenue: bigint; paymentCount: number }
+    >();
+
     for (const e of events) {
       if (e.type !== 'executed') continue;
       const key = ledgerToMonthKey(e.ledgerTimestamp);
-      const cur = mrrMap.get(key) ?? { revenue: 0n, paymentCount: 0 };
+      const existing = mrrMap.get(key) ?? { revenue: 0n, paymentCount: 0 };
       mrrMap.set(key, {
-        revenue: cur.revenue + BigInt(e.amount || '0'),
-        paymentCount: cur.paymentCount + 1,
+        revenue: existing.revenue + BigInt(e.amount || '0'),
+        paymentCount: existing.paymentCount + 1,
       });
     }
 
@@ -77,33 +112,47 @@ router.get('/revenue', async (req: Request, res: Response) => {
         paymentCount: val.paymentCount,
       }));
 
+    // ── Total revenue ──────────────────────────────────────────────────────
     const totalRevenue = events
       .filter((e) => e.type === 'executed')
-      .reduce((s, e) => s + BigInt(e.amount || '0'), 0n)
+      .reduce((sum, e) => sum + BigInt(e.amount || '0'), 0n)
       .toString();
 
-    const subscriberSet = new Set(
-      events.filter((e) => e.type === 'subscribe').map((e) => e.subscriber),
-    );
+    // ── Active subscribers ─────────────────────────────────────────────────
+    const subscriberSet = new Set<string>();
+    for (const e of events) {
+      if (e.type === 'subscribe') subscriberSet.add(e.subscriber);
+    }
+    const activeSubscribers = subscriberSet.size;
 
+    // ── Success rate ───────────────────────────────────────────────────────
     const executedCount = events.filter((e) => e.type === 'executed').length;
-    const failureCount = events.filter((e) => e.type === 'payment_transfer_failure').length;
+    const failureCount = events.filter(
+      (e) => e.type === 'payment_transfer_failure',
+    ).length;
     const total = executedCount + failureCount;
-    const successRate = total > 0 ? Math.round((executedCount / total) * 100) : 100;
+    const successRate =
+      total > 0 ? Math.round((executedCount / total) * 100) : 100;
+
+    // Serialize BigInt fields for JSON
+    const serializedEvents = events.map((e) => ({
+      ...e,
+      ledgerTimestamp: e.ledgerTimestamp.toString(),
+    }));
 
     return res.json({
       period,
       merchant,
       mrr,
-      activeSubscribers: subscriberSet.size,
+      activeSubscribers,
       totalRevenue,
       successRate,
       executedCount,
       failureCount,
-      events: events.map((e) => ({ ...e, ledgerTimestamp: e.ledgerTimestamp.toString() })),
+      events: serializedEvents,
     });
-  } catch (err) {
-    console.error('[analytics] revenue error:', err);
+  } catch (error) {
+    console.error('[analytics] Failed to compute revenue metrics:', error);
     return res.status(500).json({ error: 'Failed to compute analytics data' });
   }
 });

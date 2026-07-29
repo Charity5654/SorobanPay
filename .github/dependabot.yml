@@ -1,0 +1,64 @@
+version: 2
+updates:
+  # ── Rust (Cargo) — smart contract ─────────────────────────────────────────────
+  - package-ecosystem: cargo
+    directory: /contracts/subscription
+    schedule:
+      interval: weekly
+      day: monday
+      time: "08:00"
+    labels:
+      - dependencies
+      - contract
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(contract):"
+
+  # ── npm — frontend ─────────────────────────────────────────────────────────────
+  - package-ecosystem: npm
+    directory: /frontend
+    schedule:
+      interval: weekly
+      day: monday
+      time: "08:00"
+    labels:
+      - dependencies
+      - frontend
+    open-pull-requests-limit: 10
+    # Skip patch updates (too noisy) — let security-scan.yml catch those
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-patch"]
+    commit-message:
+      prefix: "chore(frontend):"
+
+  # ── npm — backend ──────────────────────────────────────────────────────────────
+  - package-ecosystem: npm
+    directory: /backend
+    schedule:
+      interval: weekly
+      day: monday
+      time: "08:00"
+    labels:
+      - dependencies
+      - backend
+    open-pull-requests-limit: 10
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-patch"]
+    commit-message:
+      prefix: "chore(backend):"
+
+  # ── GitHub Actions ─────────────────────────────────────────────────────────────
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "08:00"
+    labels:
+      - dependencies
+      - ci
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(ci):"
