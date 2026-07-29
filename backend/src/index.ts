@@ -15,6 +15,8 @@ import { validateConfig } from './lib/config';
 import { EventIndexer } from './services/eventIndexer';
 import { PayoutSummaryGenerator } from './services/payoutSummaryGenerator';
 import { PaymentScheduler } from './services/paymentScheduler';
+import { createRetryScheduler } from './services/retryScheduler';
+import { retryQueue } from './services/retryQueue';
 import { apiLimiter } from './middleware/rateLimiter';
 import { versionMiddleware } from './middleware/versioning';
 import summariesRouter from './routes/summaries';
@@ -24,7 +26,9 @@ import webhooksRouter from './routes/webhooks';
 import notificationsRouter from './routes/notifications';
 import versionRouter from './routes/version';
 import adminRouter from './routes/admin';
+import authRouter from './routes/auth';                        // BE-55: merchant auth
 import { buildHealthRouter } from './routes/health';
+import { requireMerchant } from './middleware/merchantAuth';  // BE-55: JWT guard
 import { reconcile } from './services/reconciler';
 import { PrismaSubscriptionDB, fetchChainEventsFromDB } from './services/reconciler';
 import { getPrometheusMetrics } from './services/metricsService';
@@ -81,7 +85,8 @@ app.use('/', versionRouter);
 app.use('/health', buildHealthRouter(rpcUrl, contractId));
 
 // ─── Versioned routes — /api/v1/ ─────────────────────────────────────────────
-app.use('/api/v1/subscriptions', subscriptionsRouter);
+app.use('/api/v1/auth',          authRouter);                             // BE-55: unauthenticated
+app.use('/api/v1/subscriptions', requireMerchant, subscriptionsRouter);  // BE-55: protected
 app.use('/api/v1/webhooks',      webhooksRouter);
 app.use('/api/v1/summaries',     summariesRouter);
 app.use('/api/v1/reconcile',     reconcileRouter);
@@ -114,6 +119,15 @@ const paymentScheduler = operatorSecret
   ? new PaymentScheduler(rpcUrl, contractId, operatorSecret, networkPassphrase)
   : null;
 
+// ─── Retry infrastructure ─────────────────────────────────────────────────────
+const retryScheduler = createRetryScheduler(rpcUrl, contractId, operatorSecret, networkPassphrase);
+if (retryScheduler) {
+  // Inject into eventIndexer so payment_transfer_failure events trigger retries
+  eventIndexer.setRetryScheduler(retryScheduler);
+} else {
+  console.warn('[retry] OPERATOR_SECRET not set — automated payment retries disabled.');
+}
+
 // ─── Cron jobs ───────────────────────────────────────────────────────────────
 cron.schedule('*/5 * * * *', async () => {
   console.log('[cron] Fetching new events...');
@@ -125,6 +139,12 @@ cron.schedule('* * * * *', async () => {
   await paymentScheduler.processDuePayments();
 });
 
+// Process due retry jobs every minute
+cron.schedule('* * * * *', async () => {
+  await retryQueue.processDueJobs();
+});
+
+// Generate daily summaries at 1 AM every day
 cron.schedule('0 1 * * *', async () => {
   console.log('[cron] Generating daily summaries...');
   await summaryGenerator.generateDailySummaries();
