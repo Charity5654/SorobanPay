@@ -397,6 +397,23 @@ export default function Home() {
             </kbd>{' '}
             for keyboard shortcuts
           </p>
+          {/* Dashboard navigation link */}
+          <div className="mt-4">
+            <Link
+              href="/dashboard"
+              aria-keyshortcuts="d"
+              className="
+                inline-flex items-center gap-1.5 rounded-lg border border-gray-700
+                bg-gray-900/60 px-4 py-2 text-xs font-semibold text-gray-300
+                hover:border-gray-600 hover:text-white transition-colors
+                focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400
+              "
+              aria-label="Go to subscriber dashboard to view active subscriptions"
+            >
+              <span aria-hidden="true">📊</span>
+              My Subscriptions
+            </Link>
+          </div>
         </div>
 
         {/* ── Wallet section ──────────────────────────────────────────────── */}
