@@ -1,0 +1,248 @@
+# OPS-121 — Weekly security audit
+#
+# Runs npm audit (frontend + backend) and cargo audit (contract) every Monday
+# at 04:00 UTC.  Any HIGH or CRITICAL finding causes the job to fail AND opens
+# a GitHub issue so the team is notified without having to watch the Actions log.
+#
+# Triggers:
+#   • Weekly schedule (Monday 04:00 UTC)
+#   • Manual dispatch for on-demand scans
+#
+# Permissions:
+#   • issues: write  — to create the vulnerability issue
+#   • contents: read — standard checkout
+
+name: "[OPS-121] Weekly security audit"
+
+on:
+  schedule:
+    # Every Monday at 04:00 UTC (staggered from CI's Sunday 02:00 run)
+    - cron: "0 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  # ── npm audit — frontend ────────────────────────────────────────────────
+  npm-audit-frontend:
+    name: npm audit (frontend)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies (ci — no updates)
+        run: npm ci
+        working-directory: frontend
+
+      - name: Run npm audit
+        id: npm_audit_frontend
+        # --audit-level=high fails on HIGH or CRITICAL; moderate/low are noted
+        # but do not block — Dependabot handles routine minor advisories.
+        run: |
+          set +e
+          npm audit --audit-level=high --json > /tmp/npm-audit-frontend.json 2>&1
+          EXIT_CODE=$?
+          echo "exit_code=$EXIT_CODE" >> "$GITHUB_OUTPUT"
+
+          # Pretty-print a human-readable summary to the log
+          npm audit --audit-level=high 2>&1 || true
+          exit $EXIT_CODE
+        working-directory: frontend
+
+      - name: Upload audit report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: npm-audit-frontend
+          path: /tmp/npm-audit-frontend.json
+
+      - name: Open GitHub issue on HIGH/CRITICAL findings
+        if: failure() && steps.npm_audit_frontend.outputs.exit_code != '0'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            let body = '## :rotating_light: npm audit — frontend vulnerabilities detected\n\n';
+            body += `**Workflow run:** ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\n\n`;
+            body += 'HIGH or CRITICAL advisories were found in `frontend/` dependencies.\n\n';
+            body += '### Next steps\n';
+            body += '1. Run `npm audit` locally in `frontend/` to see the full report.\n';
+            body += '2. Run `npm audit fix` for automatically fixable issues.\n';
+            body += '3. For issues requiring manual intervention, follow the advisory guidance or pin to a safe version.\n';
+            body += '4. Close this issue once all HIGH/CRITICAL advisories are resolved.\n\n';
+            body += '_Opened automatically by the [OPS-121 security audit workflow](' +
+              '${{ github.server_url }}/${{ github.repository }}/actions/workflows/security-audit.yml' +
+              ')._\n';
+
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: '[OPS-121] HIGH/CRITICAL npm vulnerabilities detected in frontend',
+              body,
+              labels: ['security', 'dependencies', 'frontend'],
+            });
+
+  # ── npm audit — backend ─────────────────────────────────────────────────
+  npm-audit-backend:
+    name: npm audit (backend)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+
+      - name: Install dependencies (ci — no updates)
+        run: npm ci
+        working-directory: backend
+
+      - name: Run npm audit
+        id: npm_audit_backend
+        run: |
+          set +e
+          npm audit --audit-level=high --json > /tmp/npm-audit-backend.json 2>&1
+          EXIT_CODE=$?
+          echo "exit_code=$EXIT_CODE" >> "$GITHUB_OUTPUT"
+          npm audit --audit-level=high 2>&1 || true
+          exit $EXIT_CODE
+        working-directory: backend
+
+      - name: Upload audit report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: npm-audit-backend
+          path: /tmp/npm-audit-backend.json
+
+      - name: Open GitHub issue on HIGH/CRITICAL findings
+        if: failure() && steps.npm_audit_backend.outputs.exit_code != '0'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            let body = '## :rotating_light: npm audit — backend vulnerabilities detected\n\n';
+            body += `**Workflow run:** ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\n\n`;
+            body += 'HIGH or CRITICAL advisories were found in `backend/` dependencies.\n\n';
+            body += '### Next steps\n';
+            body += '1. Run `npm audit` locally in `backend/` to see the full report.\n';
+            body += '2. Run `npm audit fix` for automatically fixable issues.\n';
+            body += '3. For issues requiring manual intervention, follow the advisory guidance or pin to a safe version.\n';
+            body += '4. Close this issue once all HIGH/CRITICAL advisories are resolved.\n\n';
+            body += '_Opened automatically by the [OPS-121 security audit workflow](' +
+              '${{ github.server_url }}/${{ github.repository }}/actions/workflows/security-audit.yml' +
+              ')._\n';
+
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: '[OPS-121] HIGH/CRITICAL npm vulnerabilities detected in backend',
+              body,
+              labels: ['security', 'dependencies', 'backend'],
+            });
+
+  # ── cargo audit — smart contract ────────────────────────────────────────
+  cargo-audit:
+    name: cargo audit (contract)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: contracts/subscription
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      - name: Run cargo audit
+        id: cargo_audit
+        run: |
+          set +e
+          # --json produces machine-readable output; tee keeps human output visible
+          cargo audit \
+            --manifest-path contracts/subscription/Cargo.toml \
+            --json 2>&1 | tee /tmp/cargo-audit.json
+          EXIT_CODE=${PIPESTATUS[0]}
+          echo "exit_code=$EXIT_CODE" >> "$GITHUB_OUTPUT"
+          exit $EXIT_CODE
+
+      - name: Upload audit report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cargo-audit-report
+          path: /tmp/cargo-audit.json
+
+      - name: Open GitHub issue on vulnerabilities found
+        if: failure() && steps.cargo_audit.outputs.exit_code != '0'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            let body = '## :rotating_light: cargo audit — contract vulnerabilities detected\n\n';
+            body += `**Workflow run:** ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\n\n`;
+            body += 'Security advisories were found in `contracts/subscription/` Cargo dependencies.\n\n';
+            body += '### Next steps\n';
+            body += '1. Run `cargo audit --manifest-path contracts/subscription/Cargo.toml` locally.\n';
+            body += '2. Update the affected crates in `Cargo.toml` / `Cargo.lock` to patched versions.\n';
+            body += '3. If no fix is available, add an `[advisories]` ignore entry in `audit.toml` with a justification.\n';
+            body += '4. Close this issue once all advisories are resolved or acknowledged.\n\n';
+            body += '_Opened automatically by the [OPS-121 security audit workflow](' +
+              '${{ github.server_url }}/${{ github.repository }}/actions/workflows/security-audit.yml' +
+              ')._\n';
+
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: '[OPS-121] Security advisories detected in Cargo dependencies (contract)',
+              body,
+              labels: ['security', 'dependencies', 'contract'],
+            });
+
+  # ── Summary ──────────────────────────────────────────────────────────────
+  # A lightweight fan-in job so the overall workflow status is easy to read
+  # in the GitHub Actions summary page and status badges.
+  audit-summary:
+    name: Audit summary
+    runs-on: ubuntu-latest
+    needs: [npm-audit-frontend, npm-audit-backend, cargo-audit]
+    # Always run so the summary is emitted even when individual jobs fail
+    if: always()
+
+    steps:
+      - name: Report overall audit outcome
+        run: |
+          FRONTEND="${{ needs.npm-audit-frontend.result }}"
+          BACKEND="${{ needs.npm-audit-backend.result }}"
+          CARGO="${{ needs.cargo-audit.result }}"
+
+          echo "npm audit  (frontend): $FRONTEND"
+          echo "npm audit  (backend):  $BACKEND"
+          echo "cargo audit (contract): $CARGO"
+
+          if [ "$FRONTEND" = "failure" ] || [ "$BACKEND" = "failure" ] || [ "$CARGO" = "failure" ]; then
+            echo ""
+            echo "::error::One or more audit jobs found HIGH/CRITICAL vulnerabilities. Check the individual job logs and the GitHub issue(s) created above."
+            exit 1
+          fi
+
+          echo ""
+          echo "All audit jobs passed — no HIGH or CRITICAL vulnerabilities detected."
