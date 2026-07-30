@@ -1040,6 +1040,38 @@ Every entry point calls `require_auth()` as its first statement — before any s
 
 Subscribers grant a SEP-41 allowance to the contract address. The contract's `execute_payment` calls `token.transfer(subscriber, merchant, amount)` using that allowance. Revoking the allowance with `token.approve(contract_address, 0)` immediately prevents all future collections — regardless of whether the on-chain subscription record still exists. This gives subscribers a unilateral, no-contract-call emergency stop.
 
+### Protocol fee model
+
+SorobanPay supports an optional on-chain protocol fee configured by the contract admin via `set_protocol_fee(admin, fee_bps, fee_collector)`.
+
+**Fee split mechanics:**
+
+When `fee_bps > 0`, every `execute_payment` call splits the payment into two transfers:
+
+```
+fee             = amount * fee_bps / 10_000   (integer division — rounds down)
+merchant_amount = amount - fee
+
+transfer 1: subscriber → merchant        for merchant_amount
+transfer 2: subscriber → fee_collector   for fee
+```
+
+When `fee_bps = 0` (the default) only one transfer is made and behavior is identical to the no-fee baseline.
+
+**Constraints and abuse prevention:**
+
+| Constraint | Value |
+|-----------|-------|
+| Maximum `fee_bps` | `500` (5 %) |
+| `set_protocol_fee` requires | admin signature |
+| Fee config stored | instance storage (upgradeable by admin only) |
+
+The 500 bps cap prevents admin abuse: even a compromised admin key cannot extract more than 5 % of any payment. The subscriber's allowance model (see below) remains the unilateral emergency stop — revoking the SEP-41 allowance blocks all transfers regardless of fee configuration.
+
+**Integer division truncation:** fee rounds down toward zero. For example, 1 token at 50 bps yields fee = 0 (the merchant receives the full token). The first non-zero fee at 50 bps occurs at 200 tokens (`200 * 50 / 10_000 = 1`).
+
+**Events:** a `fee_collected` event is emitted after each successful fee transfer, with topics `(symbol("fee_collected"), subscriber, merchant, fee_collector)` and data `fee_amount: i128`.
+
 ### Time-lock enforcement
 
 `execute_payment` checks `now >= next_payment` using the Soroban ledger timestamp before attempting any transfer. The timestamp is set by network validators and cannot be manipulated by the transaction submitter. Merchants cannot collect payments early or double-collect within a billing window.

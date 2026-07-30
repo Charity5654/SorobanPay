@@ -1,4 +1,5 @@
 use soroban_sdk::{contracttype, Address, BytesN, Env};
+use soroban_sdk::xdr::ToXdr;
 
 // ==================== Version Metadata ====================
 
@@ -48,6 +49,10 @@ pub enum DataKey {
 
     /// Designated admin address authorised to call `migrate`.
     Admin,
+
+    /// Protocol fee configuration: fee rate in basis points and fee collector address.
+    /// Stored in instance storage. Absent means fee is disabled (0 bps).
+    ProtocolFeeConfig,
 }
 
 /// Persistent on-chain record for a subscription.
@@ -88,41 +93,43 @@ pub const MIN_TTL_LEDGERS: u32 = 30 * 24 * 60 * 60 / 5;
 /// ~365 days at 5-second ledger close time (6_307_200 ledgers).
 pub const MAX_TTL_LEDGERS: u32 = 365 * 24 * 60 * 60 / 5;
 
-// ─── AdminConfig helpers ──────────────────────────────────────────────────────
+/// Maximum allowed protocol fee in basis points (500 bps = 5%).
+pub const MAX_FEE_BPS: u32 = 500;
 
-/// Load the admin config from instance storage; returns a zero-cap default if absent.
-pub fn get_admin_config(env: &Env) -> AdminConfig {
+// ─── ProtocolFeeConfig ────────────────────────────────────────────────────────
+
+/// Protocol-level fee configuration stored in instance storage.
+///
+/// `fee_bps = 0` disables fees entirely; the contract behaves identically
+/// to the pre-fee implementation.  `fee_bps` is capped at [`MAX_FEE_BPS`]
+/// (500 = 5 %) to prevent admin abuse.
+///
+/// ## Integer division truncation
+///
+/// The fee is computed as `amount * fee_bps / 10_000`.  Integer division
+/// truncates toward zero, so the fee rounds **down** and the merchant
+/// receives the remainder (`amount - fee`).  For example, 1 token at 50 bps
+/// yields fee = 0 if `amount < 200`; at 10_000 tokens it yields fee = 50 tokens.
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct ProtocolFeeConfig {
+    /// Fee in basis points.  0 = disabled.  Max = [`MAX_FEE_BPS`] (500 = 5 %).
+    pub fee_bps:       u32,
+    /// Address that receives the protocol fee portion on each payment.
+    pub fee_collector: Address,
+}
+
+/// Load the protocol fee config from instance storage.
+/// Returns `None` when no fee has been configured (fee is effectively 0 bps).
+pub fn get_protocol_fee_config(env: &Env) -> Option<ProtocolFeeConfig> {
     env.storage()
         .instance()
-        .get(&DataKey::AdminConfig)
-        .unwrap_or(AdminConfig { max_subscribers_per_merchant: 0 })
+        .get(&DataKey::ProtocolFeeConfig)
 }
 
-/// Persist the admin config to instance storage.
-pub fn set_admin_config(env: &Env, config: AdminConfig) {
-    env.storage().instance().set(&DataKey::AdminConfig, &config);
-}
-
-// ─── MerchantSubscriberCount helpers ─────────────────────────────────────────
-
-/// Return the current active-subscriber count for a merchant (0 if never set).
-pub fn get_subscriber_count(env: &Env, merchant: &Address) -> u32 {
+/// Persist the protocol fee config to instance storage.
+pub fn set_protocol_fee_config(env: &Env, config: ProtocolFeeConfig) {
     env.storage()
-        .persistent()
-        .get(&DataKey::MerchantSubscriberCount(merchant.clone()))
-        .unwrap_or(0u32)
-}
-
-/// Persist the active-subscriber count for a merchant and extend its TTL.
-pub fn set_subscriber_count(env: &Env, merchant: &Address, count: u32) {
-    env.storage()
-        .persistent()
-        .set(&DataKey::MerchantSubscriberCount(merchant.clone()), &count);
-    env.storage()
-        .persistent()
-        .extend_ttl(
-            &DataKey::MerchantSubscriberCount(merchant.clone()),
-            MIN_TTL_LEDGERS,
-            MAX_TTL_LEDGERS,
-        );
+        .instance()
+        .set(&DataKey::ProtocolFeeConfig, &config);
 }

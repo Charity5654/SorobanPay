@@ -2233,3 +2233,339 @@ fn test_transfer_subscription_old_entry_removed() {
         "old entry must be gone after transfer"
     );
 }
+
+// ─── Protocol fee split tests ─────────────────────────────────────────────────
+
+/// Shared setup for fee tests: contract initialized with an admin, fee collector
+/// account minted with zero tokens, and a subscription already created.
+struct FeeT {
+    env:           Env,
+    subscriber:    Address,
+    merchant:      Address,
+    fee_collector: Address,
+    admin:         Address,
+    token:         Address,
+    contract_id:   Address,
+}
+
+impl FeeT {
+    fn new() -> Self {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+
+        let admin         = Address::generate(&env);
+        let subscriber    = Address::generate(&env);
+        let merchant      = Address::generate(&env);
+        let fee_collector = Address::generate(&env);
+
+        let token = env.register_stellar_asset_contract_v2(admin.clone()).address();
+        StellarAssetClient::new(&env, &token).mint(&subscriber, &10_000_000_i128);
+
+        let contract_id = env.register(SubscriptionProtocol, ());
+        let client = SubscriptionProtocolClient::new(&env, &contract_id);
+
+        // Initialise the contract so set_protocol_fee can validate the admin.
+        client.initialize(&admin);
+
+        // Approve contract to spend subscriber tokens.
+        token::Client::new(&env, &token).approve(
+            &subscriber,
+            &contract_id,
+            &5_000_000_i128,
+            &(env.ledger().sequence() + 100_000_u32),
+        );
+
+        Self { env, subscriber, merchant, fee_collector, admin, token, contract_id }
+    }
+
+    fn client(&self) -> SubscriptionProtocolClient {
+        SubscriptionProtocolClient::new(&self.env, &self.contract_id)
+    }
+
+    fn advance(&self, secs: u64) {
+        let now = self.env.ledger().timestamp();
+        self.env.ledger().with_mut(|l| l.timestamp = now + secs);
+    }
+
+    fn sub_bal(&self) -> i128 {
+        token::Client::new(&self.env, &self.token).balance(&self.subscriber)
+    }
+
+    fn mer_bal(&self) -> i128 {
+        token::Client::new(&self.env, &self.token).balance(&self.merchant)
+    }
+
+    fn fee_bal(&self) -> i128 {
+        token::Client::new(&self.env, &self.token).balance(&self.fee_collector)
+    }
+}
+
+// ─── AC-1: fee_bps = 0 — identical behaviour to pre-fee implementation ────────
+
+/// When fee_bps is 0, execute_payment transfers the full amount to the merchant
+/// and nothing to the fee collector — identical to the no-fee baseline.
+#[test]
+fn test_fee_zero_bps_full_amount_to_merchant() {
+    let ft = FeeT::new();
+    let amt = 100_000_i128;
+
+    // Configure a zero-bps fee (no-op).
+    ft.client().set_protocol_fee(&ft.admin, &0_u32, &ft.fee_collector);
+
+    ft.client().subscribe(&ft.subscriber, &ft.merchant, &ft.token, &amt, &86_400_u64, &false);
+    ft.advance(86_400 + 1);
+
+    let sub_before = ft.sub_bal();
+    let mer_before = ft.mer_bal();
+    let fee_before = ft.fee_bal();
+
+    ft.client().execute_payment(&ft.subscriber, &ft.merchant);
+
+    assert_eq!(ft.sub_bal(), sub_before - amt, "subscriber balance must decrease by full amount");
+    assert_eq!(ft.mer_bal(), mer_before + amt, "merchant must receive full amount when fee_bps = 0");
+    assert_eq!(ft.fee_bal(), fee_before,        "fee collector must receive nothing when fee_bps = 0");
+}
+
+/// When no fee config has been set at all (None), execute_payment behaves
+/// exactly like the zero-bps case — no split, full amount to merchant.
+#[test]
+fn test_fee_not_configured_full_amount_to_merchant() {
+    let ft = FeeT::new();
+    let amt = 100_000_i128;
+
+    // Intentionally do NOT call set_protocol_fee — config is None.
+
+    ft.client().subscribe(&ft.subscriber, &ft.merchant, &ft.token, &amt, &86_400_u64, &false);
+    ft.advance(86_400 + 1);
+
+    let sub_before = ft.sub_bal();
+    let mer_before = ft.mer_bal();
+    let fee_before = ft.fee_bal();
+
+    ft.client().execute_payment(&ft.subscriber, &ft.merchant);
+
+    assert_eq!(ft.sub_bal(), sub_before - amt, "subscriber balance must decrease by full amount");
+    assert_eq!(ft.mer_bal(), mer_before + amt, "merchant must receive full amount when no fee configured");
+    assert_eq!(ft.fee_bal(), fee_before,        "fee collector must receive nothing when no fee configured");
+}
+
+// ─── AC-2: fee_bps = 50 (0.5%) ───────────────────────────────────────────────
+
+/// At 50 bps (0.5 %), a 100_000-unit payment splits as:
+///   fee             = 100_000 * 50 / 10_000 = 500
+///   merchant_amount = 100_000 - 500         = 99_500
+#[test]
+fn test_fee_50_bps_splits_correctly() {
+    let ft = FeeT::new();
+    let amt = 100_000_i128;
+
+    ft.client().set_protocol_fee(&ft.admin, &50_u32, &ft.fee_collector);
+    ft.client().subscribe(&ft.subscriber, &ft.merchant, &ft.token, &amt, &86_400_u64, &false);
+    ft.advance(86_400 + 1);
+
+    let sub_before = ft.sub_bal();
+    let mer_before = ft.mer_bal();
+    let fee_before = ft.fee_bal();
+
+    ft.client().execute_payment(&ft.subscriber, &ft.merchant);
+
+    let expected_fee      = amt * 50 / 10_000;  // 500
+    let expected_merchant = amt - expected_fee;  // 99_500
+
+    assert_eq!(ft.sub_bal(), sub_before - amt,              "subscriber must lose full amount");
+    assert_eq!(ft.mer_bal(), mer_before + expected_merchant, "merchant must receive amount - fee");
+    assert_eq!(ft.fee_bal(), fee_before + expected_fee,      "fee collector must receive fee");
+}
+
+/// Verify that a `fee_collected` event is emitted on a non-zero fee payment.
+#[test]
+fn test_fee_50_bps_emits_fee_collected_event() {
+    let ft = FeeT::new();
+    let amt = 100_000_i128;
+
+    ft.client().set_protocol_fee(&ft.admin, &50_u32, &ft.fee_collector);
+    ft.client().subscribe(&ft.subscriber, &ft.merchant, &ft.token, &amt, &86_400_u64, &false);
+    ft.advance(86_400 + 1);
+
+    ft.client().execute_payment(&ft.subscriber, &ft.merchant);
+
+    let events = ft.env.events().all();
+    let contract_events: alloc::vec::Vec<_> = events
+        .iter()
+        .filter(|e| e.0 == ft.contract_id)
+        .collect();
+
+    let has_fee_event = contract_events.iter().any(|(_, topics, _)| {
+        if topics.len() < 1 { return false; }
+        if let Ok(sym) = topics.get_unchecked(0).try_into_val::<_, Symbol>(&ft.env) {
+            sym == Symbol::new(&ft.env, "fee_collected")
+        } else {
+            false
+        }
+    });
+
+    assert!(has_fee_event, "fee_collected event must be emitted when fee_bps > 0");
+}
+
+// ─── AC-3: fee_bps = 500 (5% — the cap) ──────────────────────────────────────
+
+/// At 500 bps (5 %, the maximum), a 200_000-unit payment splits as:
+///   fee             = 200_000 * 500 / 10_000 = 10_000
+///   merchant_amount = 200_000 - 10_000       = 190_000
+#[test]
+fn test_fee_500_bps_at_cap_splits_correctly() {
+    let ft = FeeT::new();
+    let amt = 200_000_i128;
+
+    ft.client().set_protocol_fee(&ft.admin, &500_u32, &ft.fee_collector);
+    ft.client().subscribe(&ft.subscriber, &ft.merchant, &ft.token, &amt, &86_400_u64, &false);
+    ft.advance(86_400 + 1);
+
+    let sub_before = ft.sub_bal();
+    let mer_before = ft.mer_bal();
+    let fee_before = ft.fee_bal();
+
+    ft.client().execute_payment(&ft.subscriber, &ft.merchant);
+
+    let expected_fee      = amt * 500 / 10_000;  // 10_000
+    let expected_merchant = amt - expected_fee;   // 190_000
+
+    assert_eq!(ft.sub_bal(), sub_before - amt,              "subscriber must lose full amount");
+    assert_eq!(ft.mer_bal(), mer_before + expected_merchant, "merchant must receive amount - fee at 500 bps");
+    assert_eq!(ft.fee_bal(), fee_before + expected_fee,      "fee collector must receive 5 % at cap");
+}
+
+/// 500 bps accepted by set_protocol_fee (it is exactly the cap, not above it).
+#[test]
+fn test_fee_500_bps_accepted_as_valid() {
+    let ft = FeeT::new();
+    // Must succeed — 500 is == MAX_FEE_BPS, not above it.
+    ft.client().set_protocol_fee(&ft.admin, &500_u32, &ft.fee_collector);
+
+    let cfg = ft.client().get_protocol_fee();
+    assert!(cfg.is_some(), "fee config must be stored");
+    assert_eq!(cfg.unwrap().fee_bps, 500, "fee_bps must be 500");
+}
+
+// ─── AC-4: above-cap rejection (fee_bps > 500) ────────────────────────────────
+
+/// set_protocol_fee must reject fee_bps = 501 with FeeBpsTooHigh.
+#[test]
+fn test_fee_501_bps_rejected() {
+    let ft = FeeT::new();
+    let result = ft.client().try_set_protocol_fee(&ft.admin, &501_u32, &ft.fee_collector);
+    assert!(
+        matches!(result, Err(Ok(ContractError::FeeBpsTooHigh))),
+        "fee_bps = 501 must return FeeBpsTooHigh"
+    );
+}
+
+/// set_protocol_fee must reject an arbitrarily large fee_bps value.
+#[test]
+fn test_fee_10000_bps_rejected() {
+    let ft = FeeT::new();
+    let result = ft.client().try_set_protocol_fee(&ft.admin, &10_000_u32, &ft.fee_collector);
+    assert!(
+        matches!(result, Err(Ok(ContractError::FeeBpsTooHigh))),
+        "fee_bps = 10000 must return FeeBpsTooHigh"
+    );
+}
+
+/// set_protocol_fee must reject u32::MAX.
+#[test]
+fn test_fee_u32_max_rejected() {
+    let ft = FeeT::new();
+    let result = ft.client().try_set_protocol_fee(&ft.admin, &u32::MAX, &ft.fee_collector);
+    assert!(
+        matches!(result, Err(Ok(ContractError::FeeBpsTooHigh))),
+        "fee_bps = u32::MAX must return FeeBpsTooHigh"
+    );
+}
+
+// ─── AC-5: integer truncation documented via test ─────────────────────────────
+
+/// When amount * fee_bps is not evenly divisible by 10_000 the fee truncates
+/// toward zero (rounds down) and the merchant receives the remainder.
+///
+/// Example: amount = 1 token at 50 bps → fee = 1 * 50 / 10_000 = 0 (truncated).
+/// The merchant receives the full 1 token and the fee collector receives 0.
+#[test]
+fn test_fee_truncation_small_amount() {
+    let ft = FeeT::new();
+    // 1 token * 50 bps / 10_000 = 0 (truncates to 0)
+    let amt = 1_i128;
+
+    ft.client().set_protocol_fee(&ft.admin, &50_u32, &ft.fee_collector);
+    ft.client().subscribe(&ft.subscriber, &ft.merchant, &ft.token, &amt, &86_400_u64, &false);
+    ft.advance(86_400 + 1);
+
+    let sub_before = ft.sub_bal();
+    let mer_before = ft.mer_bal();
+    let fee_before = ft.fee_bal();
+
+    ft.client().execute_payment(&ft.subscriber, &ft.merchant);
+
+    // fee = 1 * 50 / 10_000 = 0 (integer truncation)
+    assert_eq!(ft.sub_bal(), sub_before - amt,      "subscriber must lose 1 token");
+    assert_eq!(ft.mer_bal(), mer_before + amt,       "merchant receives full 1 token (fee truncated to 0)");
+    assert_eq!(ft.fee_bal(), fee_before,             "fee collector receives 0 when fee truncates to 0");
+}
+
+/// Example: amount = 199 at 50 bps → fee = 199 * 50 / 10_000 = 0 (truncated).
+/// Boundary: 200 at 50 bps → fee = 200 * 50 / 10_000 = 1 (first non-zero fee).
+#[test]
+fn test_fee_truncation_boundary() {
+    let ft = FeeT::new();
+
+    ft.client().set_protocol_fee(&ft.admin, &50_u32, &ft.fee_collector);
+
+    // --- 199 tokens: fee truncates to 0 ---
+    let amt_below = 199_i128;
+    ft.client().subscribe(&ft.subscriber, &ft.merchant, &ft.token, &amt_below, &86_400_u64, &false);
+    ft.advance(86_400 + 1);
+    ft.client().execute_payment(&ft.subscriber, &ft.merchant);
+    assert_eq!(ft.fee_bal(), 0, "fee must be 0 for 199 tokens at 50 bps (truncated)");
+
+    // Cancel and re-subscribe at 200 tokens for the second assertion.
+    ft.client().cancel(&ft.subscriber, &ft.merchant);
+
+    let amt_at = 200_i128;
+    ft.client().subscribe(&ft.subscriber, &ft.merchant, &ft.token, &amt_at, &86_400_u64, &false);
+    ft.advance(86_400 + 1);
+    ft.client().execute_payment(&ft.subscriber, &ft.merchant);
+    assert_eq!(ft.fee_bal(), 1, "fee must be exactly 1 for 200 tokens at 50 bps");
+}
+
+// ─── AC-6: get_protocol_fee returns correct config ────────────────────────────
+
+/// get_protocol_fee returns None before any configuration is set.
+#[test]
+fn test_get_protocol_fee_returns_none_when_not_set() {
+    let ft = FeeT::new();
+    assert!(ft.client().get_protocol_fee().is_none(), "get_protocol_fee must return None before set");
+}
+
+/// get_protocol_fee returns the correct config after set_protocol_fee.
+#[test]
+fn test_get_protocol_fee_returns_stored_config() {
+    let ft = FeeT::new();
+    ft.client().set_protocol_fee(&ft.admin, &50_u32, &ft.fee_collector);
+
+    let cfg = ft.client().get_protocol_fee().expect("config must be present after set");
+    assert_eq!(cfg.fee_bps, 50,              "fee_bps must match what was set");
+    assert_eq!(cfg.fee_collector, ft.fee_collector, "fee_collector must match what was set");
+}
+
+/// set_protocol_fee can be called a second time to update the configuration.
+#[test]
+fn test_set_protocol_fee_can_be_updated() {
+    let ft = FeeT::new();
+    let collector2 = Address::generate(&ft.env);
+
+    ft.client().set_protocol_fee(&ft.admin, &50_u32,  &ft.fee_collector);
+    ft.client().set_protocol_fee(&ft.admin, &100_u32, &collector2);
+
+    let cfg = ft.client().get_protocol_fee().expect("config must be present");
+    assert_eq!(cfg.fee_bps, 100,   "fee_bps must reflect the updated value");
+    assert_eq!(cfg.fee_collector, collector2, "fee_collector must reflect the updated address");
+}

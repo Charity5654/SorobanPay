@@ -8,8 +8,9 @@ use soroban_sdk::{contract, contractimpl, symbol_short, token, Address, BytesN, 
 
 use crate::error::ContractError;
 use crate::storage::{
-    subscription_key, DataKey, SubscriptionData, CONTRACT_VERSION, CURRENT_SCHEMA_VERSION,
-    MAX_AMOUNT, MAX_TTL_LEDGERS, MIN_TTL_LEDGERS,
+    get_protocol_fee_config, set_protocol_fee_config, subscription_key, DataKey,
+    ProtocolFeeConfig, SubscriptionData, CONTRACT_VERSION, CURRENT_SCHEMA_VERSION, MAX_AMOUNT,
+    MAX_FEE_BPS, MAX_TTL_LEDGERS, MIN_TTL_LEDGERS,
 };
 
 /// Maximum number of subscribers allowed in a single `batch_execute_payment` call.
@@ -89,8 +90,8 @@ impl SubscriptionProtocol {
     }
 
     /// Return the contract semantic version string (e.g. `"1.0.0"`).
-    pub fn get_version(_env: Env) -> &'static str {
-        CONTRACT_VERSION
+    pub fn get_version(env: Env) -> soroban_sdk::String {
+        soroban_sdk::String::from_str(&env, CONTRACT_VERSION)
     }
 
     /// Return the on-chain schema version set during the last `migrate` call.
@@ -134,6 +135,59 @@ impl SubscriptionProtocol {
         events::emit_contract_migrated(&env, &admin, CURRENT_SCHEMA_VERSION);
 
         Ok(())
+    }
+
+    // =========================================================================
+    // Protocol fee configuration
+    // =========================================================================
+
+    /// Configure the protocol fee.
+    ///
+    /// Requires admin auth.  Sets the basis-points rate and the address that
+    /// will receive the fee portion on every `execute_payment` call.
+    ///
+    /// # Parameters
+    /// - `admin`:         The initialised admin address.
+    /// - `fee_bps`:       Fee in basis points.  `0` disables the fee.
+    ///                    Must be ≤ [`MAX_FEE_BPS`] (500 = 5 %).
+    /// - `fee_collector`: Address that receives the protocol fee.
+    ///
+    /// # Errors
+    /// - `ContractError::NotInitialized` — `initialize` has not been called.
+    /// - `ContractError::NotAdmin`       — caller is not the stored admin.
+    /// - `ContractError::FeeBpsTooHigh`  — `fee_bps > 500`.
+    pub fn set_protocol_fee(
+        env: Env,
+        admin: Address,
+        fee_bps: u32,
+        fee_collector: Address,
+    ) -> Result<(), ContractError> {
+        admin.require_auth();
+
+        let stored_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(ContractError::NotInitialized)?;
+
+        if admin != stored_admin {
+            return Err(ContractError::NotAdmin);
+        }
+
+        if fee_bps > MAX_FEE_BPS {
+            return Err(ContractError::FeeBpsTooHigh);
+        }
+
+        set_protocol_fee_config(&env, ProtocolFeeConfig { fee_bps, fee_collector });
+
+        Ok(())
+    }
+
+    /// Return the current protocol fee configuration, or `None` if not set.
+    ///
+    /// Read-only; no authorization required.
+    pub fn get_protocol_fee(env: Env) -> Option<ProtocolFeeConfig> {
+        get_protocol_fee_config(&env)
     }
 
     // =========================================================================
@@ -266,6 +320,23 @@ impl SubscriptionProtocol {
     ///
     /// # Authorization
     /// Requires a valid signature from `merchant`.
+    ///
+    /// # Fee split
+    ///
+    /// If a protocol fee is configured (via `set_protocol_fee`), the payment is
+    /// split on execution:
+    ///
+    /// ```text
+    /// fee    = amount * fee_bps / 10_000   (integer division — rounds down)
+    /// merchant_amount = amount - fee
+    /// ```
+    ///
+    /// Two transfers are made:
+    /// 1. `subscriber → merchant`        for `merchant_amount`
+    /// 2. `subscriber → fee_collector`   for `fee`
+    ///
+    /// When `fee_bps = 0` (the default) only one transfer is made and behaviour
+    /// is identical to the pre-fee implementation.
     pub fn execute_payment(
         env: Env,
         subscriber: Address,
@@ -293,7 +364,26 @@ impl SubscriptionProtocol {
             return Err(ContractError::TransferFailed);
         }
 
-        token_client.transfer(&subscriber, &merchant, &data.amount);
+        // Apply protocol fee split when configured.
+        let fee_config = get_protocol_fee_config(&env);
+        let (merchant_amount, fee_amount, fee_collector_opt) = match &fee_config {
+            Some(cfg) if cfg.fee_bps > 0 => {
+                let fee = data.amount * (cfg.fee_bps as i128) / 10_000;
+                (data.amount - fee, fee, Some(cfg.fee_collector.clone()))
+            }
+            _ => (data.amount, 0, None),
+        };
+
+        // Transfer merchant portion (or full amount when fee is 0).
+        token_client.transfer(&subscriber, &merchant, &merchant_amount);
+
+        // Transfer protocol fee if non-zero.
+        if fee_amount > 0 {
+            if let Some(ref collector) = fee_collector_opt {
+                token_client.transfer(&subscriber, collector, &fee_amount);
+                events::emit_fee_collected(&env, &subscriber, &merchant, collector, fee_amount);
+            }
+        }
 
         data.next_payment = now + data.interval;
         env.storage().persistent().set(&key, &data);
@@ -312,6 +402,12 @@ impl SubscriptionProtocol {
     ///
     /// # Authorization
     /// Requires a valid signature from `merchant` — authenticated once for the batch.
+    ///
+    /// # Fee split
+    ///
+    /// The same fee logic as [`execute_payment`] applies per subscriber: when a
+    /// protocol fee is configured the merchant receives `amount - fee` and the fee
+    /// collector receives `fee` for each successful payment in the batch.
     pub fn batch_execute_payment(
         env: Env,
         merchant: Address,
@@ -328,9 +424,12 @@ impl SubscriptionProtocol {
 
         events::emit_batch_execute_initiated(&env, &merchant, subscribers.len() as u32);
 
+        // Resolve fee config once for the entire batch.
+        let fee_config = get_protocol_fee_config(&env);
+
         let now = ledger_timestamp(&env)?;
         let mut results: Vec<(Address, bool)> = Vec::new(&env);
-        let mut keys_to_extend: Vec<DataKey> = Vec::new(&env);
+        let mut hashes_to_extend: Vec<soroban_sdk::BytesN<32>> = Vec::new(&env);
 
         for subscriber in subscribers.iter() {
             let hash = subscription_key(&env, &subscriber, &merchant);
@@ -357,11 +456,27 @@ impl SubscriptionProtocol {
                 continue;
             }
 
-            token_client.transfer(&subscriber, &merchant, &data.amount);
+            // Apply protocol fee split when configured.
+            let (merchant_amount, fee_amount, fee_collector_opt) = match &fee_config {
+                Some(cfg) if cfg.fee_bps > 0 => {
+                    let fee = data.amount * (cfg.fee_bps as i128) / 10_000;
+                    (data.amount - fee, fee, Some(cfg.fee_collector.clone()))
+                }
+                _ => (data.amount, 0, None),
+            };
+
+            token_client.transfer(&subscriber, &merchant, &merchant_amount);
+
+            if fee_amount > 0 {
+                if let Some(ref collector) = fee_collector_opt {
+                    token_client.transfer(&subscriber, collector, &fee_amount);
+                    events::emit_fee_collected(&env, &subscriber, &merchant, collector, fee_amount);
+                }
+            }
 
             data.next_payment = now + data.interval;
             env.storage().persistent().set(&key, &data);
-            keys_to_extend.push_back(key);
+            hashes_to_extend.push_back(hash);
 
             events::emit_payment_transfer_success(&env, &subscriber, &merchant, data.amount);
             events::emit_executed(&env, &subscriber, &merchant, &data.token, data.amount);
@@ -369,7 +484,8 @@ impl SubscriptionProtocol {
             results.push_back((subscriber.clone(), true));
         }
 
-        for key in keys_to_extend.iter() {
+        for hash in hashes_to_extend.iter() {
+            let key = DataKey::Subscription(hash);
             env.storage()
                 .persistent()
                 .extend_ttl(&key, MIN_TTL_LEDGERS, MAX_TTL_LEDGERS);
