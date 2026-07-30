@@ -38,6 +38,7 @@ import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { SkeletonForm } from "@/components/Skeleton";
 import { downloadReceipt, type ReceiptData } from "@/components/SubscriptionReceipt";
 import { ShareQRCode } from "@/components/ShareQRCode";
+import { FeeEstimate } from "@/components/FeeEstimate";
 import {
   getPersistedFormData,
   persistFormData,
@@ -1181,6 +1182,34 @@ export default function SubscriptionForm({ initialValues }: SubscriptionFormProp
     },
   });
 
+  // ── Fee simulation ────────────────────────────────────────────────────────
+  // Pre-validate the form to decide whether to run simulation.
+  // We compute a lightweight boolean here (without updating state) so the
+  // hook's dependency array stays stable and doesn't fire extra simulations.
+  const feeFormValid =
+    !!publicKey &&
+    !!merchantAddress.trim() &&
+    !!tokenAddress.trim() &&
+    !!amount.trim() &&
+    !!interval.trim() &&
+    isFormValid(
+      validateSubscriptionForm({ merchantAddress, tokenAddress, amount, interval }),
+    );
+
+  const {
+    status: feeStatus,
+    minResourceFee,
+    breakdown: feeBreakdown,
+    error: feeError,
+  } = useSimulateFee({
+    subscriber: publicKey ?? '',
+    merchant: merchantAddress,
+    token: tokenAddress,
+    amount: Number(amount) || 0,
+    interval: Number(interval) || 0,
+    formValid: feeFormValid,
+  });
+
   // Guard: must have a valid contract address before rendering the form
   // (placed after hooks so rules-of-hooks is satisfied)
   if (!CONTRACT_ID) return <ContractConfigError />;
@@ -1650,6 +1679,14 @@ export default function SubscriptionForm({ initialValues }: SubscriptionFormProp
             token={tokenAddress}
             amount={amount}
             interval={interval}
+          />
+
+          {/* Fee estimate (shown when all fields are valid, before submission) */}
+          <FeeEstimate
+            status={feeStatus}
+            minResourceFee={minResourceFee}
+            breakdown={feeBreakdown}
+            error={feeError}
           />
 
           {/* Submit */}
