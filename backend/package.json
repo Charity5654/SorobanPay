@@ -6,10 +6,12 @@
     "test": "jest --testPathPattern='(?<!integration)\\.test\\.ts$'",
     "test:integration": "jest --testPathPattern='integration\\.test\\.ts$'",
     "test:all": "jest",
+    "test:pact": "jest tests/pact/api.provider.pact.test.ts --verbose",
     "test:watch": "jest --watch",
     "type-check": "tsc --noEmit"
   },
   "devDependencies": {
+    "@pact-foundation/pact": "^12.5.0",
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.6",
     "@types/jest": "^29.5.12",
@@ -32,11 +34,13 @@
     "@opentelemetry/sdk-trace-base": "^1.25.1",
     "@opentelemetry/semantic-conventions": "^1.25.1",
     "@stellar/stellar-sdk": "^16.0.1",
+    "@types/jsonwebtoken": "^9.0.10",
     "bullmq": "^5.31.0",
     "cors": "^2.8.6",
     "express": "^5.2.1",
     "express-rate-limit": "^7.5.0",
     "ioredis": "^5.6.1",
+    "jsonwebtoken": "^9.0.3",
     "node-cron": "^4.5.0",
     "nodemailer": "^6.9.14",
     "pino": "^9.7.0"

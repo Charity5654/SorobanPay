@@ -13,9 +13,9 @@ pub const CURRENT_SCHEMA_VERSION: u32 = 1;
 
 /// Derive the compact 32-byte storage key for a subscription.
 ///
-/// Uses SHA-256 over the concatenation of the subscriber and merchant address
+/// Uses SHA-256 over the concatenation of the subscriber, merchant, and token address
 /// bytes, producing a fixed-size `BytesN<32>` that replaces the old
-/// `(Address, Address)` tuple key.
+/// `(Address, Address, Address)` tuple key.
 ///
 /// # Key size comparison
 /// - Old: ~70 bytes  (two 32-byte Addresses + enum discriminant)
@@ -23,10 +23,16 @@ pub const CURRENT_SCHEMA_VERSION: u32 = 1;
 ///
 /// The ~38-byte reduction (~54 %) translates directly to lower ledger write
 /// fees on every `subscribe` and `execute_payment` call.
-pub fn subscription_key(env: &Env, subscriber: &Address, merchant: &Address) -> BytesN<32> {
+pub fn subscription_key(
+    env: &Env,
+    subscriber: &Address,
+    merchant: &Address,
+    token: &Address,
+) -> BytesN<32> {
     let mut preimage = soroban_sdk::Bytes::new(env);
     preimage.append(&subscriber.to_xdr(env));
     preimage.append(&merchant.to_xdr(env));
+    preimage.append(&token.to_xdr(env));
     env.crypto().sha256(&preimage)
 }
 
@@ -73,15 +79,25 @@ pub enum DataKey {
 #[derive(Clone, Debug)]
 pub struct SubscriptionData {
     /// SEP-41 token contract address
-    pub token:        Address,
+    pub token: Address,
     /// Payment amount per interval (strictly positive, <= MAX_AMOUNT)
-    pub amount:       i128,
+    pub amount: i128,
     /// Seconds between payments  [86_400, 31_536_000]
-    pub interval:     u64,
+    pub interval: u64,
     /// Unix timestamp of the next valid payment window
     pub next_payment: u64,
     /// True when subscription payments are suspended
     pub is_paused:    bool,
+    pub grace_period: u64,
+    pub overdue_since: Option<u64>,
+    pub payment_nonce: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct AdminConfig {
+    pub admin: Address,
+    pub max_amount: i128,
 }
 
 /// Safe upper bound for a single subscription payment amount (1 × 10¹⁸ stroops).
