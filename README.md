@@ -747,6 +747,8 @@ Three ways to access the shortcuts reference:
 | `subscribe(subscriber, merchant, token, amount, interval)` | subscriber | Create or update subscription. Amount must be > 0, interval in [86400, 31536000] seconds. |
 | `execute_payment(subscriber, merchant)` | merchant | Collect payment if interval has elapsed. Transfers tokens directly subscriber → merchant. |
 | `cancel(subscriber, merchant)` | subscriber | Remove subscription from persistent storage. |
+| `get_subscription(subscriber, merchant)` | *(none — read-only)* | Return `Some(SubscriptionData)` if an active subscription exists, or `None` if it does not. |
+| `get_subscription_count(merchant)` | *(none — read-only)* | Return the number of active subscriptions indexed for a given merchant. Returns `0` if none. |
 
 ### Examples
 
@@ -812,6 +814,92 @@ const op = contract.call(
   new Address(merchant).toScVal(),
 );
 // Expected: subscription removed; future execute_payment calls return NoActiveSubscription (error 4).
+```
+
+**get_subscription** — read active subscription state without auth:
+
+```bash
+stellar contract invoke \
+  --id $CONTRACT_ID --network testnet \
+  -- get_subscription \
+  --subscriber GABC...ALICE \
+  --merchant   GXYZ...MERCHANT
+```
+
+```typescript
+import {
+  Contract,
+  SorobanRpc,
+  TransactionBuilder,
+  Networks,
+  Address,
+  scValToNative,
+  xdr,
+} from "@stellar/stellar-sdk";
+
+const server = new SorobanRpc.Server("https://soroban-testnet.stellar.org");
+const contract = new Contract(CONTRACT_ID);
+
+// Build a read-only simulation — no signing required.
+const account = await server.getAccount(anyPublicKey);
+const tx = new TransactionBuilder(account, { fee: "100", networkPassphrase: Networks.TESTNET })
+  .addOperation(
+    contract.call(
+      "get_subscription",
+      new Address(subscriber).toScVal(),
+      new Address(merchant).toScVal(),
+    )
+  )
+  .setTimeout(30)
+  .build();
+
+const sim = await server.simulateTransaction(tx);
+
+if (SorobanRpc.Api.isSimulationSuccess(sim) && sim.result) {
+  const raw = scValToNative(sim.result.retval);
+
+  if (raw === null) {
+    console.log("No active subscription for this pair.");
+  } else {
+    // raw is an object matching SubscriptionData:
+    // { token: string, amount: bigint, interval: bigint, next_payment: bigint, is_paused: boolean }
+    console.log("Subscription:", raw);
+    console.log("Amount (stroops):", raw.amount);
+    console.log("Next payment (unix timestamp):", new Date(Number(raw.next_payment) * 1000));
+  }
+}
+// Expected: returns the SubscriptionData struct or null (None) if no subscription exists.
+// No wallet connection or signature needed — safe to call from any read-only context.
+```
+
+**get_subscription_count** — number of active subscriptions for a merchant:
+
+```bash
+stellar contract invoke \
+  --id $CONTRACT_ID --network testnet \
+  -- get_subscription_count \
+  --merchant GXYZ...MERCHANT
+```
+
+```typescript
+const tx = new TransactionBuilder(account, { fee: "100", networkPassphrase: Networks.TESTNET })
+  .addOperation(
+    contract.call(
+      "get_subscription_count",
+      new Address(merchantAddress).toScVal(),
+    )
+  )
+  .setTimeout(30)
+  .build();
+
+const sim = await server.simulateTransaction(tx);
+
+if (SorobanRpc.Api.isSimulationSuccess(sim) && sim.result) {
+  const count = scValToNative(sim.result.retval) as number;
+  console.log(`Merchant has ${count} active subscriber(s).`);
+}
+// Expected: u32 count of active subscriptions indexed for the merchant.
+// Returns 0 when the merchant has no subscribers or the index has expired.
 ```
 
 For the full parameter reference and error cases see [docs/contract-api.md](docs/contract-api.md).
