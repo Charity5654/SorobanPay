@@ -1,0 +1,64 @@
+{
+  "name": "SorobanPay",
+
+  // Use the docker-compose stack so the full backend is available inside the container
+  "dockerComposeFile": ["../docker-compose.yml", "../docker-compose.dev.yml"],
+  "service": "frontend",
+  "workspaceFolder": "/app",
+
+  // Pre-install tooling via devcontainer features
+  "features": {
+    "ghcr.io/devcontainers/features/node:1": { "version": "20" },
+    "ghcr.io/devcontainers/features/rust:1": { "version": "stable", "targets": "wasm32-unknown-unknown" },
+    "ghcr.io/devcontainers/features/git:1": {},
+    "ghcr.io/devcontainers/features/github-cli:1": {}
+  },
+
+  // Forward the ports used by all services
+  "forwardPorts": [3000, 4000, 5432, 6379, 8080, 8081],
+  "portsAttributes": {
+    "3000": { "label": "Frontend (Next.js)", "onAutoForward": "openBrowser" },
+    "4000": { "label": "Backend API" },
+    "5432": { "label": "PostgreSQL" },
+    "6379": { "label": "Redis" },
+    "8080": { "label": "Adminer (DB)" },
+    "8081": { "label": "Redis Commander" }
+  },
+
+  // Run after the container is created
+  "postCreateCommand": "npm install && echo '✅ SorobanPay devcontainer ready. Run: npm run dev'",
+
+  // VS Code settings and extensions
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "dbaeumer.vscode-eslint",
+        "esbenp.prettier-vscode",
+        "bradlc.vscode-tailwindcss",
+        "rust-lang.rust-analyzer",
+        "ms-azuretools.vscode-docker",
+        "prisma.prisma",
+        "ms-vscode.vscode-typescript-next",
+        "streetsidesoftware.code-spell-checker",
+        "eamodio.gitlens"
+      ],
+      "settings": {
+        "editor.formatOnSave": true,
+        "editor.defaultFormatter": "esbenp.prettier-vscode",
+        "[rust]": {
+          "editor.defaultFormatter": "rust-lang.rust-analyzer"
+        },
+        "typescript.preferences.importModuleSpecifier": "non-relative",
+        "tailwindCSS.includeLanguages": {
+          "typescript": "javascript",
+          "typescriptreact": "javascript"
+        }
+      }
+    }
+  },
+
+  // Container-level environment
+  "remoteEnv": {
+    "NODE_ENV": "development"
+  }
+}

@@ -1,0 +1,112 @@
+# deploy/k8s/webhook-worker-deployment.yaml
+#
+# Webhook Worker — delivers event notifications to merchant-configured HTTP
+# endpoints with exponential back-off (up to 5 attempts per event).
+#
+# Topology notes:
+#   - 2 replicas for redundancy; if one pod is rescheduled, the other keeps
+#     delivering. The worker uses idempotent delivery IDs, so duplicate
+#     delivery from both pods is safe — merchants deduplicate on Event-ID.
+#   - RollingUpdate to avoid delivery gaps during upgrades.
+#   - No Ingress: webhook worker makes outbound HTTP calls, not inbound.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sorobanpay-webhook-worker
+  namespace: sorobanpay
+  labels:
+    app.kubernetes.io/name: sorobanpay
+    app.kubernetes.io/component: webhook-worker
+    app.kubernetes.io/version: "1.0.0"
+  annotations:
+    kubernetes.io/change-cause: "initial deployment"
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: sorobanpay
+      app.kubernetes.io/component: webhook-worker
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: sorobanpay
+        app.kubernetes.io/component: webhook-worker
+        app.kubernetes.io/version: "1.0.0"
+      annotations:
+        checksum/config: "placeholder-update-via-kustomize"
+        checksum/secret: "placeholder-update-via-kustomize"
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "3001"
+        prometheus.io/path: "/metrics"
+    spec:
+      terminationGracePeriodSeconds: 60
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        runAsGroup: 1001
+        fsGroup: 1001
+      containers:
+        - name: webhook-worker
+          image: sorobanpay/backend:latest
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 3001
+              protocol: TCP
+          env:
+            - name: SERVICE_ROLE
+              value: "webhook-worker"
+          envFrom:
+            - configMapRef:
+                name: sorobanpay-config
+            - secretRef:
+                name: sorobanpay-secrets
+          # ── Liveness probe ───────────────────────────────────────────────────
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 3
+            successThreshold: 1
+          # ── Readiness probe ──────────────────────────────────────────────────
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 15
+            timeoutSeconds: 10
+            failureThreshold: 3
+            successThreshold: 1
+          # ── Startup probe ────────────────────────────────────────────────────
+          startupProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 9
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            capabilities:
+              drop:
+                - ALL
+      nodeSelector:
+        kubernetes.io/os: linux
