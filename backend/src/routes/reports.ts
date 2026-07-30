@@ -28,6 +28,12 @@ import { pipeline } from 'stream/promises';
 import prisma from '../lib/prisma';
 import { validateQuery, reportQuerySchema, ReportQuery } from '../middleware/validation';
 import { redactAddress } from '../lib/logger';
+import {
+  cacheGet,
+  cacheSet,
+  CacheKey,
+  CACHE_TTL,
+} from '../lib/redis';
 
 const router = Router();
 
@@ -178,6 +184,22 @@ router.get(
       status: query.status,
     });
 
+    // ── Cache-aside for JSON requests (not streaming CSV) ─────────────────
+    // CSV exports are streamed and typically large; skip caching for them.
+    if (query.format !== 'csv') {
+      const period = `${query.from ?? 'all'}__${query.to ?? 'all'}__${query.status ?? 'all'}__${query.limit ?? 10000}__${query.offset ?? 0}`;
+      const cacheKey = CacheKey.analyticsRevenue(query.merchant, period);
+      const cached = await cacheGet<object[]>(cacheKey);
+      if (cached !== null) {
+        res.setHeader('X-Cache', 'HIT');
+        res.setHeader('Content-Type', 'application/json; charset=utf-8');
+        res.json(cached);
+        return;
+      }
+      // Will be set to MISS below after the DB query
+      (req as any)._analyticsCacheKey = cacheKey;
+    }
+
     // Build Prisma where clause
     const where: Parameters<typeof prisma.auditLog.findMany>[0]['where'] = {
       merchant: query.merchant,
@@ -206,6 +228,8 @@ router.get(
         'Content-Disposition',
         `attachment; filename="payments-${query.merchant.slice(0, 8)}-${Date.now()}.csv"`,
       );
+      // CSV exports are never cached — always fresh from DB
+      res.setHeader('X-Cache', 'MISS');
 
       // Write CSV header immediately
       res.write(toCsvRow(CSV_HEADERS));
@@ -243,7 +267,9 @@ router.get(
     // JSON streaming export
     // -----------------------------------------------------------------------
     res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    res.setHeader('X-Cache', 'MISS');
 
+    const rows: object[] = [];
     res.write('[');
     let first = true;
 
@@ -251,6 +277,7 @@ router.get(
       objectMode: true,
       transform(record, _encoding, callback) {
         const row = toPaymentRow(record);
+        rows.push(row);
         const chunk = (first ? '' : ',') + JSON.stringify(row);
         first = false;
         callback(null, chunk);
@@ -263,9 +290,16 @@ router.get(
       await new Promise<void>((resolve, reject) => {
         source.pipe(jsonTransform);
         jsonTransform.on('data', (chunk: Buffer | string) => res.write(chunk));
-        jsonTransform.on('end', () => {
+        jsonTransform.on('end', async () => {
           res.write(']');
           res.end();
+
+          // Write result to cache after streaming completes
+          const analyticsCacheKey = (req as any)._analyticsCacheKey as string | undefined;
+          if (analyticsCacheKey) {
+            await cacheSet(analyticsCacheKey, rows, CACHE_TTL.analytics).catch(() => {});
+          }
+
           resolve();
         });
         jsonTransform.on('error', reject);

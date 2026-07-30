@@ -1,0 +1,145 @@
+name: Deploy to Testnet
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      force_deploy:
+        description: "Force deploy even if contract build hasn't changed"
+        required: false
+        default: "false"
+        type: boolean
+
+permissions:
+  contents: read
+  pull-requests: write
+  deployments: write
+
+jobs:
+  # ── 1. Deploy Soroban contract to testnet ──────────────────────────────────
+  deploy-contract:
+    name: Deploy contract to testnet
+    runs-on: ubuntu-latest
+    outputs:
+      contract_id: ${{ steps.deploy.outputs.contract_id }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable + wasm32 target
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: contracts/subscription
+
+      - name: Build contract (release)
+        run: make build
+
+      - name: Install Stellar CLI
+        run: cargo install --locked stellar-cli --features opt
+
+      - name: Configure testnet identity from secret
+        if: ${{ secrets.TESTNET_SECRET_KEY != '' }}
+        run: |
+          echo "${{ secrets.TESTNET_SECRET_KEY }}" | stellar keys add deployer --secret-key
+
+      - name: Deploy contract to testnet
+        id: deploy
+        if: ${{ secrets.TESTNET_SECRET_KEY != '' }}
+        run: |
+          CONTRACT_ID=$(STELLAR_NETWORK=testnet STELLAR_IDENTITY=deployer bash deploy/deploy.sh 2>/tmp/deploy-stderr.txt)
+          if [ -z "$CONTRACT_ID" ]; then
+            echo "::error::Contract deployment failed — see stderr below"
+            cat /tmp/deploy-stderr.txt >&2
+            exit 1
+          fi
+          echo "contract_id=$CONTRACT_ID" >> "$GITHUB_OUTPUT"
+          echo "✅ Deployed contract: $CONTRACT_ID"
+        env:
+          STELLAR_NETWORK: testnet
+          STELLAR_IDENTITY: deployer
+
+      - name: Skipping deploy (no TESTNET_SECRET_KEY)
+        if: ${{ secrets.TESTNET_SECRET_KEY == '' }}
+        run: |
+          echo "::warning::TESTNET_SECRET_KEY secret is not set — skipping contract deployment."
+          echo "contract_id=" >> "$GITHUB_OUTPUT"
+
+      - name: Upload WASM artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: soroban-contract-wasm
+          path: contracts/target/wasm32-unknown-unknown/release/soroban_subscription_contract.wasm
+          retention-days: 30
+
+  # ── 2. Build & deploy frontend preview ────────────────────────────────────
+  deploy-frontend:
+    name: Deploy frontend to Vercel
+    runs-on: ubuntu-latest
+    needs: deploy-contract
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+        working-directory: frontend
+
+      - name: Build frontend
+        run: npm run build
+        working-directory: frontend
+        env:
+          NEXT_PUBLIC_CONTRACT_ID: ${{ needs.deploy-contract.outputs.contract_id }}
+          NEXT_PUBLIC_RPC_URL: https://soroban-testnet.stellar.org
+          NEXT_PUBLIC_NETWORK_PASSPHRASE: "Test SDF Network ; September 2015"
+
+      - name: Deploy to Vercel (preview)
+        id: vercel-deploy
+        uses: amondnet/vercel-action@v25
+        if: ${{ secrets.VERCEL_TOKEN != '' }}
+        with:
+          vercel-token: ${{ secrets.VERCEL_TOKEN }}
+          vercel-org-id: ${{ secrets.VERCEL_ORG_ID }}
+          vercel-project-id: ${{ secrets.VERCEL_PROJECT_ID }}
+          working-directory: frontend
+
+      - name: Skipping Vercel deploy (no VERCEL_TOKEN)
+        if: ${{ secrets.VERCEL_TOKEN == '' }}
+        run: echo "::warning::VERCEL_TOKEN secret is not set — skipping frontend deployment."
+
+      - name: Comment preview details on PR
+        uses: actions/github-script@v7
+        if: >
+          github.event_name == 'pull_request' &&
+          secrets.VERCEL_TOKEN != '' &&
+          steps.vercel-deploy.outputs.preview-url != ''
+        with:
+          script: |
+            const previewUrl  = '${{ steps.vercel-deploy.outputs.preview-url }}';
+            const contractId  = '${{ needs.deploy-contract.outputs.contract_id }}';
+            const body = [
+              '## 🚀 Testnet Preview',
+              '',
+              `| | |`,
+              `|---|---|`,
+              `| 🔗 **Preview URL** | [${previewUrl}](${previewUrl}) |`,
+              contractId ? `| 📋 **Contract ID** | \`${contractId}\` |` : '| 📋 **Contract ID** | _not deployed_ |',
+              '',
+              '_Deployed automatically from this PR via [deploy-testnet.yml](.github/workflows/deploy-testnet.yml)._',
+            ].join('\n');
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body,
+            });
