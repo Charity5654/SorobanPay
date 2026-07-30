@@ -407,6 +407,9 @@ impl SubscriptionProtocol {
 
     /// Query active subscription details for a subscriber-merchant pair.
     ///
+    /// Returns `Some(SubscriptionData)` if an active subscription exists, or
+    /// `None` if the pair has no subscription (never subscribed, or cancelled).
+    ///
     /// Read-only; no authorization required.
     pub fn get_subscription(
         env: Env,
@@ -420,6 +423,23 @@ impl SubscriptionProtocol {
             .persistent()
             .extend_ttl(&key, MIN_TTL_LEDGERS, MAX_TTL_LEDGERS);
         Some(data)
+    }
+
+    /// Return the number of active subscriptions indexed for a given merchant.
+    ///
+    /// Uses the `MerchantIndex` temporary-storage vector maintained by `subscribe`
+    /// and `cancel`.  Returns `0` when the merchant has no subscribers or the
+    /// index entry has expired from temporary storage.
+    ///
+    /// Read-only; no authorization required.
+    pub fn get_subscription_count(env: Env, merchant: Address) -> u32 {
+        let idx_key = DataKey::MerchantIndex(merchant);
+        let index: Vec<BytesN<32>> = env
+            .storage()
+            .temporary()
+            .get(&idx_key)
+            .unwrap_or_else(|| Vec::new(&env));
+        index.len()
     }
 }
 
