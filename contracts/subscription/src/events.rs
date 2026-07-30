@@ -189,3 +189,26 @@ pub fn emit_low_allowance(
         (allowance, required),
     );
 }
+
+/// Emit the `fee_collected` event after a protocol fee has been successfully transferred
+/// to the fee collector on payment execution.
+///
+/// Topics:  (symbol("fee_collected"), subscriber, merchant, fee_collector)
+/// Data:    fee_amount (i128)
+pub fn emit_fee_collected(
+    env: &Env,
+    subscriber: &Address,
+    merchant: &Address,
+    fee_collector: &Address,
+    fee_amount: i128,
+) {
+    env.events().publish(
+        (
+            Symbol::new(env, "fee_collected"),
+            subscriber.clone(),
+            merchant.clone(),
+            fee_collector.clone(),
+        ),
+        fee_amount,
+    );
+}

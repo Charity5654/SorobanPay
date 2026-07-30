@@ -99,12 +99,35 @@ This section documents which address is expected to authenticate at each contrac
 
 ### Auth matrix
 
-| Entry point | Authenticating address | Auth position in code | Attack if wrong party |
-|-------------|----------------------|----------------------|----------------------|
-| `subscribe` | `subscriber` | Line 1, before any state read | Merchant cannot create subscriptions on behalf of users without their key |
-| `execute_payment` | `merchant` | Line 1, before storage load | Subscriber cannot block collection by impersonating merchant; random address cannot trigger transfers |
-| `execute_payment_batch` | `merchant` | Line 1, before loop | Only the declared merchant can batch-collect; one merchant cannot collect on behalf of another |
-| `cancel` | `subscriber` | Line 1, before storage check | Merchant cannot cancel a subscriber's subscription unilaterally |
+> **Audit status: COMPLETE** — every entry point listed below has been verified by code review and covered by negative unit tests in `contracts/subscription/src/security_tests.rs`. The test categories referenced are in the same file.
+
+| Entry point | Authenticating address | `require_auth()` position | Failure mode if wrong party | Test category |
+|-------------|----------------------|--------------------------|----------------------------|---------------|
+| `initialize` | *(none — panics if already initialized)* | n/a — no auth | Panics: "already initialized" | — |
+| `get_version` | *(none — read-only)* | n/a | No state change | — |
+| `get_schema_version` | *(none — read-only)* | n/a | No state change | — |
+| `migrate` | `admin` | Line 1, before any storage read | `require_auth()` panics; or `NotAdmin` if wrong address provides correct auth | Category 9 |
+| `set_protocol_fee` | `admin` | Line 1, before any storage read | `require_auth()` panics; or `NotAdmin` if wrong address provides correct auth | Category 9 |
+| `get_protocol_fee` | *(none — read-only)* | n/a | No state change | — |
+| `compute_subscription_key` | *(none — read-only)* | n/a | No state change | — |
+| `get_merchant_subscription_keys` | *(none — read-only)* | n/a | No state change | — |
+| `subscribe` | `subscriber` | Line 1, before input validation | `require_auth()` panics; merchant cannot create subscriptions without user's key | Categories 1, 2, 3, 6 |
+| `execute_payment` | `merchant` | Line 1, before storage load | `require_auth()` panics; subscriber/attacker cannot trigger token transfer | Categories 1, 2, 3, 6, 7 |
+| `batch_execute_payment` | `merchant` | Line 1, before loop | `require_auth()` panics; only the declared merchant can batch-collect | Category 10 |
+| `cancel` | `subscriber` | Line 1, before storage check | `require_auth()` panics; merchant cannot cancel subscriber's agreement | Categories 1, 2, 3, 6 |
+| `transfer_subscription` | `subscriber` AND `old_merchant` (dual-auth) | Lines 1–2, before storage load | Either `require_auth()` panics; neither party alone can reassign | Category 11 |
+| `get_subscription` | *(none — read-only)* | n/a | No state change | — |
+| `get_subscription_count` | *(none — read-only)* | n/a | No state change | — |
+
+### No ambient auth state
+
+Soroban's `require_auth()` is stateless: it checks the authorization envelope of the **current invocation** only. There is no session, no ambient grant, and no way for a previous invocation's authorization to carry over to a subsequent call. This is enforced by the host, not application logic.
+
+The following tests in Category 12 (`security_tests.rs`) verify this property explicitly:
+
+- `sec_no_ambient_auth_from_subscribe_to_execute_payment` — a prior `subscribe` authorization does not permit a subsequent unauthorized `execute_payment`.
+- `sec_no_ambient_auth_from_execute_payment_to_cancel` — a prior `execute_payment` authorization does not permit a subsequent unauthorized `cancel`.
+- `sec_no_ambient_auth_across_two_subscribe_calls` — each `subscribe` call requires its own fresh signature.
 
 ### Why `execute_payment` is merchant-authorized
 
@@ -124,6 +147,15 @@ The subscriber's signature on `subscribe` is the primary consent signal. By sign
 
 This two-step consent model (subscribe + approve) means revoking either the subscription (`cancel`) or the token allowance immediately halts future payments.
 
+### Why `transfer_subscription` requires dual-auth
+
+`transfer_subscription` moves a subscription from `old_merchant` to `new_merchant`. Both `subscriber` and `old_merchant` must authorize because:
+
+1. The subscriber is consenting to a change in who receives their payments.
+2. The old merchant is consenting to give up their payment stream (preventing unilateral hijack by the subscriber alone).
+
+Neither party alone can reassign the subscription. An attacker holding neither key cannot forge either signature.
+
 ### `require_auth` placement rule
 
 As a contributor, always call `require_auth()` as the **first statement** in any entry point, before any storage reads, logging, or external calls. This prevents auth bypass via state-dependent short-circuits.
@@ -142,6 +174,25 @@ pub fn subscribe(env: Env, subscriber: Address, ...) -> Result<(), ContractError
     // ...
 }
 ```
+
+### Auth audit checklist
+
+| # | Check | Status |
+|---|-------|--------|
+| 1 | Every mutating entry point calls `require_auth()` as its first statement | ✅ Verified by code review |
+| 2 | Read-only entry points (`get_*`, `compute_*`) require no auth | ✅ Verified |
+| 3 | `subscribe` authorizes `subscriber`, not `merchant` | ✅ Tests: Category 3, 6 |
+| 4 | `execute_payment` authorizes `merchant`, not `subscriber` | ✅ Tests: Category 3, 6 |
+| 5 | `batch_execute_payment` authorizes `merchant` — once for the batch | ✅ Tests: Category 10 |
+| 6 | `cancel` authorizes `subscriber`, not `merchant` | ✅ Tests: Category 3, 6 |
+| 7 | `transfer_subscription` requires both `subscriber` and `old_merchant` | ✅ Tests: Category 11 |
+| 8 | `migrate` authorizes `admin` (stored on-chain at `initialize`) | ✅ Tests: Category 9 |
+| 9 | `set_protocol_fee` authorizes `admin` | ✅ Tests: Category 9 |
+| 10 | No entry point reads auth state set by a previous invocation (no ambient auth) | ✅ Tests: Category 12 |
+| 11 | Attacker with no authorization receives panic on every mutating entry point | ✅ Tests: Category 2 |
+| 12 | Replay within same billing window returns `PaymentNotDue` | ✅ Tests: Category 4 |
+| 13 | Cancellation prevents subsequent payment collection | ✅ Tests: Category 4 |
+| 14 | Self-subscription rejected before any storage write | ✅ Tests: Category 5 |
 
 ---
 
@@ -790,190 +841,7 @@ For questions about this policy, contact the repository maintainers via the GitH
 - [ ] `cargo audit` and `npm audit` passing in CI
 - [ ] CSP headers configured in `next.config.mjs`
 - [ ] Security advisory channel tested (can create a draft advisory)
-
----
-
-## 9. Pause / Unpause Runbook (SC-30)
-
-The `pause_contract` / `unpause_contract` entry points provide an on-chain circuit breaker that immediately halts all state-mutating operations without requiring coordination with merchants or subscribers. This section describes when and how to use it.
-
-### When to use the pause
-
-Pause the contract when you have **confirmed** (not merely suspected) one of the following:
-
-| Scenario | Use pause? | Notes |
-|----------|-----------|-------|
-| Critical vulnerability in `subscribe`, `execute_payment`, or `cancel` | ✅ Yes | Stops exploitation immediately |
-| Dependency vulnerability in a SEP-41 token contract | ✅ Yes | Prevents further transfers until assessed |
-| Backend compromise (scheduler or indexer) | ⚠️ Optional | Backend cannot sign transactions; pause is precautionary |
-| Suspected front-running or MEV | ❌ No | No financial incentive to front-run; do not pause lightly |
-| Spam subscriptions (high volume, no exploits) | ❌ No | Rate-limit at the backend level instead |
-| Network congestion or RPC outage | ❌ No | Pause does not help network-level issues |
-
-**Pausing is disruptive.** All `subscribe`, `execute_payment`, `execute_payment_batch`, and `cancel` calls return `ContractPaused` (error 16) until unpause. Do not pause for anything less than a confirmed critical or high-severity issue.
-
-### Prerequisites
-
-The admin key must be:
-- Stored in a **hardware wallet** or **multisig account** for mainnet use.
-- Known and accessible to at least two team members (avoid single-key dependency).
-- Funded with enough XLM to pay transaction fees (minimum 1 XLM recommended).
-
-The contract must have been initialised with `initialize(admin)` before the pause functionality is available. Check with:
-
-```bash
-stellar contract invoke \
-  --id <CONTRACT_ID> --network mainnet \
-  -- is_paused
-```
-
-### Phase 1 — Pause (target: within 5 minutes of confirmed incident)
-
-#### Using the Stellar CLI
-
-```bash
-stellar contract invoke \
-  --id <CONTRACT_ID> \
-  --source <admin-identity> \
-  --network mainnet \
-  -- pause_contract
-```
-
-#### Using the JavaScript SDK
-
-```typescript
-import { Contract, SorobanRpc, TransactionBuilder, Networks, Keypair } from "@stellar/stellar-sdk";
-
-const server    = new SorobanRpc.Server("https://mainnet.stellar.validationcloud.io/v1/<KEY>");
-const adminKey  = Keypair.fromSecret(process.env.ADMIN_SECRET!);
-const contract  = new Contract(process.env.CONTRACT_ID!);
-const account   = await server.getAccount(adminKey.publicKey());
-
-const tx = new TransactionBuilder(account, {
-  fee: "10000",
-  networkPassphrase: Networks.PUBLIC,
-})
-  .addOperation(contract.call("pause_contract"))
-  .setTimeout(30)
-  .build();
-
-const simResult = await server.simulateTransaction(tx);
-if (!SorobanRpc.Api.isSimulationSuccess(simResult)) {
-  throw new Error(`Simulation failed: ${JSON.stringify(simResult)}`);
-}
-
-const preparedTx = SorobanRpc.assembleTransaction(tx, simResult).build();
-preparedTx.sign(adminKey);
-const response = await server.sendTransaction(preparedTx);
-console.log("Pause transaction:", response.hash);
-```
-
-#### Verify the pause
-
-```bash
-# Should print "true"
-stellar contract invoke \
-  --id <CONTRACT_ID> --network mainnet \
-  -- is_paused
-```
-
-Query the `contract_paused` event to obtain an on-chain timestamp of when the pause was recorded:
-
-```bash
-stellar events \
-  --id <CONTRACT_ID> \
-  --network mainnet \
-  --type contract \
-  --start-ledger <recent-ledger>
-```
-
-### Phase 2 — Communicate (within 15 minutes)
-
-1. Post in your internal incident channel: contract address, time of pause, severity level, and incident lead.
-2. Notify merchants via webhook, email, or Discord that the contract is paused and `execute_payment` calls will fail with error 16 until further notice.
-3. Optionally publish a status-page incident:
-   - Status: **Investigating**
-   - Message: "The SorobanPay contract has been temporarily paused to investigate a potential security issue. No funds are at risk at this time. We will update this page as the investigation proceeds."
-4. Do **not** disclose technical vulnerability details until a fix is deployed.
-
-### Phase 3 — Investigate and fix
-
-While the contract is paused, no new transactions are processed.  You can still call read-only entry points (`get_subscription`, `is_paused`, `version`) to query state.
-
-Follow the same investigation steps as the [Circuit Breaker Runbook (SC-25)](#4-circuit-breaker-runbook-sc-25), Phase 3.
-
-### Phase 4 — Unpause or deploy a new version
-
-#### Option A — Unpause (vulnerability was not exploitable or has a hotfix)
-
-If the vulnerability can be resolved without a contract upgrade (e.g., a backend configuration change, a false alarm, or the exploit vector is no longer reachable):
-
-```bash
-stellar contract invoke \
-  --id <CONTRACT_ID> \
-  --source <admin-identity> \
-  --network mainnet \
-  -- unpause_contract
-```
-
-Verify:
-
-```bash
-# Should print "false"
-stellar contract invoke \
-  --id <CONTRACT_ID> --network mainnet \
-  -- is_paused
-```
-
-Update your status page: **Resolved** — "The contract has been unpaused. Normal operations have resumed."
-
-#### Option B — Deploy a new contract version (vulnerability requires code change)
-
-Because Soroban contracts are immutable, a code fix requires deploying a new instance.  Follow Phase 4 of the [Circuit Breaker Runbook (SC-25)](#4-circuit-breaker-runbook-sc-25).
-
-Keep the old contract **paused** (do not unpause it) to ensure subscribers and merchants migrate to the new address.
-
-### Phase 5 — Post-incident
-
-1. Write a post-mortem: timeline, root cause, impact assessment, remediation steps.
-2. Update this runbook with any new lessons learned.
-3. Verify that the `contract_paused` and `contract_unpaused` events were captured in your event indexer.
-4. Re-run `make test` and `cargo audit` on the updated codebase.
-5. File a CVE if the vulnerability involves a shared dependency.
-
-### Severity and response time
-
-| Severity | Pause immediately? | Response SLA |
-|----------|--------------------|-------------|
-| Critical — funds at risk, active exploit | ✅ Yes | Pause < 5 min; fix < 4 hr |
-| High — auth bypass, state corruption | ✅ Yes | Pause < 15 min; fix < 24 hr |
-| Medium — DoS, information leak | ⚠️ Evaluate | Fix < 72 hr; pause optional |
-| Low — edge case, no immediate risk | ❌ No | Fix in next release |
-
-### Admin key security
-
-The admin key has no financial custody over contract funds (the contract holds no balances), but it controls contract availability.  A compromised admin key allows an attacker to pause the contract indefinitely (DoS).
-
-Best practices:
-- Use a **Stellar multisig account** (e.g., 2-of-3) as the admin address for mainnet.
-- Store the admin secret in a hardware wallet (Ledger) or HSM — never in a `.env` file.
-- Document the admin address in your incident runbook so any on-call engineer can verify pauses.
-- Rotate the admin key by deploying a new contract with a different admin address (no admin-transfer mechanism exists in this version).
-
-### Auth matrix update for admin entry points
-
-The following rows supplement the auth matrix in [§2 Authorization Audit](#2-authorization-audit-sc-20):
-
-| Entry point | Authenticating address | Effect when paused |
-|-------------|----------------------|--------------------|
-| `initialize` | `admin` (new) | Always available (creates AdminConfig) |
-| `pause_contract` | `admin` | Always available (admin can pause a paused contract — no-op) |
-| `unpause_contract` | `admin` | Always available (admin can unpause) |
-| `is_paused` | *(no auth)* | Always available (read-only) |
-| `subscribe` | `subscriber` | Returns `ContractPaused` (16) |
-| `execute_payment` | `merchant` | Returns `ContractPaused` (16) |
-| `execute_payment_batch` | `merchant` | Returns `ContractPaused` (16) |
-| `cancel` | `subscriber` | Returns `ContractPaused` (16) |
-| `get_subscription` | *(no auth)* | Unaffected — read-only |
-| `version` | *(no auth)* | Unaffected — read-only |
-| `contract_name` | *(no auth)* | Unaffected — read-only |
+- [x] Auth audit checklist completed (§2 Authorization Audit)
+- [x] Negative auth tests for every entry point (`security_tests.rs`, categories 1–12)
+- [x] No entry point relies on ambient auth state (category 12 tests pass)
+- [x] Auth tests run as part of `make test`
