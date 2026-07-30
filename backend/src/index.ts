@@ -1,3 +1,12 @@
+/**
+ * SorobanPay backend — main entry point.
+ *
+ * Import order matters: tracing MUST be first so OpenTelemetry can patch
+ * all subsequently loaded modules (Express, http, Prisma).
+ */
+import { initTracing } from './lib/tracing';
+initTracing();
+
 import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
@@ -6,88 +15,184 @@ import { validateConfig } from './lib/config';
 import { EventIndexer } from './services/eventIndexer';
 import { PayoutSummaryGenerator } from './services/payoutSummaryGenerator';
 import { PaymentScheduler } from './services/paymentScheduler';
-import { YieldCalculationEngine } from './services/yieldCalculationEngine';
-import summariesRouter from './routes/summaries';
-import subscriptionsRouter from './routes/subscriptions';
-import auditLogsRouter from './routes/auditLogs';
+import { createRetryScheduler } from './services/retryScheduler';
+import { retryQueue } from './services/retryQueue';
+import { startWebhookWorker, shutdownWebhookWorker } from './services/webhookQueue'; // BE-53
 import { apiLimiter } from './middleware/rateLimiter';
+import { versionMiddleware } from './middleware/versioning';
+import summariesRouter from './routes/summaries';
+import reconcileRouter from './routes/reconcile';
+import subscriptionsRouter from './routes/subscriptions';
+import webhooksRouter from './routes/webhooks';
+import notificationsRouter from './routes/notifications';
+import versionRouter from './routes/version';
+import analyticsRouter from './routes/analytics';   // FE-50 / BE-52
+import adminRouter from './routes/admin';
+import authRouter from './routes/auth';                        // BE-55: merchant auth
+import { buildHealthRouter } from './routes/health';
+import { requireMerchant } from './middleware/merchantAuth';  // BE-55: JWT guard
+import { reconcile } from './services/reconciler';
+import { PrismaSubscriptionDB, fetchChainEventsFromDB } from './services/reconciler';
+import { getPrometheusMetrics } from './services/metricsService';
+import { startRetryWorker, shutdownRetryWorker } from './services/retryQueue';
 
-const app = express();
-const config = validateConfig(process.env);
+// ─── Config ─────────────────────────────────────────────────────────────────
+const config = validateConfig();
 const { port: PORT, rpcUrl, contractId } = config;
 
-// Middleware
+// ─── App ─────────────────────────────────────────────────────────────────────
+const app = express();
+
 app.use(cors());
 app.use(express.json());
+
+// Dynamic tenant middleware
+try {
+  const { tenantAuthMiddleware } = require('./middleware/tenantAuth');
+  if (tenantAuthMiddleware) app.use(tenantAuthMiddleware);
+} catch (e) {}
+
 app.use(apiLimiter);
+app.use(versionMiddleware);   // BE-69: attach version info + deprecation headers
 
-// Routes
-app.use('/api/summaries', summariesRouter);
-app.use('/api/subscriptions', subscriptionsRouter);
-app.use('/api/audit-logs', auditLogsRouter);
+// Dynamic extended health check routes (GET /health, /health/ready, /health/live)
+try {
+  const { extendedHealthRouter } = require('./routes/extendedHealth');
+  if (extendedHealthRouter) {
+    app.use('/', extendedHealthRouter);
+  }
+} catch (e) {}
 
-// Initialize services
-const networkPassphrase = process.env.NETWORK_PASSPHRASE || 'Test SDF Network ; September 2015';
+// Dynamic GraphQL endpoint (/graphql)
+try {
+  const { handleGraphQLRequest } = require('./graphql/server');
+  if (handleGraphQLRequest) {
+    app.use('/graphql', handleGraphQLRequest);
+  }
+} catch (e) {}
 
-const eventIndexer = new EventIndexer(rpcUrl, contractId);
-const summaryGenerator = new PayoutSummaryGenerator();
-const yieldEngine = new YieldCalculationEngine({
-  onFailure: (context) => {
-    console.error(`[yield-engine] Calculation failed for ${context.positionId}: ${context.error}`);
-  },
+// Dynamic Tenant Admin Router
+try {
+  const { tenantAdminRouter } = require('./routes/adminTenants');
+  if (tenantAdminRouter) {
+    app.use('/v1/admin', tenantAdminRouter);
+  }
+} catch (e) {}
+
+// ─── Version manifest ────────────────────────────────────────────────────────
+// GET /  →  version manifest
+app.use('/', versionRouter);
+
+// ─── Health (unversioned) ────────────────────────────────────────────────────
+app.use('/health', buildHealthRouter(rpcUrl, contractId));
+
+// ─── Versioned routes — /api/v1/ ─────────────────────────────────────────────
+app.use('/api/v1/auth',          authRouter);                             // BE-55: unauthenticated
+app.use('/api/v1/subscriptions', requireMerchant, subscriptionsRouter);  // BE-55: protected
+app.use('/api/v1/webhooks',      webhooksRouter);
+app.use('/api/v1/summaries',     summariesRouter);
+app.use('/api/v1/reconcile',     reconcileRouter);
+app.use('/api/v1/notifications', notificationsRouter);  // BE-68
+app.use('/api/v1/admin',         adminRouter);          // BE-75: admin dashboard
+app.use('/api/v1/analytics',     requireMerchant, analyticsRouter);  // FE-50: revenue analytics
+
+// ─── Prometheus metrics (unauthenticated — restrict to internal network) ─────
+app.get('/metrics', (_req, res) => {
+  res.set('Content-Type', 'text/plain; version=0.0.4');
+  res.send(getPrometheusMetrics());
 });
 
-// Payment scheduler — only active when operator secret is configured
+// ─── Backward-compatible aliases — /api/ (no version prefix) ─────────────────
+app.use('/api/subscriptions', subscriptionsRouter);
+app.use('/api/subscriptions/:subscriber/:merchant/retries', retriesRouter);
+app.use('/api/webhooks',      webhooksRouter);
+app.use('/api/summaries',     summariesRouter);
+app.use('/api/reconcile',     reconcileRouter);
+app.use('/api/notifications', notificationsRouter);
+app.use('/api/analytics',     analyticsRouter);        // FE-50: backward-compat alias
+
+// GET /api  →  same version manifest
+app.use('/api', versionRouter);
+
+// ─── Services ────────────────────────────────────────────────────────────────
+const networkPassphrase = process.env.NETWORK_PASSPHRASE ?? 'Test SDF Network ; September 2015';
+const eventIndexer      = new EventIndexer(rpcUrl, contractId);
+const summaryGenerator  = new PayoutSummaryGenerator();
+
 const operatorSecret = process.env.OPERATOR_SECRET;
 const paymentScheduler = operatorSecret
   ? new PaymentScheduler(rpcUrl, contractId, operatorSecret, networkPassphrase)
   : null;
 
-// Schedule jobs
-// Fetch events every 5 minutes
+// ─── Retry infrastructure ─────────────────────────────────────────────────────
+const retryScheduler = createRetryScheduler(rpcUrl, contractId, operatorSecret, networkPassphrase);
+if (retryScheduler) {
+  // Inject into eventIndexer so payment_transfer_failure events trigger retries
+  eventIndexer.setRetryScheduler(retryScheduler);
+} else {
+  console.warn('[retry] OPERATOR_SECRET not set — automated payment retries disabled.');
+}
+
+// ─── Cron jobs ───────────────────────────────────────────────────────────────
 cron.schedule('*/5 * * * *', async () => {
-  console.log('Fetching new events...');
+  console.log('[cron] Fetching new events...');
   await eventIndexer.fetchAndStoreEvents();
 });
 
-// Execute due payments every minute
 cron.schedule('* * * * *', async () => {
   if (!paymentScheduler) return;
   await paymentScheduler.processDuePayments();
 });
 
+// Process due retry jobs every minute
+cron.schedule('* * * * *', async () => {
+  await retryQueue.processDueJobs();
+});
+
 // Generate daily summaries at 1 AM every day
 cron.schedule('0 1 * * *', async () => {
-  console.log('Generating daily summaries...');
+  console.log('[cron] Generating daily summaries...');
   await summaryGenerator.generateDailySummaries();
 });
 
-// Generate weekly summaries at 2 AM every Sunday
 cron.schedule('0 2 * * 0', async () => {
-  console.log('Generating weekly summaries...');
+  console.log('[cron] Generating weekly summaries...');
   await summaryGenerator.generateWeeklySummaries();
 });
 
-// Recalculate active vault positions every hour
 cron.schedule('0 * * * *', async () => {
-  console.log('Updating vault yield positions...');
-  const samplePositions: Array<{
-    id: string;
-    principal: number;
-    status: 'active' | 'deactivated' | 'closed';
-    yieldSources: Array<{ name: string; apy: number; weight?: number }>;
-    lastCalculatedAt: Date;
-  }> = [];
-
-  await yieldEngine.processBatch(samplePositions);
+  console.log('[cron] Running reconciliation...');
+  try {
+    const [chainEvents, db] = await Promise.all([
+      fetchChainEventsFromDB(),
+      PrismaSubscriptionDB.load(),
+    ]);
+    const { repairs, errors } = reconcile(chainEvents, db);
+    console.log(`[cron] Reconciliation complete: ${repairs.length} repairs, ${errors.length} errors`);
+    if (errors.length > 0) console.warn('[cron] Reconciliation errors:', errors);
+  } catch (err) {
+    console.error('[cron] Reconciliation error:', err);
+  }
 });
 
-// Start server
+// ─── Start ───────────────────────────────────────────────────────────────────
 app.listen(PORT, () => {
-  console.log(`Server is running on port ${PORT}`);
+  console.log(`[server] SorobanPay backend running on port ${PORT}`);
   if (!operatorSecret) {
     console.warn('[scheduler] OPERATOR_SECRET not set — payment scheduler disabled.');
   }
-  // Initial fetch of events
+  try {
+    startRetryWorker();
+  } catch (err) {
+    console.warn('[retryWorker] Could not start retry worker (Redis unavailable?):', err);
+  }
   eventIndexer.fetchAndStoreEvents();
 });
+
+process.on('SIGTERM', async () => {
+  eventIndexer.stopPolling();   // BE-51: stop cursor-based polling
+  await shutdownRetryWorker();
+  process.exit(0);
+});
+
+export default app;
