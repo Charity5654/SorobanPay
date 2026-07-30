@@ -9,11 +9,13 @@ This document is the authoritative security reference for SorobanPay. It covers 
 1. [Contract Security Model](#1-contract-security-model)
 2. [Authorization Audit (SC-20)](#2-authorization-audit-sc-20)
 3. [Backend Secrets Management](#3-backend-secrets-management)
+   - [3a. Merchant Authentication — SEP-10 Challenge-Response (BE-55)](#3a-merchant-authentication--sep-10-challenge-response-be-55)
 4. [Circuit Breaker Runbook (SC-25)](#4-circuit-breaker-runbook-sc-25)
 5. [Frontend Security](#5-frontend-security)
 6. [Known Limitations and Mitigations](#6-known-limitations-and-mitigations)
 7. [Dependency Security](#7-dependency-security)
 8. [Security Disclosure Policy](#8-security-disclosure-policy)
+9. [Pause / Unpause Runbook (SC-30)](#9-pause--unpause-runbook-sc-30)
 
 ---
 
@@ -380,6 +382,101 @@ const webhookSecret = readSecret('WEBHOOK_SECRET', 'WEBHOOK_SECRET_FILE');
 
 ---
 
+## 3a. Merchant Authentication — SEP-10 Challenge-Response (BE-55)
+
+All merchant-scoped backend API endpoints require authentication. Because merchants are Stellar keypair owners — not username/password holders — authentication is based on proving ownership of a Stellar private key via a cryptographic challenge-response flow. This mirrors [SEP-10: Stellar Web Authentication](https://github.com/stellar/stellar-protocol/blob/master/ecosystem/sep-0010.md).
+
+### Why SEP-10 style, not passwords
+
+Password-based authentication is inappropriate for a non-custodial blockchain app:
+
+- Merchants have no passwords — they have Stellar keypairs.
+- Issuing a JWT after a password check does nothing to verify the merchant controls the on-chain address that owns the subscription records.
+- SEP-10 challenge-response ties authentication directly to key ownership, making it impossible to claim another merchant's data without their private key.
+
+### Flow
+
+```
+1. GET /api/v1/auth/challenge?account=G…
+   ← { transaction: "<unsigned XDR>", network_passphrase, expires_in: 300 }
+
+2. Merchant signs the transaction with their private key (e.g. via Freighter).
+
+3. POST /api/v1/auth/token  { transaction: "<signed XDR>" }
+   ← { token: "<JWT>", expires_in: 86400 }
+
+4. All subsequent requests:
+   Authorization: Bearer <JWT>
+```
+
+### Challenge transaction
+
+The challenge is a Stellar `ManageData` transaction:
+
+- **Source account**: the merchant's G-address (so the transaction is tied to their key).
+- **Operation**: `ManageData("SorobanPay auth", <32-byte random nonce>)`.
+- **TTL**: 5 minutes. The server rejects signed transactions after expiry.
+- **Never broadcast**: the transaction is only used as a sign-this-data vehicle; it is never submitted to the network.
+
+### Server-side verification (`verifyChallenge`)
+
+Before issuing a JWT, the server checks:
+
+1. The XDR decodes to a valid Stellar transaction.
+2. A pending challenge exists for the transaction's source account.
+3. The challenge has not expired.
+4. The `ManageData` nonce in the transaction matches the stored nonce (prevents replay of a different account's signed XDR).
+5. At least one signature on the transaction is valid for the source account, verified using `Keypair.verify()` from `@stellar/stellar-sdk`.
+
+On success the challenge is consumed (deleted from the in-memory store) so it cannot be replayed.
+
+### JWT payload and expiry
+
+```jsonc
+{
+  "address": "G…",   // Merchant's Stellar public key — the authenticated identity
+  "iat": 1700000000, // Issued-at (Unix seconds)
+  "exp": 1700086400  // Expiry 24 hours later
+}
+```
+
+Signed with HMAC-SHA256 using `JWT_SECRET` from the environment. The algorithm and implementation match the admin JWT (`adminAuth.ts`) to keep the codebase consistent.
+
+### Protected endpoints
+
+| Route prefix | Protection |
+|---|---|
+| `GET /api/v1/auth/challenge` | None (public — required to start the flow) |
+| `POST /api/v1/auth/token` | None (public — accepts signed challenge) |
+| `GET /api/v1/subscriptions/*` | `requireMerchant` — valid JWT required |
+| All other `/api/v1/` routes | Unchanged (see their respective middleware) |
+
+### Environment variable
+
+| Variable | Required | Notes |
+|---|---|---|
+| `JWT_SECRET` | ✅ | 32+ byte random string; generate with `openssl rand -hex 32`. **Never reuse `ADMIN_JWT_SECRET`.** |
+
+### Tenant isolation
+
+`requireMerchant` extracts `res.locals.merchantAddress` from the JWT. Route handlers that return merchant-specific data (e.g. subscriptions, payments) **must** filter by this address — not by a URL parameter — to prevent horizontal privilege escalation. See [docs/backend-tenant-isolation.md](backend-tenant-isolation.md) for the full tenant isolation guide.
+
+### Limitations
+
+- **In-memory challenge store**: pending challenges are stored in a `Map` in process memory. In a multi-process (horizontally scaled) deployment this store must be moved to Redis or another shared cache.
+- **No account existence check**: the server accepts any syntactically valid G-address for the challenge step. A non-existent account will simply never receive a JWT because the merchant won't have a valid signing key.
+- **Nonce is per-account**: only one pending challenge exists per account at a time. A new challenge request supersedes the previous one; the old challenge becomes invalid.
+
+### References
+
+- [SEP-10 specification](https://github.com/stellar/stellar-protocol/blob/master/ecosystem/sep-0010.md)
+- `backend/src/services/authService.ts` — core challenge/JWT logic
+- `backend/src/routes/auth.ts` — HTTP endpoints
+- `backend/src/middleware/merchantAuth.ts` — JWT guard middleware
+- `backend/tests/auth.test.ts` — 34 unit tests
+
+---
+
 ## 4. Circuit Breaker Runbook (SC-25)
 
 A "circuit breaker" for SorobanPay means stopping all payment collection and communicating clearly to users while a fix is prepared. Because the contract is non-upgradeable, the primary levers are:
@@ -609,11 +706,13 @@ Warn users:
 stellar account merge --network mainnet ...
 ```
 
-### No on-chain subscription pause
+### Protocol-wide pause (implemented — no individual subscription pause)
 
-**Limitation:** There is no contract-level mechanism to pause an individual subscription. The `is_paused` field exists in `SubscriptionData` but is not read by `execute_payment`.
+The contract now supports a **protocol-wide pause** via `pause_contract` / `unpause_contract` (see [§9 Pause / Unpause Runbook](#9-pause--unpause-runbook-sc-30)). This halts all state-mutating entry points simultaneously.
 
-**Mitigation:** Subscribers can achieve the equivalent of a pause by revoking their token allowance (`approve(contract, 0)`). Merchants can stop calling `execute_payment`. A future contract version may implement on-chain pause semantics.
+**Remaining limitation:** There is no mechanism to pause an individual subscription. The `is_paused` field exists in `SubscriptionData` but is not read by `execute_payment`.
+
+**Mitigation for individual pauses:** Subscribers can achieve the equivalent by revoking their token allowance (`approve(contract, 0)`). Merchants can stop calling `execute_payment` for specific subscribers.
 
 ### Backend is a single point of failure for analytics
 
