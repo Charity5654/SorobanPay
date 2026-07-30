@@ -45,6 +45,4 @@ pub enum ContractError {
     SameMerchant          = 18,
     /// `transfer_subscription` called but a subscription already exists for (subscriber, new_merchant)
     SubscriptionAlreadyExists = 19,
-    /// `set_protocol_fee` called with fee_bps exceeding the 500 bps (5 %) hard cap
-    FeeBpsTooHigh             = 20,
 }
