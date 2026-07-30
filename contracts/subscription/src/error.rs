@@ -40,5 +40,9 @@ pub enum ContractError {
     /// `migrate` called by an address that is not the stored admin
     NotAdmin              = 17,
     /// Admin address not initialised; call `initialize` first
-    NotInitialized        = 18,
+    NotInitialized        = 17,
+    /// `transfer_subscription` called with old_merchant == new_merchant (no-op transfer)
+    SameMerchant          = 18,
+    /// `transfer_subscription` called but a subscription already exists for (subscriber, new_merchant)
+    SubscriptionAlreadyExists = 19,
 }

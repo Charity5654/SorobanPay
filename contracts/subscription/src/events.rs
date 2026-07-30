@@ -140,6 +140,29 @@ pub fn emit_contract_migrated(env: &Env, admin: &Address, new_version: u32) {
     );
 }
 
+/// Emit the `subscription_transferred` event after a subscription has been atomically
+/// moved from one merchant address to another.
+///
+/// Topics:  (symbol("sub_transferred"), subscriber, old_merchant, new_merchant)
+/// Data:    amount (i128)
+pub fn emit_subscription_transferred(
+    env: &Env,
+    subscriber: &Address,
+    old_merchant: &Address,
+    new_merchant: &Address,
+    amount: i128,
+) {
+    env.events().publish(
+        (
+            Symbol::new(env, "sub_transferred"),
+            subscriber.clone(),
+            old_merchant.clone(),
+            new_merchant.clone(),
+        ),
+        amount,
+    );
+}
+
 /// Emit the `low_allowance` warning event when a subscriber's token allowance is below
 /// the subscription amount at the time of `subscribe`.
 ///
