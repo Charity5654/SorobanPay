@@ -405,6 +405,93 @@ impl SubscriptionProtocol {
         Ok(())
     }
 
+    /// Atomically transfer an active subscription from one merchant to another.
+    ///
+    /// This is the canonical mechanism for merchant key rotation, account merges,
+    /// and business sales: the subscription state (token, amount, interval,
+    /// `next_payment`) is preserved exactly — no billing-cycle reset occurs.
+    ///
+    /// # Authorization
+    /// Requires valid signatures from **both** `subscriber` and `old_merchant`.
+    /// Neither party alone can reassign the subscription.
+    ///
+    /// # Parameters
+    /// - `subscriber`:   The account currently subscribed to `old_merchant`.
+    /// - `old_merchant`: The current recipient of payments.
+    /// - `new_merchant`: The destination merchant address.
+    ///
+    /// # Atomicity
+    /// The old storage entry is removed and the new entry is written in the same
+    /// contract invocation.  The Soroban host either commits both changes or
+    /// neither — there is no window where the subscription is absent.
+    ///
+    /// # Errors
+    /// - `ContractError::NoActiveSubscription`      — no active subscription exists for
+    ///                                                `(subscriber, old_merchant)`.
+    /// - `ContractError::SameMerchant`              — `old_merchant == new_merchant`.
+    /// - `ContractError::SelfSubscription`          — `subscriber == new_merchant`.
+    /// - `ContractError::SubscriptionAlreadyExists` — a subscription already exists for
+    ///                                                `(subscriber, new_merchant)`.
+    pub fn transfer_subscription(
+        env: Env,
+        subscriber: Address,
+        old_merchant: Address,
+        new_merchant: Address,
+    ) -> Result<(), ContractError> {
+        // Both parties must authorise the reassignment.
+        subscriber.require_auth();
+        old_merchant.require_auth();
+
+        // Guard: transferring to the same address is a no-op and likely a mistake.
+        if old_merchant == new_merchant {
+            return Err(ContractError::SameMerchant);
+        }
+
+        // Guard: subscriber cannot become their own merchant.
+        if subscriber == new_merchant {
+            return Err(ContractError::SelfSubscription);
+        }
+
+        // Load the existing subscription — errors if absent.
+        let old_hash = subscription_key(&env, &subscriber, &old_merchant);
+        let old_key = DataKey::Subscription(old_hash.clone());
+        let data: SubscriptionData = env
+            .storage()
+            .persistent()
+            .get(&old_key)
+            .ok_or(ContractError::NoActiveSubscription)?;
+
+        // Guard: do not silently overwrite an existing subscription at the destination.
+        let new_hash = subscription_key(&env, &subscriber, &new_merchant);
+        let new_key = DataKey::Subscription(new_hash.clone());
+        if env.storage().persistent().has(&new_key) {
+            return Err(ContractError::SubscriptionAlreadyExists);
+        }
+
+        // Atomic swap: write new entry before removing old one so that the
+        // subscription is never absent during the operation.
+        env.storage().persistent().set(&new_key, &data);
+        env.storage()
+            .persistent()
+            .extend_ttl(&new_key, MIN_TTL_LEDGERS, MAX_TTL_LEDGERS);
+
+        env.storage().persistent().remove(&old_key);
+
+        // Update merchant subscription indexes.
+        index_remove(&env, &old_merchant, &old_hash);
+        index_add(&env, &new_merchant, new_hash);
+
+        events::emit_subscription_transferred(
+            &env,
+            &subscriber,
+            &old_merchant,
+            &new_merchant,
+            data.amount,
+        );
+
+        Ok(())
+    }
+
     /// Query active subscription details for a subscriber-merchant pair.
     ///
     /// Returns `Some(SubscriptionData)` if an active subscription exists, or

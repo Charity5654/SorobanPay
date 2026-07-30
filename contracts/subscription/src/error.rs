@@ -39,4 +39,8 @@ pub enum ContractError {
     NotAdmin              = 16,
     /// Admin address not initialised; call `initialize` first
     NotInitialized        = 17,
+    /// `transfer_subscription` called with old_merchant == new_merchant (no-op transfer)
+    SameMerchant          = 18,
+    /// `transfer_subscription` called but a subscription already exists for (subscriber, new_merchant)
+    SubscriptionAlreadyExists = 19,
 }
