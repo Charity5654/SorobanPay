@@ -1,50 +1,85 @@
+# ---------------------------------------------------------------------------
+# SorobanPay — Makefile
+#
+# Common targets:
+#   make help             Print this message
+#   make build            Compile contract to WASM
+#   make test             Run contract unit/property tests
+#   make lint             Check formatting and run Clippy
+#   make coverage         Run tests with llvm-cov and enforce threshold
+#   make clean            Remove build artifacts
+#   make test-frontend    Run the Next.js Jest test suite
+#
+# Override variables (safe to pass on the command line):
+#
+#   TARGET_TRIPLE   Rust compilation target fed to --target.
+#                   Default: wasm32-unknown-unknown
+#                   Example: make build TARGET_TRIPLE=x86_64-unknown-linux-gnu
+#
+#   PROFILE         Cargo profile name fed to --<profile>.
+#                   Default: release
+#                   Example: make build PROFILE=debug
+#
+#   COVERAGE_THRESHOLD
+#                   Minimum required line-coverage percentage (0–100).
+#                   Default: 95  (set per issue #432)
+# ---------------------------------------------------------------------------
+
 FRONTEND_DIR := frontend
 CONTRACT_DIR := contracts/subscription
 TARGET_DIR   := contracts/target
 WASM_PATH    := $(TARGET_DIR)/wasm32-unknown-unknown/release/soroban_subscription_contract.wasm
 
-# Supported triple → environment variables used by build/test recipes
+# TARGET_TRIPLE — Rust cross-compilation target (override with TARGET_TRIPLE=<triple>)
 TARGET_TRIPLE ?= wasm32-unknown-unknown
+
+# PROFILE — Cargo build/test profile (override with PROFILE=<debug|release>)
 PROFILE       ?= release
+
 ARTIFACT_NAME ?= soroban_subscription_contract
 ARTIFACT_PATH  = $(TARGET_DIR)/$(TARGET_TRIPLE)/$(PROFILE)/$(ARTIFACT_NAME).wasm
 
 CARGO_FLAGS   = --manifest-path $(CONTRACT_DIR)/Cargo.toml --target $(TARGET_TRIPLE) --$(PROFILE)
 
-# Issue #432: Coverage threshold (95% line coverage required)
+# COVERAGE_THRESHOLD — minimum line-coverage % enforced by make coverage (issue #432)
 COVERAGE_THRESHOLD ?= 95
 
-.PHONY: build test test-coverage coverage clean test-frontend
+.PHONY: help build test lint test-coverage coverage clean test-frontend test-frontend-coverage
 
-# build: Compile the contract to WASM using the current $(TARGET_TRIPLE) and $(PROFILE)
-# Override at the command line, e.g.:
-#   make build TARGET_TRIPLE=wasm32-unknown-unknown PROFILE=release
-# Add new triple:
-#   1) rustup target add <triple>
-#   2) make build TARGET_TRIPLE=<triple>
-build:
+help: ## Print all available targets with descriptions
+	@echo ""
+	@echo "SorobanPay — available make targets"
+	@echo "------------------------------------"
+	@awk 'BEGIN {FS = ":.*##"} /^[a-zA-Z_-]+:.*##/ { printf "  %-26s %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
+	@echo ""
+	@echo "Override variables:"
+	@echo "  TARGET_TRIPLE=<triple>   Rust compilation target  (default: wasm32-unknown-unknown)"
+	@echo "  PROFILE=<debug|release>  Cargo profile            (default: release)"
+	@echo "  COVERAGE_THRESHOLD=<n>   Min line-coverage %%      (default: 95)"
+	@echo ""
+
+build: ## Compile the contract to WASM (uses TARGET_TRIPLE and PROFILE)
 	cargo build $(CARGO_FLAGS)
 	@test -f "$(ARTIFACT_PATH)" || \
 		(echo "ERROR: WASM artifact not found at $(ARTIFACT_PATH)" >&2; exit 1)
 
-# test: Run cargo tests for the contract (native host test, not WASM)
-# Note: cargo test cannot cross-compile to WASM; keep this target native.
-test:
+# Note: cargo test cannot execute WASM binaries; never set TARGET_TRIPLE here.
+test: ## Run contract unit and property tests on the native host (not WASM)
 	cargo test --manifest-path $(CONTRACT_DIR)/Cargo.toml
 
-# test-coverage / coverage: Run contract tests with llvm-cov.
-#
+# Requires: rustfmt and clippy components (rustup component add rustfmt clippy)
+lint: ## Check formatting (rustfmt --check) and run Clippy on the contract
+	cargo fmt --manifest-path $(CONTRACT_DIR)/Cargo.toml -- --check
+	cargo clippy --manifest-path $(CONTRACT_DIR)/Cargo.toml --all-targets -- -D warnings
+
+test-coverage: coverage ## Alias for coverage
+
 # Generates:
 #   contracts/target/lcov.info          — LCOV data for Codecov / CI badge
 #   contracts/target/coverage-html/     — Human-readable HTML report
 #
-# Then enforces the $(COVERAGE_THRESHOLD)% line-coverage threshold.
-# Fails with a non-zero exit code if coverage is below the threshold.
-#
 # Requires: cargo install cargo-llvm-cov
-test-coverage: coverage
-
-coverage:
+coverage: ## Run contract tests with llvm-cov; enforce COVERAGE_THRESHOLD
 	@echo "Running contract tests with coverage instrumentation…"
 	cargo llvm-cov \
 		--manifest-path $(CONTRACT_DIR)/Cargo.toml \
@@ -81,14 +116,11 @@ _check-coverage-threshold:
 	fi; \
 	echo "PASS: $${PCT}% meets the $(COVERAGE_THRESHOLD)% threshold."
 
-# clean: Remove all build artifacts for the contract
-clean:
+clean: ## Remove all contract build artifacts from contracts/target/
 	cargo clean --manifest-path $(CONTRACT_DIR)/Cargo.toml
 
-# test-frontend: Run the frontend Jest test suite (unit + coverage)
-test-frontend:
+test-frontend: ## Run the Next.js Jest test suite (unit + coverage)
 	cd $(FRONTEND_DIR) && npm run test
 
-# test-frontend-coverage: Run the frontend Jest suite with coverage report
-test-frontend-coverage:
+test-frontend-coverage: ## Run the Next.js Jest suite with coverage report
 	cd $(FRONTEND_DIR) && npm run test:coverage

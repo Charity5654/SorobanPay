@@ -9,11 +9,13 @@ This document is the authoritative security reference for SorobanPay. It covers 
 1. [Contract Security Model](#1-contract-security-model)
 2. [Authorization Audit (SC-20)](#2-authorization-audit-sc-20)
 3. [Backend Secrets Management](#3-backend-secrets-management)
+   - [3a. Merchant Authentication — SEP-10 Challenge-Response (BE-55)](#3a-merchant-authentication--sep-10-challenge-response-be-55)
 4. [Circuit Breaker Runbook (SC-25)](#4-circuit-breaker-runbook-sc-25)
 5. [Frontend Security](#5-frontend-security)
 6. [Known Limitations and Mitigations](#6-known-limitations-and-mitigations)
 7. [Dependency Security](#7-dependency-security)
 8. [Security Disclosure Policy](#8-security-disclosure-policy)
+9. [Pause / Unpause Runbook (SC-30)](#9-pause--unpause-runbook-sc-30)
 
 ---
 
@@ -97,12 +99,35 @@ This section documents which address is expected to authenticate at each contrac
 
 ### Auth matrix
 
-| Entry point | Authenticating address | Auth position in code | Attack if wrong party |
-|-------------|----------------------|----------------------|----------------------|
-| `subscribe` | `subscriber` | Line 1, before any state read | Merchant cannot create subscriptions on behalf of users without their key |
-| `execute_payment` | `merchant` | Line 1, before storage load | Subscriber cannot block collection by impersonating merchant; random address cannot trigger transfers |
-| `execute_payment_batch` | `merchant` | Line 1, before loop | Only the declared merchant can batch-collect; one merchant cannot collect on behalf of another |
-| `cancel` | `subscriber` | Line 1, before storage check | Merchant cannot cancel a subscriber's subscription unilaterally |
+> **Audit status: COMPLETE** — every entry point listed below has been verified by code review and covered by negative unit tests in `contracts/subscription/src/security_tests.rs`. The test categories referenced are in the same file.
+
+| Entry point | Authenticating address | `require_auth()` position | Failure mode if wrong party | Test category |
+|-------------|----------------------|--------------------------|----------------------------|---------------|
+| `initialize` | *(none — panics if already initialized)* | n/a — no auth | Panics: "already initialized" | — |
+| `get_version` | *(none — read-only)* | n/a | No state change | — |
+| `get_schema_version` | *(none — read-only)* | n/a | No state change | — |
+| `migrate` | `admin` | Line 1, before any storage read | `require_auth()` panics; or `NotAdmin` if wrong address provides correct auth | Category 9 |
+| `set_protocol_fee` | `admin` | Line 1, before any storage read | `require_auth()` panics; or `NotAdmin` if wrong address provides correct auth | Category 9 |
+| `get_protocol_fee` | *(none — read-only)* | n/a | No state change | — |
+| `compute_subscription_key` | *(none — read-only)* | n/a | No state change | — |
+| `get_merchant_subscription_keys` | *(none — read-only)* | n/a | No state change | — |
+| `subscribe` | `subscriber` | Line 1, before input validation | `require_auth()` panics; merchant cannot create subscriptions without user's key | Categories 1, 2, 3, 6 |
+| `execute_payment` | `merchant` | Line 1, before storage load | `require_auth()` panics; subscriber/attacker cannot trigger token transfer | Categories 1, 2, 3, 6, 7 |
+| `batch_execute_payment` | `merchant` | Line 1, before loop | `require_auth()` panics; only the declared merchant can batch-collect | Category 10 |
+| `cancel` | `subscriber` | Line 1, before storage check | `require_auth()` panics; merchant cannot cancel subscriber's agreement | Categories 1, 2, 3, 6 |
+| `transfer_subscription` | `subscriber` AND `old_merchant` (dual-auth) | Lines 1–2, before storage load | Either `require_auth()` panics; neither party alone can reassign | Category 11 |
+| `get_subscription` | *(none — read-only)* | n/a | No state change | — |
+| `get_subscription_count` | *(none — read-only)* | n/a | No state change | — |
+
+### No ambient auth state
+
+Soroban's `require_auth()` is stateless: it checks the authorization envelope of the **current invocation** only. There is no session, no ambient grant, and no way for a previous invocation's authorization to carry over to a subsequent call. This is enforced by the host, not application logic.
+
+The following tests in Category 12 (`security_tests.rs`) verify this property explicitly:
+
+- `sec_no_ambient_auth_from_subscribe_to_execute_payment` — a prior `subscribe` authorization does not permit a subsequent unauthorized `execute_payment`.
+- `sec_no_ambient_auth_from_execute_payment_to_cancel` — a prior `execute_payment` authorization does not permit a subsequent unauthorized `cancel`.
+- `sec_no_ambient_auth_across_two_subscribe_calls` — each `subscribe` call requires its own fresh signature.
 
 ### Why `execute_payment` is merchant-authorized
 
@@ -122,6 +147,15 @@ The subscriber's signature on `subscribe` is the primary consent signal. By sign
 
 This two-step consent model (subscribe + approve) means revoking either the subscription (`cancel`) or the token allowance immediately halts future payments.
 
+### Why `transfer_subscription` requires dual-auth
+
+`transfer_subscription` moves a subscription from `old_merchant` to `new_merchant`. Both `subscriber` and `old_merchant` must authorize because:
+
+1. The subscriber is consenting to a change in who receives their payments.
+2. The old merchant is consenting to give up their payment stream (preventing unilateral hijack by the subscriber alone).
+
+Neither party alone can reassign the subscription. An attacker holding neither key cannot forge either signature.
+
 ### `require_auth` placement rule
 
 As a contributor, always call `require_auth()` as the **first statement** in any entry point, before any storage reads, logging, or external calls. This prevents auth bypass via state-dependent short-circuits.
@@ -140,6 +174,25 @@ pub fn subscribe(env: Env, subscriber: Address, ...) -> Result<(), ContractError
     // ...
 }
 ```
+
+### Auth audit checklist
+
+| # | Check | Status |
+|---|-------|--------|
+| 1 | Every mutating entry point calls `require_auth()` as its first statement | ✅ Verified by code review |
+| 2 | Read-only entry points (`get_*`, `compute_*`) require no auth | ✅ Verified |
+| 3 | `subscribe` authorizes `subscriber`, not `merchant` | ✅ Tests: Category 3, 6 |
+| 4 | `execute_payment` authorizes `merchant`, not `subscriber` | ✅ Tests: Category 3, 6 |
+| 5 | `batch_execute_payment` authorizes `merchant` — once for the batch | ✅ Tests: Category 10 |
+| 6 | `cancel` authorizes `subscriber`, not `merchant` | ✅ Tests: Category 3, 6 |
+| 7 | `transfer_subscription` requires both `subscriber` and `old_merchant` | ✅ Tests: Category 11 |
+| 8 | `migrate` authorizes `admin` (stored on-chain at `initialize`) | ✅ Tests: Category 9 |
+| 9 | `set_protocol_fee` authorizes `admin` | ✅ Tests: Category 9 |
+| 10 | No entry point reads auth state set by a previous invocation (no ambient auth) | ✅ Tests: Category 12 |
+| 11 | Attacker with no authorization receives panic on every mutating entry point | ✅ Tests: Category 2 |
+| 12 | Replay within same billing window returns `PaymentNotDue` | ✅ Tests: Category 4 |
+| 13 | Cancellation prevents subsequent payment collection | ✅ Tests: Category 4 |
+| 14 | Self-subscription rejected before any storage write | ✅ Tests: Category 5 |
 
 ---
 
@@ -326,6 +379,101 @@ const webhookSecret = readSecret('WEBHOOK_SECRET', 'WEBHOOK_SECRET_FILE');
 2. Fund the new account with enough XLM for fees.
 3. Update `OPERATOR_SECRET` in the secret store and redeploy.
 4. Revoke the old keypair by setting it to zero balance or removing from any multisig setups.
+
+---
+
+## 3a. Merchant Authentication — SEP-10 Challenge-Response (BE-55)
+
+All merchant-scoped backend API endpoints require authentication. Because merchants are Stellar keypair owners — not username/password holders — authentication is based on proving ownership of a Stellar private key via a cryptographic challenge-response flow. This mirrors [SEP-10: Stellar Web Authentication](https://github.com/stellar/stellar-protocol/blob/master/ecosystem/sep-0010.md).
+
+### Why SEP-10 style, not passwords
+
+Password-based authentication is inappropriate for a non-custodial blockchain app:
+
+- Merchants have no passwords — they have Stellar keypairs.
+- Issuing a JWT after a password check does nothing to verify the merchant controls the on-chain address that owns the subscription records.
+- SEP-10 challenge-response ties authentication directly to key ownership, making it impossible to claim another merchant's data without their private key.
+
+### Flow
+
+```
+1. GET /api/v1/auth/challenge?account=G…
+   ← { transaction: "<unsigned XDR>", network_passphrase, expires_in: 300 }
+
+2. Merchant signs the transaction with their private key (e.g. via Freighter).
+
+3. POST /api/v1/auth/token  { transaction: "<signed XDR>" }
+   ← { token: "<JWT>", expires_in: 86400 }
+
+4. All subsequent requests:
+   Authorization: Bearer <JWT>
+```
+
+### Challenge transaction
+
+The challenge is a Stellar `ManageData` transaction:
+
+- **Source account**: the merchant's G-address (so the transaction is tied to their key).
+- **Operation**: `ManageData("SorobanPay auth", <32-byte random nonce>)`.
+- **TTL**: 5 minutes. The server rejects signed transactions after expiry.
+- **Never broadcast**: the transaction is only used as a sign-this-data vehicle; it is never submitted to the network.
+
+### Server-side verification (`verifyChallenge`)
+
+Before issuing a JWT, the server checks:
+
+1. The XDR decodes to a valid Stellar transaction.
+2. A pending challenge exists for the transaction's source account.
+3. The challenge has not expired.
+4. The `ManageData` nonce in the transaction matches the stored nonce (prevents replay of a different account's signed XDR).
+5. At least one signature on the transaction is valid for the source account, verified using `Keypair.verify()` from `@stellar/stellar-sdk`.
+
+On success the challenge is consumed (deleted from the in-memory store) so it cannot be replayed.
+
+### JWT payload and expiry
+
+```jsonc
+{
+  "address": "G…",   // Merchant's Stellar public key — the authenticated identity
+  "iat": 1700000000, // Issued-at (Unix seconds)
+  "exp": 1700086400  // Expiry 24 hours later
+}
+```
+
+Signed with HMAC-SHA256 using `JWT_SECRET` from the environment. The algorithm and implementation match the admin JWT (`adminAuth.ts`) to keep the codebase consistent.
+
+### Protected endpoints
+
+| Route prefix | Protection |
+|---|---|
+| `GET /api/v1/auth/challenge` | None (public — required to start the flow) |
+| `POST /api/v1/auth/token` | None (public — accepts signed challenge) |
+| `GET /api/v1/subscriptions/*` | `requireMerchant` — valid JWT required |
+| All other `/api/v1/` routes | Unchanged (see their respective middleware) |
+
+### Environment variable
+
+| Variable | Required | Notes |
+|---|---|---|
+| `JWT_SECRET` | ✅ | 32+ byte random string; generate with `openssl rand -hex 32`. **Never reuse `ADMIN_JWT_SECRET`.** |
+
+### Tenant isolation
+
+`requireMerchant` extracts `res.locals.merchantAddress` from the JWT. Route handlers that return merchant-specific data (e.g. subscriptions, payments) **must** filter by this address — not by a URL parameter — to prevent horizontal privilege escalation. See [docs/backend-tenant-isolation.md](backend-tenant-isolation.md) for the full tenant isolation guide.
+
+### Limitations
+
+- **In-memory challenge store**: pending challenges are stored in a `Map` in process memory. In a multi-process (horizontally scaled) deployment this store must be moved to Redis or another shared cache.
+- **No account existence check**: the server accepts any syntactically valid G-address for the challenge step. A non-existent account will simply never receive a JWT because the merchant won't have a valid signing key.
+- **Nonce is per-account**: only one pending challenge exists per account at a time. A new challenge request supersedes the previous one; the old challenge becomes invalid.
+
+### References
+
+- [SEP-10 specification](https://github.com/stellar/stellar-protocol/blob/master/ecosystem/sep-0010.md)
+- `backend/src/services/authService.ts` — core challenge/JWT logic
+- `backend/src/routes/auth.ts` — HTTP endpoints
+- `backend/src/middleware/merchantAuth.ts` — JWT guard middleware
+- `backend/tests/auth.test.ts` — 34 unit tests
 
 ---
 
@@ -558,11 +706,13 @@ Warn users:
 stellar account merge --network mainnet ...
 ```
 
-### No on-chain subscription pause
+### Protocol-wide pause (implemented — no individual subscription pause)
 
-**Limitation:** There is no contract-level mechanism to pause an individual subscription. The `is_paused` field exists in `SubscriptionData` but is not read by `execute_payment`.
+The contract now supports a **protocol-wide pause** via `pause_contract` / `unpause_contract` (see [§9 Pause / Unpause Runbook](#9-pause--unpause-runbook-sc-30)). This halts all state-mutating entry points simultaneously.
 
-**Mitigation:** Subscribers can achieve the equivalent of a pause by revoking their token allowance (`approve(contract, 0)`). Merchants can stop calling `execute_payment`. A future contract version may implement on-chain pause semantics.
+**Remaining limitation:** There is no mechanism to pause an individual subscription. The `is_paused` field exists in `SubscriptionData` but is not read by `execute_payment`.
+
+**Mitigation for individual pauses:** Subscribers can achieve the equivalent by revoking their token allowance (`approve(contract, 0)`). Merchants can stop calling `execute_payment` for specific subscribers.
 
 ### Backend is a single point of failure for analytics
 
@@ -691,3 +841,7 @@ For questions about this policy, contact the repository maintainers via the GitH
 - [ ] `cargo audit` and `npm audit` passing in CI
 - [ ] CSP headers configured in `next.config.mjs`
 - [ ] Security advisory channel tested (can create a draft advisory)
+- [x] Auth audit checklist completed (§2 Authorization Audit)
+- [x] Negative auth tests for every entry point (`security_tests.rs`, categories 1–12)
+- [x] No entry point relies on ambient auth state (category 12 tests pass)
+- [x] Auth tests run as part of `make test`
