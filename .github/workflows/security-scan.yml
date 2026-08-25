@@ -1,0 +1,60 @@
+name: Security Scan
+
+on:
+  # Weekly scan every Monday at 03:00 UTC
+  schedule:
+    - cron: "0 3 * * 1"
+  # Run on every push/PR that touches contract deps
+  push:
+    paths:
+      - "contracts/subscription/Cargo.toml"
+      - "contracts/subscription/Cargo.lock"
+      - "contracts/subscription/.cargo/audit.toml"
+  pull_request:
+    paths:
+      - "contracts/subscription/Cargo.toml"
+      - "contracts/subscription/Cargo.lock"
+      - "contracts/subscription/.cargo/audit.toml"
+  # Allow on-demand runs to close issues like #599
+  workflow_dispatch:
+
+jobs:
+  cargo-audit:
+    name: "[Security] cargo audit — contract dependencies"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: contracts/subscription
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      # cargo-audit reads .cargo/audit.toml automatically when run from the
+      # package directory.  Acknowledged advisories are listed there with full
+      # justifications (see contracts/subscription/.cargo/audit.toml).
+      # References: #599, OPS-121 issues #600, #616, #618
+      - name: Run cargo audit
+        working-directory: contracts/subscription
+        run: cargo audit
+
+      # Upload SARIF report for GitHub Security tab visibility
+      - name: Run cargo audit (SARIF output)
+        if: always()
+        working-directory: contracts/subscription
+        run: |
+          cargo audit --format sarif > /tmp/cargo-audit.sarif || true
+
+      - name: Upload SARIF to GitHub Security tab
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: /tmp/cargo-audit.sarif
+          category: cargo-audit
+        continue-on-error: true

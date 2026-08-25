@@ -1,0 +1,63 @@
+# .cargo/audit.toml — cargo-audit configuration for soroban-subscription-contract
+#
+# Location: contracts/subscription/.cargo/audit.toml
+# cargo-audit reads this file from <project>/.cargo/audit.toml automatically.
+#
+# All five advisories below are TRANSITIVE dependencies locked in by
+# soroban-sdk = "20.0.0" (specifically soroban-env-host 20.3.0 and its
+# sub-dependencies). They cannot be resolved by a simple version bump because:
+#
+#   curve25519-dalek — soroban-env-host 20.3.0 pins ">=4.1.1, <=4.1.2";
+#                      4.1.3 (the fix) is explicitly excluded.
+#   time             — time 0.3.47 requires serde_core =1.0.220, which
+#                      conflicts with soroban-env-common's hard pin of
+#                      serde =1.0.192.
+#   adler/paste/rand — compile-time-only or testing deps embedded in
+#                      soroban-sdk 20's dependency tree.
+#
+# Migrating to soroban-sdk 21+ would resolve all five but introduces breaking
+# API changes requiring a full contract rewrite. Tracked as a planned upgrade.
+#
+# References: #599, OPS-121 issues #600, #616, #618
+# Review this file each time soroban-sdk is upgraded.
+
+[advisories]
+ignore = [
+    # RUSTSEC-2024-0344 — Timing variability in curve25519-dalek's Scalar sub
+    # Crate:   curve25519-dalek 4.1.2  |  Fix: >= 4.1.3
+    # Blocker: soroban-env-host 20.3.0 pins ">=4.1.1, <=4.1.2" — 4.1.3 is
+    #          explicitly excluded. Requires soroban-sdk >= 21 to resolve.
+    # Risk:    Timing side-channel in internal host cryptography. The
+    #          subscription contract performs no scalar arithmetic in application
+    #          code; not exploitable via the public entry points.
+    "RUSTSEC-2024-0344",
+
+    # RUSTSEC-2026-0009 — Denial of Service via Stack Exhaustion in `time`
+    # Crate:   time 0.3.44  |  Fix: >= 0.3.47  |  CVSS: 6.8 medium
+    # Blocker: time 0.3.47 pulls serde_core =1.0.220 which conflicts with
+    #          soroban-env-common 20.3.0's hard pin of serde =1.0.192.
+    #          Requires soroban-sdk >= 21 to resolve.
+    # Risk:    DoS via crafted input to time's parsing/formatting. The `time`
+    #          crate is not used in deployed contract code; it is a transitive
+    #          dep of soroban ledger snapshot tooling (dev/test only).
+    "RUSTSEC-2026-0009",
+
+    # RUSTSEC-2025-0056 — adler crate is unmaintained, use adler2 instead
+    # Crate:   adler 1.0.2  |  No security vulnerability (informational)
+    # Blocker: Transitive dep via miniz_oxide in Rust toolchain / WASM path.
+    #          Not present in deployed WASM bytecode. No upstream fix needed.
+    "RUSTSEC-2025-0056",
+
+    # RUSTSEC-2024-0436 — paste crate is no longer maintained
+    # Crate:   paste 1.0.15  |  No security vulnerability (informational)
+    # Blocker: Compile-time dep of soroban-sdk-macros for proc-macro generation.
+    #          No paste code ships in the deployed WASM binary.
+    "RUSTSEC-2024-0436",
+
+    # RUSTSEC-2026-0097 — rand unsound with custom logger using rand::rng()
+    # Crate:   rand 0.8.5  |  Fix: >= 0.8.8 (unsound, not a CVE)
+    # Blocker: Locked by soroban-env-host test utilities and proptest alloc.
+    #          The contract never calls rand::rng() directly; proptest uses its
+    #          own deterministic RNG. The unsound path is not exercised.
+    "RUSTSEC-2026-0097",
+]
