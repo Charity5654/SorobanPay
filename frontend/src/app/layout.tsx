@@ -5,6 +5,7 @@ import { getMessages } from 'next-intl/server';
 import { WalletProvider } from '@/context/WalletContext';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
 import { LanguageSelector } from '@/components/LanguageSelector';
+import { HelpButton } from '@/components/help/HelpButton';
 import './globals.css';
 
 export const metadata: Metadata = {
@@ -43,6 +44,8 @@ export default async function RootLayout({
                 <LanguageSelector />
               </div>
               {children}
+              {/* Issue #745: Global floating help button */}
+              <HelpButton currentPage="global" />
             </WalletProvider>
           </NextIntlClientProvider>
         </ErrorBoundary>

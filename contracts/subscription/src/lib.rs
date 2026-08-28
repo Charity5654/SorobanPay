@@ -431,3 +431,7 @@ mod security_tests;
 
 #[cfg(test)]
 mod property_tests;
+
+// Issue #743 — Payment flow regression test suite
+#[cfg(test)]
+mod regression_tests;

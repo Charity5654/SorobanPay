@@ -97,3 +97,57 @@ model NotificationPreference {
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 }
+
+// Issue #742: KYC/AML verification records
+model KycVerification {
+  id                 Int       @id @default(autoincrement())
+  // User's Stellar wallet address
+  walletAddress      String    @unique
+  // Status: pending | submitted | approved | rejected | expired | re_verification_required
+  status             String    @default("pending")
+  // KYC provider (onfido | jumio)
+  provider           String
+  // Provider's unique applicant/verification ID
+  providerApplicantId String?  @unique
+  // Verification workflow run ID (provider-specific)
+  providerWorkflowRunId String?
+  // Document type provided: passport | national_id | driving_license
+  documentType       String?
+  // Whether liveness detection was completed
+  livenessCompleted  Boolean   @default(false)
+  // AML screening status: pending | clear | consider | flagged
+  amlStatus          String    @default("pending")
+  // AML screening report/check ID from provider
+  amlCheckId         String?
+  // ISO 3166-1 alpha-3 country code from document
+  countryCode        String?
+  // Risk score from AML check (0-100)
+  riskScore          Int?
+  // Webhook events log (JSON array of raw webhook payloads)
+  webhookLog         String    @default("[]")
+  // Timestamps
+  submittedAt        DateTime?
+  approvedAt         DateTime?
+  rejectedAt         DateTime?
+  expiresAt          DateTime?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  @@index([status])
+  @@index([amlStatus])
+}
+
+// Issue #742: KYC/AML audit trail
+model KycAuditLog {
+  id            Int      @id @default(autoincrement())
+  walletAddress String
+  action        String   // initiated | document_submitted | liveness_completed | aml_screened | approved | rejected | re_verification_triggered | webhook_received
+  actor         String   // system | user | webhook | admin
+  details       String   @default("{}")  // JSON string with action-specific details
+  ipAddress     String?
+  userAgent     String?
+  createdAt     DateTime @default(now())
+
+  @@index([walletAddress])
+  @@index([createdAt])
+}

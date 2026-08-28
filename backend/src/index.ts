@@ -22,6 +22,7 @@ import reconcileRouter from './routes/reconcile';
 import subscriptionsRouter from './routes/subscriptions';
 import webhooksRouter from './routes/webhooks';
 import notificationsRouter from './routes/notifications';
+import kycRouter from './routes/kyc';
 import versionRouter from './routes/version';
 import { buildHealthRouter } from './routes/health';
 import { reconcile } from './services/reconciler';
@@ -52,6 +53,7 @@ app.use('/api/v1/webhooks',      webhooksRouter);
 app.use('/api/v1/summaries',     summariesRouter);
 app.use('/api/v1/reconcile',     reconcileRouter);
 app.use('/api/v1/notifications', notificationsRouter);  // BE-68
+app.use('/api/v1/kyc',           kycRouter);            // Issue #742
 
 // ─── Backward-compatible aliases — /api/ (no version prefix) ─────────────────
 // These keep existing integrations working and forward to v1 handlers.
