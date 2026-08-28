@@ -55,14 +55,14 @@ pub fn emit_payment_transfer_success(env: &Env, subscriber: &Address, merchant: 
 ///
 /// Topics:  (symbol("payment_transfer_failure"), subscriber, merchant)
 /// Data:    amount (i128)
-pub fn emit_payment_transfer_failure(env: &Env, subscriber: &Address, merchant: &Address, amount: i128) {
+pub fn emit_payment_transfer_failure(env: &Env, subscriber: &Address, merchant: &Address, amount: i128, overdue_since: u64) {
     env.events().publish(
         (
             Symbol::new(env, "payment_transfer_failure"),
             subscriber.clone(),
             merchant.clone(),
         ),
-        amount,
+        (amount, overdue_since),
     );
 }
 
@@ -71,7 +71,7 @@ pub fn emit_payment_transfer_failure(env: &Env, subscriber: &Address, merchant: 
 ///
 /// Topics:  (symbol("executed"), subscriber, merchant, token)
 /// Data:    amount (i128)
-pub fn emit_executed(env: &Env, subscriber: &Address, merchant: &Address, token: &Address, amount: i128) {
+pub fn emit_executed(env: &Env, subscriber: &Address, merchant: &Address, token: &Address, amount: i128, nonce: u64) {
     env.events().publish(
         (
             Symbol::new(env, "executed"),
@@ -79,22 +79,34 @@ pub fn emit_executed(env: &Env, subscriber: &Address, merchant: &Address, token:
             merchant.clone(),
             token.clone(),
         ),
-        amount,
+        (amount, nonce),
     );
+}
+
+pub fn emit_expired(env: &Env, subscriber: &Address, merchant: &Address) {
+    env.events().publish((Symbol::new(env, "expired"), subscriber.clone(), merchant.clone()), ());
 }
 
 /// Emit the `cancel` event after a subscription has been successfully cancelled and removed.
 ///
 /// Topics:  (symbol("cancel"), subscriber, merchant)
-/// Data:    empty (unit type ())
-pub fn emit_cancel(env: &Env, subscriber: &Address, merchant: &Address) {
+/// Data:    reason (u32) — authoritative on-chain cancellation reason code:
+///            1 = subscriber_voluntary   — subscriber initiated the cancellation
+///            2 = merchant_initiated     — merchant triggered the cancellation
+///            3 = grace_period_expired   — subscription ended after an unpaid grace period
+///            4 = admin_forced           — administrative or governance removal
+///
+/// Including the reason in the event payload eliminates the need for off-chain
+/// heuristics: indexers can distinguish voluntary cancellations from forced removals
+/// without cross-referencing timestamps from multiple events.
+pub fn emit_cancel(env: &Env, subscriber: &Address, merchant: &Address, reason: u32) {
     env.events().publish(
         (
             Symbol::new(env, "cancel"),
             subscriber.clone(),
             merchant.clone(),
         ),
-        (),
+        reason,
     );
 }
 
@@ -128,6 +140,29 @@ pub fn emit_contract_migrated(env: &Env, admin: &Address, new_version: u32) {
     );
 }
 
+/// Emit the `subscription_transferred` event after a subscription has been atomically
+/// moved from one merchant address to another.
+///
+/// Topics:  (symbol("sub_transferred"), subscriber, old_merchant, new_merchant)
+/// Data:    amount (i128)
+pub fn emit_subscription_transferred(
+    env: &Env,
+    subscriber: &Address,
+    old_merchant: &Address,
+    new_merchant: &Address,
+    amount: i128,
+) {
+    env.events().publish(
+        (
+            Symbol::new(env, "sub_transferred"),
+            subscriber.clone(),
+            old_merchant.clone(),
+            new_merchant.clone(),
+        ),
+        amount,
+    );
+}
+
 /// Emit the `low_allowance` warning event when a subscriber's token allowance is below
 /// the subscription amount at the time of `subscribe`.
 ///
@@ -152,5 +187,28 @@ pub fn emit_low_allowance(
             token.clone(),
         ),
         (allowance, required),
+    );
+}
+
+/// Emit the `fee_collected` event after a protocol fee has been successfully transferred
+/// to the fee collector on payment execution.
+///
+/// Topics:  (symbol("fee_collected"), subscriber, merchant, fee_collector)
+/// Data:    fee_amount (i128)
+pub fn emit_fee_collected(
+    env: &Env,
+    subscriber: &Address,
+    merchant: &Address,
+    fee_collector: &Address,
+    fee_amount: i128,
+) {
+    env.events().publish(
+        (
+            Symbol::new(env, "fee_collected"),
+            subscriber.clone(),
+            merchant.clone(),
+            fee_collector.clone(),
+        ),
+        fee_amount,
     );
 }

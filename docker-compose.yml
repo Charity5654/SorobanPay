@@ -1,0 +1,76 @@
+version: '3.8'
+
+# SorobanPay — Docker Compose for local development and CI
+# BE-51: PostgreSQL + Indexer service
+# BE-53: Redis (for BullMQ webhook queue and cache)
+#
+# Usage:
+#   docker compose up -d          # start all services
+#   docker compose logs -f indexer  # tail indexer logs
+#   docker compose down -v          # stop + delete volumes
+
+services:
+  # ── PostgreSQL ───────────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: sorobanpay-postgres
+    environment:
+      POSTGRES_DB: sorobanpay
+      POSTGRES_USER: sorobanpay
+      POSTGRES_PASSWORD: sorobanpay
+    ports:
+      - '5432:5432'
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U sorobanpay -d sorobanpay']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  # ── Redis (BullMQ + Cache) ───────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: sorobanpay-redis
+    ports:
+      - '6379:6379'
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  # ── Event Indexer (BE-51) ────────────────────────────────────────────────────
+  indexer:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: sorobanpay-indexer
+    environment:
+      DATABASE_URL: postgresql://sorobanpay:sorobanpay@postgres:5432/sorobanpay
+      REDIS_URL: redis://redis:6379
+      RPC_URL: ${RPC_URL:-https://soroban-testnet.stellar.org}
+      CONTRACT_ID: ${CONTRACT_ID:?CONTRACT_ID is required}
+      NETWORK_PASSPHRASE: ${NETWORK_PASSPHRASE:-Test SDF Network ; September 2015}
+      # BE-51: How often to poll for new events (ms)
+      INDEXER_POLL_INTERVAL_MS: ${INDEXER_POLL_INTERVAL_MS:-10000}
+      PORT: 3001
+      NODE_ENV: ${NODE_ENV:-development}
+    ports:
+      - '3001:3001'
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+    name: sorobanpay-pgdata
+  redisdata:
+    name: sorobanpay-redisdata

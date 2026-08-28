@@ -18,6 +18,11 @@
 /// 4. **Replay protection** — verify the same payment cannot be processed twice
 ///    within the same billing interval (Soroban time-lock enforcement).
 /// 5. **Self-subscription** — `subscribe(alice, alice, ...)` must return error 10.
+/// 6. **Admin entry point auth** — `migrate` and `set_protocol_fee` require admin.
+/// 7. **batch_execute_payment auth** — only the declared merchant may batch-collect.
+/// 8. **transfer_subscription auth** — dual-auth: both subscriber and old_merchant required.
+/// 9. **No ambient auth state** — each entry point auth is stateless; previous
+///    auth grants do not carry over to subsequent calls.
 ///
 /// # Running security tests only
 ///
@@ -28,9 +33,12 @@
 #[cfg(test)]
 mod security_tests {
     use soroban_sdk::{
-        testutils::{Address as _, AuthorizedFunction, AuthorizedInvocation, Ledger, MockAuth, MockAuthInvoke},
+        testutils::{
+            Address as _, AuthorizedFunction, AuthorizedInvocation, Ledger, MockAuth,
+            MockAuthInvoke,
+        },
         token::{self, StellarAssetClient},
-        Address, Env, IntoVal, Symbol,
+        Address, Env, IntoVal, Symbol, Vec,
     };
 
     use crate::{
@@ -45,12 +53,12 @@ mod security_tests {
     /// Does NOT call `env.mock_all_auths()` by default so individual tests can
     /// control authorization precisely.
     struct SecEnv {
-        env:         Env,
-        client:      SubscriptionProtocolClient,
-        subscriber:  Address,
-        merchant:    Address,
-        attacker:    Address,
-        token:       Address,
+        env: Env,
+        client: SubscriptionProtocolClient,
+        subscriber: Address,
+        merchant: Address,
+        attacker: Address,
+        token: Address,
         contract_id: Address,
     }
 
@@ -63,10 +71,10 @@ mod security_tests {
 
             env.ledger().with_mut(|l| l.timestamp = 1_700_000_000_u64);
 
-            let admin      = Address::generate(&env);
+            let admin = Address::generate(&env);
             let subscriber = Address::generate(&env);
-            let merchant   = Address::generate(&env);
-            let attacker   = Address::generate(&env);
+            let merchant = Address::generate(&env);
+            let attacker = Address::generate(&env);
 
             let token = env
                 .register_stellar_asset_contract_v2(admin.clone())
@@ -74,12 +82,20 @@ mod security_tests {
 
             // Mint to subscriber and attacker for transfer tests
             StellarAssetClient::new(&env, &token).mint(&subscriber, &10_000_000_i128);
-            StellarAssetClient::new(&env, &token).mint(&attacker,   &10_000_000_i128);
+            StellarAssetClient::new(&env, &token).mint(&attacker, &10_000_000_i128);
 
             let contract_id = env.register(SubscriptionProtocol, ());
-            let client      = SubscriptionProtocolClient::new(&env, &contract_id);
+            let client = SubscriptionProtocolClient::new(&env, &contract_id);
 
-            Self { env, client, subscriber, merchant, attacker, token, contract_id }
+            Self {
+                env,
+                client,
+                subscriber,
+                merchant,
+                attacker,
+                token,
+                contract_id,
+            }
         }
 
         /// Create a new environment WITH global auth mocking (for setup convenience).
@@ -149,7 +165,11 @@ mod security_tests {
         // First create the subscription with mock auth
         let s = SecEnv::new_with_mock_auth();
         s.client.subscribe(
-            &s.subscriber, &s.merchant, &s.token, &1_000_i128, &86_400_u64,
+            &s.subscriber,
+            &s.merchant,
+            &s.token,
+            &1_000_i128,
+            &86_400_u64,
             &false,
         );
 
@@ -160,7 +180,11 @@ mod security_tests {
         let s2 = SecEnv::new_no_mock_auth();
         s2.env.mock_all_auths(); // set up subscription first
         s2.client.subscribe(
-            &s2.subscriber, &s2.merchant, &s2.token, &1_000_i128, &86_400_u64,
+            &s2.subscriber,
+            &s2.merchant,
+            &s2.token,
+            &1_000_i128,
+            &86_400_u64,
             &false,
         );
         // Reset auths so no one is authorized
@@ -188,7 +212,11 @@ mod security_tests {
         // Set up subscription with mock_all_auths
         s.env.mock_all_auths();
         s.client.subscribe(
-            &s.subscriber, &s.merchant, &s.token, &1_000_i128, &86_400_u64,
+            &s.subscriber,
+            &s.merchant,
+            &s.token,
+            &1_000_i128,
+            &86_400_u64,
             &false,
         );
         s.advance(86_400 + 1);
@@ -236,7 +264,11 @@ mod security_tests {
         // Set up subscription using mock auth
         s.env.mock_all_auths();
         s.client.subscribe(
-            &s.subscriber, &s.merchant, &s.token, &1_000_i128, &86_400_u64,
+            &s.subscriber,
+            &s.merchant,
+            &s.token,
+            &1_000_i128,
+            &86_400_u64,
             &false,
         );
         s.advance(86_400 + 1);
@@ -253,7 +285,11 @@ mod security_tests {
         let s = SecEnv::new_no_mock_auth();
         s.env.mock_all_auths();
         s.client.subscribe(
-            &s.subscriber, &s.merchant, &s.token, &1_000_i128, &86_400_u64,
+            &s.subscriber,
+            &s.merchant,
+            &s.token,
+            &1_000_i128,
+            &86_400_u64,
             &false,
         );
 
@@ -278,7 +314,11 @@ mod security_tests {
         let s = SecEnv::new_no_mock_auth();
         s.env.mock_all_auths();
         s.client.subscribe(
-            &s.subscriber, &s.merchant, &s.token, &1_000_i128, &86_400_u64,
+            &s.subscriber,
+            &s.merchant,
+            &s.token,
+            &1_000_i128,
+            &86_400_u64,
             &false,
         );
         s.advance(86_400 + 1);
@@ -305,7 +345,11 @@ mod security_tests {
         let s = SecEnv::new_no_mock_auth();
         s.env.mock_all_auths();
         s.client.subscribe(
-            &s.subscriber, &s.merchant, &s.token, &1_000_i128, &86_400_u64,
+            &s.subscriber,
+            &s.merchant,
+            &s.token,
+            &1_000_i128,
+            &86_400_u64,
             &false,
         );
 
@@ -349,7 +393,11 @@ mod security_tests {
         }]);
         // subscriber.require_auth() fails — merchant cannot authorize on subscriber's behalf.
         s.client.subscribe(
-            &s.subscriber, &s.merchant, &s.token, &1_000_i128, &86_400_u64,
+            &s.subscriber,
+            &s.merchant,
+            &s.token,
+            &1_000_i128,
+            &86_400_u64,
             &false,
         );
     }
@@ -371,7 +419,14 @@ mod security_tests {
         let interval = 86_400_u64;
 
         // Create subscription
-        s.client.subscribe(&s.subscriber, &s.merchant, &s.token, &amount, &interval, &false);
+        s.client.subscribe(
+            &s.subscriber,
+            &s.merchant,
+            &s.token,
+            &amount,
+            &interval,
+            &false,
+        );
 
         // Advance clock past first due time
         s.advance(interval + 1);
@@ -405,7 +460,14 @@ mod security_tests {
         let amount = 500_000_i128;
         let interval = 86_400_u64;
 
-        s.client.subscribe(&s.subscriber, &s.merchant, &s.token, &amount, &interval, &false);
+        s.client.subscribe(
+            &s.subscriber,
+            &s.merchant,
+            &s.token,
+            &amount,
+            &interval,
+            &false,
+        );
         s.advance(interval + 1);
 
         // Cancel subscription
@@ -436,7 +498,11 @@ mod security_tests {
     fn sec_double_cancel_returns_no_active_subscription() {
         let s = SecEnv::new_with_mock_auth();
         s.client.subscribe(
-            &s.subscriber, &s.merchant, &s.token, &1_000_i128, &86_400_u64,
+            &s.subscriber,
+            &s.merchant,
+            &s.token,
+            &1_000_i128,
+            &86_400_u64,
             &false,
         );
 
@@ -462,7 +528,14 @@ mod security_tests {
         let amount = 500_000_i128;
         let interval = 86_400_u64;
 
-        s.client.subscribe(&s.subscriber, &s.merchant, &s.token, &amount, &interval, &false);
+        s.client.subscribe(
+            &s.subscriber,
+            &s.merchant,
+            &s.token,
+            &amount,
+            &interval,
+            &false,
+        );
 
         // First billing cycle
         s.advance(interval + 1);
@@ -518,8 +591,9 @@ mod security_tests {
             &s.subscriber,
             &s.subscriber, // self
             &s.token,
-            &MAX_AMOUNT,        // max valid amount
-            &31_536_000_u64,    // max valid interval
+            &MAX_AMOUNT,     // max valid amount
+            &31_536_000_u64, // max valid interval
+            &false,
         );
         assert!(
             matches!(result, Err(Ok(ContractError::SelfSubscription))),
@@ -544,7 +618,10 @@ mod security_tests {
         let exists = s.env.storage().persistent().has(&DataKey::Subscription(
             crate::storage::subscription_key(&s.env, &s.subscriber, &s.subscriber),
         ));
-        assert!(!exists, "self-subscription must not create any storage entry");
+        assert!(
+            !exists,
+            "self-subscription must not create any storage entry"
+        );
     }
 
     // =========================================================================
@@ -580,7 +657,11 @@ mod security_tests {
 
         // Must succeed when and only when subscriber is authorized.
         let result = s.client.try_subscribe(
-            &s.subscriber, &s.merchant, &s.token, &1_000_i128, &86_400_u64,
+            &s.subscriber,
+            &s.merchant,
+            &s.token,
+            &1_000_i128,
+            &86_400_u64,
             &false,
         );
         assert!(
@@ -600,7 +681,11 @@ mod security_tests {
         // Set up subscription
         s.env.mock_all_auths();
         s.client.subscribe(
-            &s.subscriber, &s.merchant, &s.token, &1_000_i128, &86_400_u64,
+            &s.subscriber,
+            &s.merchant,
+            &s.token,
+            &1_000_i128,
+            &86_400_u64,
             &false,
         );
         s.advance(86_400 + 1);
@@ -631,7 +716,11 @@ mod security_tests {
         let s = SecEnv::new_no_mock_auth();
         s.env.mock_all_auths();
         s.client.subscribe(
-            &s.subscriber, &s.merchant, &s.token, &1_000_i128, &86_400_u64,
+            &s.subscriber,
+            &s.merchant,
+            &s.token,
+            &1_000_i128,
+            &86_400_u64,
             &false,
         );
 
@@ -665,7 +754,11 @@ mod security_tests {
     fn sec_execute_payment_blocked_before_due_time() {
         let s = SecEnv::new_with_mock_auth();
         s.client.subscribe(
-            &s.subscriber, &s.merchant, &s.token, &500_000_i128, &86_400_u64,
+            &s.subscriber,
+            &s.merchant,
+            &s.token,
+            &500_000_i128,
+            &86_400_u64,
             &false,
         );
 
@@ -679,7 +772,10 @@ mod security_tests {
 
         // Verify no funds were moved
         let bal = token::Client::new(&s.env, &s.token).balance(&s.subscriber);
-        assert_eq!(bal, 10_000_000_i128, "no funds must be transferred before due time");
+        assert_eq!(
+            bal, 10_000_000_i128,
+            "no funds must be transferred before due time"
+        );
     }
 
     /// SECURITY: Partial interval advance does not unlock payment.
@@ -689,7 +785,11 @@ mod security_tests {
         let s = SecEnv::new_with_mock_auth();
         let interval = 86_400_u64;
         s.client.subscribe(
-            &s.subscriber, &s.merchant, &s.token, &500_000_i128, &interval,
+            &s.subscriber,
+            &s.merchant,
+            &s.token,
+            &500_000_i128,
+            &interval,
             &false,
         );
 
@@ -732,6 +832,502 @@ mod security_tests {
             matches!(result, Err(Ok(ContractError::NoActiveSubscription))),
             "cancel with no subscription must return NoActiveSubscription; got {:?}",
             result
+        );
+    }
+
+    // =========================================================================
+    // CATEGORY 9 — Admin entry point authorization (migrate, set_protocol_fee)
+    // =========================================================================
+
+    /// SECURITY: Only the stored admin can call `migrate`.
+    /// Attacker with random address must fail.
+    #[test]
+    #[should_panic]
+    fn sec_migrate_as_wrong_address_panics() {
+        let s = SecEnv::new_no_mock_auth();
+        let admin = Address::generate(&s.env);
+
+        // Initialize contract with admin
+        s.env.mock_all_auths();
+        s.client.initialize(&admin);
+
+        // Attempt to migrate as attacker
+        s.env.mock_auths(&[MockAuth {
+            address: &s.attacker,
+            invoke: &MockAuthInvoke {
+                contract: &s.contract_id,
+                fn_name: "migrate",
+                args: (s.attacker.clone(),).into_val(&s.env),
+                sub_invokes: &[],
+            },
+        }]);
+        // admin.require_auth() fails because attacker != admin
+        s.client.migrate(&s.attacker);
+    }
+
+    /// SECURITY: `migrate` with no auth envelope must panic.
+    #[test]
+    #[should_panic]
+    fn sec_migrate_with_no_auth_panics() {
+        let s = SecEnv::new_no_mock_auth();
+        let admin = Address::generate(&s.env);
+
+        s.env.mock_all_auths();
+        s.client.initialize(&admin);
+
+        // Remove all auth mocks
+        s.env.mock_auths(&[]);
+        s.client.migrate(&admin);
+    }
+
+    /// SECURITY: `migrate` signed by subscriber instead of admin must fail.
+    /// Verifies the contract checks against the stored admin, not any other party.
+    #[test]
+    fn sec_migrate_signed_by_non_admin_returns_error() {
+        let s = SecEnv::new_with_mock_auth();
+        let admin = Address::generate(&s.env);
+
+        s.client.initialize(&admin);
+
+        // Subscriber tries to migrate (with subscriber auth, not admin auth).
+        // Because the contract's require_auth check is on the admin parameter,
+        // and the stored admin != subscriber, this will panic.
+        // We need to test a different scenario: correct auth on wrong party.
+        // Actually the contract will panic on require_auth mismatch — for this
+        // test we want to verify NotAdmin error. Let's use try_ variant.
+        let result = s.client.try_migrate(&s.subscriber);
+        assert!(
+            matches!(result, Err(Ok(ContractError::NotAdmin))),
+            "migrate by non-admin must return NotAdmin; got {:?}",
+            result
+        );
+    }
+
+    /// SECURITY: `set_protocol_fee` requires admin auth.
+    /// Attacker calling it must fail.
+    #[test]
+    #[should_panic]
+    fn sec_set_protocol_fee_as_wrong_address_panics() {
+        let s = SecEnv::new_no_mock_auth();
+        let admin = Address::generate(&s.env);
+        let collector = Address::generate(&s.env);
+
+        s.env.mock_all_auths();
+        s.client.initialize(&admin);
+
+        // Attacker tries to set fee
+        s.env.mock_auths(&[MockAuth {
+            address: &s.attacker,
+            invoke: &MockAuthInvoke {
+                contract: &s.contract_id,
+                fn_name: "set_protocol_fee",
+                args: (s.attacker.clone(), 100_u32, collector.clone()).into_val(&s.env),
+                sub_invokes: &[],
+            },
+        }]);
+        s.client.set_protocol_fee(&s.attacker, &100, &collector);
+    }
+
+    /// SECURITY: `set_protocol_fee` with no auth envelope must panic.
+    #[test]
+    #[should_panic]
+    fn sec_set_protocol_fee_with_no_auth_panics() {
+        let s = SecEnv::new_no_mock_auth();
+        let admin = Address::generate(&s.env);
+        let collector = Address::generate(&s.env);
+
+        s.env.mock_all_auths();
+        s.client.initialize(&admin);
+
+        s.env.mock_auths(&[]);
+        s.client.set_protocol_fee(&admin, &100, &collector);
+    }
+
+    /// SECURITY: `set_protocol_fee` signed by non-admin must return NotAdmin.
+    #[test]
+    fn sec_set_protocol_fee_by_non_admin_returns_error() {
+        let s = SecEnv::new_with_mock_auth();
+        let admin = Address::generate(&s.env);
+        let collector = Address::generate(&s.env);
+
+        s.client.initialize(&admin);
+
+        let result = s
+            .client
+            .try_set_protocol_fee(&s.subscriber, &100, &collector);
+        assert!(
+            matches!(result, Err(Ok(ContractError::NotAdmin))),
+            "set_protocol_fee by non-admin must return NotAdmin; got {:?}",
+            result
+        );
+    }
+
+    // =========================================================================
+    // CATEGORY 10 — batch_execute_payment authorization
+    // =========================================================================
+
+    /// SECURITY: Only the declared merchant can call `batch_execute_payment`.
+    /// Attacker cannot batch-collect on behalf of a real merchant.
+    #[test]
+    #[should_panic]
+    fn sec_batch_execute_payment_as_attacker_panics() {
+        let s = SecEnv::new_no_mock_auth();
+        let sub2 = Address::generate(&s.env);
+
+        // Set up subscriptions
+        s.env.mock_all_auths();
+        s.client.subscribe(
+            &s.subscriber,
+            &s.merchant,
+            &s.token,
+            &1_000_i128,
+            &86_400_u64,
+            &false,
+        );
+        s.client.subscribe(
+            &sub2,
+            &s.merchant,
+            &s.token,
+            &1_000_i128,
+            &86_400_u64,
+            &false,
+        );
+        s.advance(86_401);
+
+        // Attacker tries to batch-collect for the merchant
+        let subs = soroban_sdk::Vec::from_array(&s.env, [s.subscriber.clone(), sub2.clone()]);
+        s.env.mock_auths(&[MockAuth {
+            address: &s.attacker,
+            invoke: &MockAuthInvoke {
+                contract: &s.contract_id,
+                fn_name: "batch_execute_payment",
+                args: (s.merchant.clone(), subs.clone()).into_val(&s.env),
+                sub_invokes: &[],
+            },
+        }]);
+        // merchant.require_auth() fails
+        s.client.batch_execute_payment(&s.merchant, &subs);
+    }
+
+    /// SECURITY: `batch_execute_payment` with no auth envelope must panic.
+    #[test]
+    #[should_panic]
+    fn sec_batch_execute_payment_with_no_auth_panics() {
+        let s = SecEnv::new_no_mock_auth();
+        s.env.mock_all_auths();
+        s.client.subscribe(
+            &s.subscriber,
+            &s.merchant,
+            &s.token,
+            &1_000_i128,
+            &86_400_u64,
+            &false,
+        );
+        s.advance(86_401);
+
+        let subs = soroban_sdk::Vec::from_array(&s.env, [s.subscriber.clone()]);
+        s.env.mock_auths(&[]);
+        s.client.batch_execute_payment(&s.merchant, &subs);
+    }
+
+    /// SECURITY: Subscriber cannot batch-collect their own payments (wrong role).
+    #[test]
+    #[should_panic]
+    fn sec_batch_execute_payment_as_subscriber_panics() {
+        let s = SecEnv::new_no_mock_auth();
+        s.env.mock_all_auths();
+        s.client.subscribe(
+            &s.subscriber,
+            &s.merchant,
+            &s.token,
+            &1_000_i128,
+            &86_400_u64,
+            &false,
+        );
+        s.advance(86_401);
+
+        let subs = soroban_sdk::Vec::from_array(&s.env, [s.subscriber.clone()]);
+        s.env.mock_auths(&[MockAuth {
+            address: &s.subscriber,
+            invoke: &MockAuthInvoke {
+                contract: &s.contract_id,
+                fn_name: "batch_execute_payment",
+                args: (s.merchant.clone(), subs.clone()).into_val(&s.env),
+                sub_invokes: &[],
+            },
+        }]);
+        // merchant.require_auth() fails
+        s.client.batch_execute_payment(&s.merchant, &subs);
+    }
+
+    // =========================================================================
+    // CATEGORY 11 — transfer_subscription dual-auth requirement
+    // =========================================================================
+
+    /// SECURITY: `transfer_subscription` requires BOTH subscriber and old_merchant
+    /// authorization. Calling with only subscriber auth must fail.
+    #[test]
+    #[should_panic]
+    fn sec_transfer_subscription_with_only_subscriber_auth_panics() {
+        let s = SecEnv::new_no_mock_auth();
+        let new_merchant = Address::generate(&s.env);
+
+        // Set up subscription
+        s.env.mock_all_auths();
+        s.client.subscribe(
+            &s.subscriber,
+            &s.merchant,
+            &s.token,
+            &1_000_i128,
+            &86_400_u64,
+            &false,
+        );
+
+        // Only authorize subscriber, not old_merchant
+        s.env.mock_auths(&[MockAuth {
+            address: &s.subscriber,
+            invoke: &MockAuthInvoke {
+                contract: &s.contract_id,
+                fn_name: "transfer_subscription",
+                args: (
+                    s.subscriber.clone(),
+                    s.merchant.clone(),
+                    new_merchant.clone(),
+                )
+                    .into_val(&s.env),
+                sub_invokes: &[],
+            },
+        }]);
+        // old_merchant.require_auth() fails
+        s.client
+            .transfer_subscription(&s.subscriber, &s.merchant, &new_merchant);
+    }
+
+    /// SECURITY: `transfer_subscription` requires BOTH parties.
+    /// Calling with only old_merchant auth must fail.
+    #[test]
+    #[should_panic]
+    fn sec_transfer_subscription_with_only_merchant_auth_panics() {
+        let s = SecEnv::new_no_mock_auth();
+        let new_merchant = Address::generate(&s.env);
+
+        s.env.mock_all_auths();
+        s.client.subscribe(
+            &s.subscriber,
+            &s.merchant,
+            &s.token,
+            &1_000_i128,
+            &86_400_u64,
+            &false,
+        );
+
+        // Only authorize old_merchant, not subscriber
+        s.env.mock_auths(&[MockAuth {
+            address: &s.merchant,
+            invoke: &MockAuthInvoke {
+                contract: &s.contract_id,
+                fn_name: "transfer_subscription",
+                args: (
+                    s.subscriber.clone(),
+                    s.merchant.clone(),
+                    new_merchant.clone(),
+                )
+                    .into_val(&s.env),
+                sub_invokes: &[],
+            },
+        }]);
+        // subscriber.require_auth() fails
+        s.client
+            .transfer_subscription(&s.subscriber, &s.merchant, &new_merchant);
+    }
+
+    /// SECURITY: `transfer_subscription` with no auth at all must panic.
+    #[test]
+    #[should_panic]
+    fn sec_transfer_subscription_with_no_auth_panics() {
+        let s = SecEnv::new_no_mock_auth();
+        let new_merchant = Address::generate(&s.env);
+
+        s.env.mock_all_auths();
+        s.client.subscribe(
+            &s.subscriber,
+            &s.merchant,
+            &s.token,
+            &1_000_i128,
+            &86_400_u64,
+            &false,
+        );
+
+        s.env.mock_auths(&[]);
+        s.client
+            .transfer_subscription(&s.subscriber, &s.merchant, &new_merchant);
+    }
+
+    /// SECURITY: Attacker cannot transfer a subscription by forging either party's signature.
+    #[test]
+    #[should_panic]
+    fn sec_transfer_subscription_as_attacker_panics() {
+        let s = SecEnv::new_no_mock_auth();
+        let new_merchant = Address::generate(&s.env);
+
+        s.env.mock_all_auths();
+        s.client.subscribe(
+            &s.subscriber,
+            &s.merchant,
+            &s.token,
+            &1_000_i128,
+            &86_400_u64,
+            &false,
+        );
+
+        // Attacker provides auth for both subscriber and merchant addresses (forgery simulation)
+        s.env.mock_auths(&[MockAuth {
+            address: &s.attacker,
+            invoke: &MockAuthInvoke {
+                contract: &s.contract_id,
+                fn_name: "transfer_subscription",
+                args: (
+                    s.subscriber.clone(),
+                    s.merchant.clone(),
+                    new_merchant.clone(),
+                )
+                    .into_val(&s.env),
+                sub_invokes: &[],
+            },
+        }]);
+        // subscriber.require_auth() and old_merchant.require_auth() both fail
+        s.client
+            .transfer_subscription(&s.subscriber, &s.merchant, &new_merchant);
+    }
+
+    // =========================================================================
+    // CATEGORY 12 — No ambient auth state
+    // =========================================================================
+
+    /// SECURITY: A previous authorized call to `subscribe` does not grant
+    /// implicit authorization for a subsequent `execute_payment` call.
+    ///
+    /// This verifies that each entry point performs a fresh `require_auth()`
+    /// and does not rely on ambient state from a prior invocation.
+    #[test]
+    #[should_panic]
+    fn sec_no_ambient_auth_from_subscribe_to_execute_payment() {
+        let s = SecEnv::new_no_mock_auth();
+
+        // First call: authorize subscriber for subscribe
+        s.env.mock_auths(&[MockAuth {
+            address: &s.subscriber,
+            invoke: &MockAuthInvoke {
+                contract: &s.contract_id,
+                fn_name: "subscribe",
+                args: (
+                    s.subscriber.clone(),
+                    s.merchant.clone(),
+                    s.token.clone(),
+                    1_000_i128,
+                    86_400_u64,
+                    false,
+                )
+                    .into_val(&s.env),
+                sub_invokes: &[],
+            },
+        }]);
+        s.client.subscribe(
+            &s.subscriber,
+            &s.merchant,
+            &s.token,
+            &1_000_i128,
+            &86_400_u64,
+            &false,
+        );
+
+        s.advance(86_401);
+
+        // Second call: attempt to execute_payment WITHOUT providing merchant auth.
+        // If ambient state from the previous subscribe call carried over, this
+        // might incorrectly succeed. It must panic.
+        s.env.mock_auths(&[]); // No auth for execute_payment
+        s.client.execute_payment(&s.subscriber, &s.merchant);
+    }
+
+    /// SECURITY: A previous authorized call to `execute_payment` does not grant
+    /// implicit authorization for a subsequent `cancel` call.
+    #[test]
+    #[should_panic]
+    fn sec_no_ambient_auth_from_execute_payment_to_cancel() {
+        let s = SecEnv::new_no_mock_auth();
+
+        s.env.mock_all_auths();
+        s.client.subscribe(
+            &s.subscriber,
+            &s.merchant,
+            &s.token,
+            &1_000_i128,
+            &86_400_u64,
+            &false,
+        );
+        s.advance(86_401);
+
+        // First call: execute_payment with merchant auth
+        s.env.mock_auths(&[MockAuth {
+            address: &s.merchant,
+            invoke: &MockAuthInvoke {
+                contract: &s.contract_id,
+                fn_name: "execute_payment",
+                args: (s.subscriber.clone(), s.merchant.clone()).into_val(&s.env),
+                sub_invokes: &[],
+            },
+        }]);
+        s.client.execute_payment(&s.subscriber, &s.merchant);
+
+        // Second call: cancel WITHOUT subscriber auth (ambient state test)
+        s.env.mock_auths(&[]); // No auth for cancel
+        s.client.cancel(&s.subscriber, &s.merchant);
+    }
+
+    /// SECURITY: Two sequential `subscribe` calls must both require fresh auth.
+    /// The second call cannot rely on the first call's authorization.
+    #[test]
+    #[should_panic]
+    fn sec_no_ambient_auth_across_two_subscribe_calls() {
+        let s = SecEnv::new_no_mock_auth();
+
+        // First subscribe with correct auth
+        s.env.mock_auths(&[MockAuth {
+            address: &s.subscriber,
+            invoke: &MockAuthInvoke {
+                contract: &s.contract_id,
+                fn_name: "subscribe",
+                args: (
+                    s.subscriber.clone(),
+                    s.merchant.clone(),
+                    s.token.clone(),
+                    1_000_i128,
+                    86_400_u64,
+                    false,
+                )
+                    .into_val(&s.env),
+                sub_invokes: &[],
+            },
+        }]);
+        s.client.subscribe(
+            &s.subscriber,
+            &s.merchant,
+            &s.token,
+            &1_000_i128,
+            &86_400_u64,
+            &false,
+        );
+
+        // Second subscribe (update) WITHOUT auth (ambient state test)
+        s.env.mock_auths(&[]); // No auth for second subscribe
+        s.client.subscribe(
+            &s.subscriber,
+            &s.merchant,
+            &s.token,
+            &2_000_i128,
+            &86_400_u64,
+            &false,
         );
     }
 }
