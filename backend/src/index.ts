@@ -25,6 +25,7 @@ import reconcileRouter from './routes/reconcile';
 import subscriptionsRouter from './routes/subscriptions';
 import webhooksRouter from './routes/webhooks';
 import notificationsRouter from './routes/notifications';
+import kycRouter from './routes/kyc';
 import versionRouter from './routes/version';
 import analyticsRouter from './routes/analytics';   // FE-50 / BE-52
 import adminRouter from './routes/admin';

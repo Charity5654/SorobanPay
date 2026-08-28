@@ -1,0 +1,179 @@
+# Issue #743 — Payment Flow Regression Test Suite CI
+#
+# Runs the payment regression test suite on every PR that touches
+# payment-related code (contract, frontend payment libs, backend payment routes).
+# Blocks merge if any regression test fails.
+#
+# Triggers:
+# - PRs touching contracts/, frontend/src/lib/, backend/src/services/payment*
+# - Pushes to main (always)
+# - Manual dispatch
+
+name: "Payment Regression Tests"
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "contracts/subscription/src/**"
+      - "frontend/src/lib/transaction_builder*"
+      - "frontend/src/lib/validation*"
+      - "backend/src/services/paymentScheduler*"
+      - "backend/src/services/reconciler*"
+  pull_request:
+    paths:
+      - "contracts/subscription/src/**"
+      - "frontend/src/lib/transaction_builder*"
+      - "frontend/src/lib/validation*"
+      - "backend/src/services/paymentScheduler*"
+      - "backend/src/services/reconciler*"
+  workflow_dispatch:
+
+jobs:
+  # ─── Contract regression tests ───────────────────────────────────────────────
+  contract-regression:
+    name: "Contract Payment Regression Tests"
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: contracts/subscription
+
+      - name: Run regression test suite
+        run: |
+          set -o pipefail
+          cargo test \
+            --manifest-path contracts/subscription/Cargo.toml \
+            regression \
+            2>&1 | tee /tmp/regression-output.txt
+          echo "## Regression Test Summary" >> "$GITHUB_STEP_SUMMARY"
+          grep -E "^test result|FAILED|regression_" /tmp/regression-output.txt \
+            | sed 's/^/    /' >> "$GITHUB_STEP_SUMMARY" || true
+
+      - name: Verify all regression tests pass
+        run: |
+          if grep -E "^test result.*FAILED" /tmp/regression-output.txt; then
+            echo "❌ REGRESSION FAILURE — one or more payment regression tests failed!" >&2
+            echo "::error::Payment regression tests failed. Merge is blocked." 
+            exit 1
+          fi
+          TOTAL=$(grep -c "test regression_" /tmp/regression-output.txt || echo "0")
+          echo "✅ All ${TOTAL} regression tests passed" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload test output as artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: contract-regression-output
+          path: /tmp/regression-output.txt
+          retention-days: 30
+
+  # ─── Frontend payment validation regression tests ─────────────────────────────
+  frontend-payment-regression:
+    name: "Frontend Payment Validation Regression Tests"
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+        working-directory: frontend
+
+      - name: Run payment-related unit tests
+        run: |
+          npx jest \
+            --testPathPattern="(validation|transaction_builder)" \
+            --ci \
+            --coverage \
+            --coverageReporters=text,lcov \
+            --forceExit
+        working-directory: frontend
+
+      - name: Upload frontend coverage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-payment-coverage
+          path: frontend/coverage/
+
+  # ─── Backend payment service regression tests ─────────────────────────────────
+  backend-payment-regression:
+    name: "Backend Payment Service Regression Tests"
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+        working-directory: backend
+
+      - name: Run payment scheduler and reconciler tests
+        run: |
+          npx jest \
+            --testPathPattern="(reconciler|paymentScheduler|contractCalls)" \
+            --ci \
+            --forceExit \
+            2>&1 | tee /tmp/backend-regression-output.txt
+        working-directory: backend
+
+      - name: Upload backend test output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-payment-regression-output
+          path: /tmp/backend-regression-output.txt
+          retention-days: 30
+
+  # ─── Regression gate — blocks PR merge on any failure ─────────────────────────
+  regression-gate:
+    name: "Regression Gate (Required for Merge)"
+    needs:
+      - contract-regression
+      - frontend-payment-regression
+      - backend-payment-regression
+    runs-on: ubuntu-latest
+    if: always()
+
+    steps:
+      - name: Check all regression jobs passed
+        run: |
+          echo "## Regression Gate Summary" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Job | Result |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|-----|--------|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| contract-regression | ${{ needs.contract-regression.result }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| frontend-payment-regression | ${{ needs.frontend-payment-regression.result }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| backend-payment-regression | ${{ needs.backend-payment-regression.result }} |" >> "$GITHUB_STEP_SUMMARY"
+
+          if [[ "${{ needs.contract-regression.result }}" != "success" ]] || \
+             [[ "${{ needs.frontend-payment-regression.result }}" != "success" ]] || \
+             [[ "${{ needs.backend-payment-regression.result }}" != "success" ]]; then
+            echo "❌ One or more regression suites failed — merge blocked!" >&2
+            echo "::error::Payment regression gate failed. All suites must pass before merging."
+            exit 1
+          fi
+
+          echo "✅ All payment regression suites passed — merge allowed." >> "$GITHUB_STEP_SUMMARY"
