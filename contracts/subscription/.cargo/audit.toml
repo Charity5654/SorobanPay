@@ -18,7 +18,7 @@
 # Migrating to soroban-sdk 21+ would resolve all five but introduces breaking
 # API changes requiring a full contract rewrite. Tracked as a planned upgrade.
 #
-# References: #599, OPS-121 issues #600, #616, #618
+# References: OPS-121 issues #600, #616, #618
 # Review this file each time soroban-sdk is upgraded.
 
 [advisories]

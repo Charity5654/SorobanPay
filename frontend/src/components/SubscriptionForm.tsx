@@ -1517,6 +1517,10 @@ export default function SubscriptionForm({ initialValues }: SubscriptionFormProp
             >
               Merchant address{requiredMark}
               <span className="sr-only">(required)</span>
+              {" "}<HelpTooltip
+                content="The Stellar G-address of whoever will receive your recurring payments. Must be 56 characters starting with G."
+                articleId="merchant-address"
+              />
             </label>
             <input
               id="merchantAddress"
@@ -1558,6 +1562,10 @@ export default function SubscriptionForm({ initialValues }: SubscriptionFormProp
               className={labelCls}
             >
               Token contract address{requiredMark}
+              {" "}<HelpTooltip
+                content="The SEP-41 token contract address (C-address) to use for payments. Must not be the SorobanPay contract itself."
+                articleId="token-contract"
+              />
               <span className="sr-only"> (required)</span>
             </label>
             <TokenCombobox
@@ -1594,6 +1602,10 @@ export default function SubscriptionForm({ initialValues }: SubscriptionFormProp
             >
               Amount{requiredMark}
               <span className="sr-only"> (required)</span>
+              {" "}<HelpTooltip
+                content="Token units to transfer per interval. Must be positive and at most 10¹⁸. The first payment is collectable immediately after subscribing."
+                articleId="create-subscription"
+              />
             </label>
             <input
               id="amount"
@@ -1644,6 +1656,10 @@ export default function SubscriptionForm({ initialValues }: SubscriptionFormProp
             >
               Interval{requiredMark}
               <span className="sr-only"> (required)</span>
+              {" "}<HelpTooltip
+                content="How often payments recur in seconds. Min 86,400 (1 day), max 31,536,000 (365 days). E.g. 2,592,000 ≈ monthly."
+                articleId="payment-interval"
+              />
             </label>
             <input
               id="interval"
