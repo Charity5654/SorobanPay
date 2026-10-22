@@ -564,6 +564,71 @@ If a subscription entry's TTL reaches zero:
 
 ---
 
+## 7. Stuck or Duplicate Payment Runbook
+
+Use this runbook when a payment request times out, remains pending, appears more than once, or a merchant reports a duplicate. A timeout is not proof that a transaction failed. Do not submit the same payment again until the first transaction has a definitive chain result.
+
+### Contain and preserve evidence
+
+1. Record the network, contract ID, merchant and subscriber public addresses, token, amount, approximate time, request/trace ID, and every known transaction hash. Keep the incident record access-controlled.
+2. If automated on-chain submissions are enabled, disable them through the deployment's normal configuration and restart procedure. `PaymentScheduler` and automatic payment retries require `OPERATOR_SECRET`; confirm the startup log reports that scheduling/retries are disabled. Do not print or paste the secret. Keep the indexer and database running so they can continue collecting evidence. Do not delete retry jobs or payment rows as a containment measure.
+3. Capture relevant application logs before rotating or changing log settings. In the repository's local Compose setup, inspect the backend/indexer service with:
+
+   ```bash
+   docker compose ps
+   docker compose logs --since=2h indexer
+   ```
+
+   Expected: service state and recent indexer, payment, retry, or reconciliation events. If the service is unavailable, preserve the output and container status, restore database/RPC connectivity, and do not retry payment submission while the result remains unknown.
+
+Never include signing keys, access tokens, webhook secrets, authorization headers, or unredacted request bodies in tickets or shared logs. Retain transaction hashes, ledger numbers, error codes, and correlation IDs; restrict access to raw logs and customer identifiers.
+
+### Establish the chain result
+
+Query the transaction by its hash through the configured Stellar RPC endpoint:
+
+```bash
+curl --fail-with-body --silent --show-error \
+  --request POST "$RPC_URL" \
+  --header 'Content-Type: application/json' \
+  --data '{"jsonrpc":"2.0","id":1,"method":"getTransaction","params":{"hash":"<TX_HASH>"}}'
+```
+
+Expected: a JSON result with a definitive `SUCCESS` or `FAILED` status and ledger when available. `NOT_FOUND`, a timeout, or an RPC error is inconclusive: retry the read after RPC service recovers and check a second trusted endpoint if configured. Do not interpret absence from the off-chain database as proof that the chain transaction did not execute.
+
+Check whether the backend has persisted a payment and its audit row. This query is read-only; supply the transaction hash locally and do not paste database connection details into incident notes:
+
+```bash
+psql "$DATABASE_URL" -X -v ON_ERROR_STOP=1 -c "BEGIN READ ONLY; SELECT id, \"txHash\", merchant, subscriber, amount, token, ledger, status, timestamp FROM \"Payment\" WHERE \"txHash\" = '<TX_HASH>'; SELECT id, \"transactionHash\", merchant, subscriber, amount, ledger, status, \"createdAt\" FROM \"AuditLog\" WHERE \"transactionHash\" = '<TX_HASH>'; COMMIT;"
+```
+
+Expected: at most one row per table for a transaction hash; the schema makes both transaction-hash columns unique. Zero rows means indexing/audit persistence may be behind, not that payment failed. A query error is not a reason to resubmit: preserve the error code, restore read access, and repeat the read.
+
+The backend reconciliation endpoint compares stored chain events with subscription read-model state; it does not query transaction status or repair `Payment`/`AuditLog` rows. Run its default dry-run only after confirming authorized API access:
+
+```bash
+curl --fail-with-body --silent --show-error "$API_URL/api/reconcile?dry_run=true"
+```
+
+Expected: JSON with `dry_run: true`, `repairs`, and `errors`. A non-empty `errors` array or HTTP failure needs operator review. Do not use `dry_run=false` as payment recovery; it mutates subscription state only. Do not put bearer tokens into shell history; use the deployment's approved authenticated request mechanism.
+
+### Recover by outcome
+
+| Evidence | Action | Stop condition / recovery |
+|---|---|---|
+| Transaction is pending, `NOT_FOUND`, or RPC is unavailable | Keep automated submissions paused. Re-query chain status and inspect the transaction's ledger/events after RPC recovers. | Resume only after the transaction is definitively resolved; if status remains ambiguous, escalate to the network/operator on call. |
+| Transaction is `SUCCESS` and the expected payment execution is present on-chain | Do not submit again. Let the indexer catch up; compare the transaction hash, ledger, amount, token, and parties in `Payment` and `AuditLog`. | If the indexer remains behind, restore RPC/database connectivity and inspect `docker compose logs --since=2h indexer`; reconcile subscription state separately. Escalate persistent missing payment records for controlled repair. |
+| Transaction is `FAILED`, with no successful payment execution | Record the failure and inspect its error/result. Correct the underlying cause before authorizing one retry through the normal payment flow. | If chain evidence conflicts or a payment transfer may have succeeded despite the reported failure, keep retries paused and escalate. |
+| Two successful payment transactions charged the same intended installment | Pause further submissions for that subscription, preserve both hashes/ledgers and matching event/audit rows, and notify the merchant through the incident channel. | Do not attempt an automatic reversal or call subscription cancellation a refund. Resolve customer remediation under the merchant's approved refund/credit process, then record the decision and verify no further duplicate is scheduled. |
+| Only the webhook was delivered more than once | Deduplicate at the receiver with the stable `X-SorobanPay-Event-ID`; delivery attempt IDs differ. Inspect `WebhookDelivery` by event ID and attempt. | Do not submit another payment. Correct receiver idempotency or endpoint delivery and verify retries stop after a successful response. |
+
+### Closeout checklist
+
+- Confirm the payment scheduler and retry processing are intentionally enabled or disabled, and monitor the next scheduled cycle before closing.
+- Reconcile the chain transaction, indexed event, `Payment`, `AuditLog`, and merchant-side receipt. Record unresolved differences with an owner and next review time.
+- Preserve the incident timeline, hashes, ledgers, sanitized error codes, and recovery action. Redact credentials, webhook signatures/secrets, and unnecessary personal data.
+- Identify the trigger (RPC outage, worker restart, timeout, duplicate job, receiver retry, or indexing lag), assign a corrective action, and verify it using the operational alert/log signal before closing.
+
 ## See Also
 
 - [Network Configuration Guide](./networks.md) — testnet vs. mainnet RPC and passphrase values
@@ -571,3 +636,353 @@ If a subscription entry's TTL reaches zero:
 - `contracts/subscription/src/storage.rs` — TTL constant definitions
 - [Soroban RPC getLedgerEntries spec](https://developers.stellar.org/docs/data/rpc/api-reference/methods/getLedgerEntries)
 - [Soroban Storage and TTL](https://developers.stellar.org/docs/build/smart-contracts/storage/ttl)
+
+---
+
+## 7. Observability: Logs, Metrics, Traces, and Correlation IDs
+
+This section explains the backend's structured observability stack and how to use it
+in production operations. All three signals — logs, metrics, and traces — share the
+same `correlationId` so any incident can be correlated across tools.
+
+---
+
+### 7.1 Structured Logging (Pino)
+
+The backend uses [Pino](https://getpino.io) (`backend/src/lib/logger.ts`) to emit
+JSON-structured log lines to stdout. Every log record includes:
+
+| Field | Description | Example |
+|---|---|---|
+| `level` | Severity string | `"info"`, `"warn"`, `"error"` |
+| `time` | ISO-8601 timestamp | `"2026-09-30T11:00:00.000Z"` |
+| `service` | Fixed label | `"soroban-pay-backend"` |
+| `correlationId` | Per-request UUID v4 | `"a1b2c3d4-..."` |
+| `event` | Machine-readable event name | `"request.received"` |
+| `msg` | Human-readable message | `"GET /subscriptions"` |
+
+#### Log levels
+
+Configure the minimum level with the `LOG_LEVEL` environment variable (default: `info`):
+
+```bash
+LOG_LEVEL=debug   # verbose — include all internal trace lines
+LOG_LEVEL=info    # default — operational events
+LOG_LEVEL=warn    # non-critical problems only
+LOG_LEVEL=error   # failures only
+```
+
+#### Development pretty-printing
+
+In non-production environments (`NODE_ENV !== "production"`) the logger automatically
+loads `pino-pretty` to emit human-readable coloured output:
+
+```
+[2026-09-30 11:00:01.000] INFO  (soroban-pay-backend): request.received
+  correlationId: "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+  method: "GET"
+  path: "/subscriptions/GABC...ALICE"
+```
+
+Production containers receive raw JSON:
+
+```json
+{
+  "level": "info",
+  "time": "2026-09-30T11:00:01.000Z",
+  "service": "soroban-pay-backend",
+  "correlationId": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+  "event": "request.received",
+  "method": "GET",
+  "path": "/subscriptions/GABC...ALICE"
+}
+```
+
+#### Sensitive-value redaction
+
+Stellar addresses are redacted to `<first-8>...<last-8>` before they appear in log
+output. This prevents accidentally logging full public keys in shared log storage.
+
+The redaction function is in `backend/src/lib/logger.ts`:
+
+```typescript
+// Example output: "GABC1234...XYZ56789"
+redactAddress("GABC1234XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXYZ56789")
+```
+
+Rule: redaction applies to the log fields, not to the HTTP response or database.
+The full address is preserved in storage and in API responses.
+
+**What is never logged:**
+- Private keys / secrets (none are held server-side)
+- JWT tokens — only claims (e.g., `merchantId`) are logged
+- Raw `SUBSCRIBER_SECRET` or `WEBHOOK_SECRET` values
+
+---
+
+### 7.2 Correlation IDs
+
+The middleware in `backend/src/middleware/correlationId.ts` runs on every request:
+
+1. Reads `X-Correlation-Id` from the request header. If present, the value is reused
+   (allows propagation from an upstream API gateway or client).
+2. If the header is absent, a fresh UUID v4 is generated.
+3. The correlation ID is attached to `req.id` and to a child Pino logger on `req.log`.
+4. The ID is echoed in the `X-Correlation-Id` **response** header.
+
+#### Forwarding from a client
+
+```bash
+curl -H "X-Correlation-Id: my-trace-id-1234" \
+  https://api.example.com/subscriptions/GABC...
+```
+
+```
+< X-Correlation-Id: my-trace-id-1234
+```
+
+#### Using `req.log` in route handlers
+
+Every route handler should use `req.log` instead of the bare `logger` so the
+correlation ID is included automatically:
+
+```typescript
+// backend/src/routes/subscriptions.ts (illustrative)
+router.get('/:subscriber', async (req, res) => {
+  req.log.info({ event: 'subscription.lookup', subscriber: redactAddress(req.params.subscriber) });
+  // ...
+});
+```
+
+#### Finding a request in log output
+
+```bash
+# Grep JSON logs by correlationId
+docker logs sorobanpay-api | jq 'select(.correlationId == "a1b2c3d4-e5f6-7890-abcd-ef1234567890")'
+```
+
+Expected output for a healthy request:
+
+```json
+{ "event": "request.received",  "method": "GET", "path": "/subscriptions/...", "correlationId": "a1b2c3d4-..." }
+{ "event": "request.finished", "statusCode": 200, "correlationId": "a1b2c3d4-..." }
+```
+
+#### Failure recovery
+
+If `X-Correlation-Id` is missing from a client request and the client did not capture
+the one echoed in the response header:
+
+1. Note the approximate request timestamp from the client side.
+2. Filter logs by `time` range and `path`:
+   ```bash
+   docker logs sorobanpay-api | jq 'select(.path == "/subscriptions/GABC..." and .event == "request.received")'
+   ```
+3. The `correlationId` in the matching log line can then be used to trace the full
+   request through both log and trace backends.
+
+---
+
+### 7.3 Distributed Tracing (OpenTelemetry)
+
+The backend initialises the OpenTelemetry Node.js SDK in `backend/src/lib/tracing.ts`
+before any other module loads. Traces are exported via OTLP HTTP to a configurable
+collector (Jaeger, Tempo, etc.).
+
+#### Environment variables
+
+| Variable | Default | Description |
+|---|---|---|
+| `OTEL_SDK_DISABLED` | `false` | Set to `true` to disable tracing entirely |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://localhost:4318` | OTLP collector endpoint |
+| `OTEL_SERVICE_NAME` | `sorobanpay-backend` | Service name in trace UI |
+| `OTEL_SAMPLING_RATE` | `1.0` | Fraction of traces sampled (0.0–1.0) |
+
+#### Recommended production settings
+
+```bash
+# Kubernetes ConfigMap / docker-compose env section
+OTEL_SDK_DISABLED=false
+OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318
+OTEL_SERVICE_NAME=sorobanpay-backend
+OTEL_SAMPLING_RATE=0.1   # 10% head-based sampling — adjust for traffic volume
+```
+
+#### Disabling tracing (zero overhead)
+
+```bash
+OTEL_SDK_DISABLED=true
+```
+
+The SDK is not started and `withSpan` calls are no-ops. No network connections are
+opened. Use this in local development or CI where a collector is not available.
+
+#### Wrapping operations in a custom span
+
+```typescript
+import { withSpan, SpanKind } from '../lib/tracing';
+
+// In any backend service
+const result = await withSpan(
+  'sorobanpay.indexer',
+  'indexer.poll',
+  async (span) => {
+    span.setAttribute('ledger.cursor', cursor);
+    return await fetchEventsFromRPC(cursor);
+  },
+  { kind: SpanKind.CLIENT },
+);
+```
+
+If the function throws, the span is marked `ERROR`, the exception is recorded, and
+the error is re-thrown unchanged.
+
+#### Sampling rate guidance
+
+| Traffic level | Recommended `OTEL_SAMPLING_RATE` |
+|---|---|
+| Development / CI | `1.0` (capture everything) |
+| Staging | `1.0` |
+| Production — low (<100 req/s) | `1.0` |
+| Production — medium (100–1 000 req/s) | `0.1` |
+| Production — high (>1 000 req/s) | `0.01` |
+
+Head-based sampling at `0.1` means 10% of new traces are recorded; spans within
+a sampled trace are always recorded in full.
+
+#### Failure recovery — traces not appearing in UI
+
+1. Confirm the collector is reachable:
+   ```bash
+   curl -v "$OTEL_EXPORTER_OTLP_ENDPOINT/v1/traces"
+   # Expected: HTTP 4xx (auth or method not allowed) — not a connection error
+   ```
+2. Check startup log for the tracing banner:
+   ```
+   [tracing] OpenTelemetry started — service: sorobanpay-backend, sampling: 0.1, endpoint: http://otel-collector:4318
+   ```
+   If this line is absent, `OTEL_SDK_DISABLED=true` may be set inadvertently.
+3. Raise `OTEL_SAMPLING_RATE` to `1.0` temporarily to rule out sampling.
+4. Set `LOG_LEVEL=debug` — the OTLP exporter logs export batches at `debug` level.
+
+---
+
+### 7.4 Metrics
+
+Prometheus metrics are exposed on port `3001` at `/metrics`. The Kubernetes manifests
+(`deploy/k8s/`) annotate all pods so Prometheus scrapes them automatically:
+
+```yaml
+annotations:
+  prometheus.io/scrape: "true"
+  prometheus.io/port:   "3001"
+  prometheus.io/path:   "/metrics"
+```
+
+Key metrics emitted by the backend:
+
+| Metric | Type | Description |
+|---|---|---|
+| `sorobanpay_rpc_poll_duration_seconds` | Histogram | Time spent polling Soroban RPC per batch |
+| `sorobanpay_events_indexed_total` | Counter | Cumulative events indexed by type |
+| `sorobanpay_reconciliation_repairs_total` | Counter | Repairs applied per run |
+| `sorobanpay_http_request_duration_seconds` | Histogram | HTTP request latency (Express) |
+| `process_cpu_seconds_total` | Counter | Node.js process CPU (default prom-client metric) |
+
+To scrape metrics locally:
+
+```bash
+# Port-forward the API pod
+kubectl port-forward svc/sorobanpay-api 3001:3001 -n sorobanpay
+curl http://localhost:3001/metrics
+```
+
+Expected output (Prometheus text format):
+
+```
+# HELP sorobanpay_events_indexed_total Cumulative events indexed
+# TYPE sorobanpay_events_indexed_total counter
+sorobanpay_events_indexed_total{type="subscribe"} 142
+sorobanpay_events_indexed_total{type="executed"}  89
+sorobanpay_events_indexed_total{type="cancel"}    11
+```
+
+---
+
+### 7.5 Health Endpoint Semantics
+
+`GET /health` on port `3001` runs two dependency checks:
+
+| Check | What it verifies | Failure behaviour |
+|---|---|---|
+| Soroban RPC reachability | Calls `getHealth` on the configured RPC URL | Returns `503`; pod not marked ready |
+| Contract address resolvability | Calls `getContractData` for `CONTRACT_ID` | Returns `503`; pod not marked ready |
+
+A pod that fails liveness checks is restarted by Kubernetes. A pod that fails
+readiness checks is removed from the load balancer pool without restart.
+
+Example healthy response:
+
+```json
+{
+  "status": "ok",
+  "rpc": "reachable",
+  "contract": "resolved",
+  "version": "1.0.0"
+}
+```
+
+Example degraded response (`503 Service Unavailable`):
+
+```json
+{
+  "status": "degraded",
+  "rpc": "unreachable",
+  "contract": "unknown",
+  "error": "connect ECONNREFUSED 127.0.0.1:4318"
+}
+```
+
+The `error` field in degraded responses does **not** include internal stack traces or
+credentials — only the failure reason. Full stack traces are available in the
+structured logs under the same request's `correlationId`.
+
+#### Manual health check
+
+```bash
+# Testnet — API service
+curl -s https://api.example.com/health | jq .
+
+# Port-forward (local / staging)
+kubectl port-forward svc/sorobanpay-api 8080:80 -n sorobanpay
+curl -s http://localhost:8080/health | jq .
+```
+
+---
+
+### 7.6 Grafana Dashboard
+
+The pre-built Grafana dashboard is at `deploy/grafana/sorobanpay-dashboard.json`.
+Import it via the Grafana UI:
+
+```
+Dashboards → Import → Upload JSON file → select deploy/grafana/sorobanpay-dashboard.json
+```
+
+The dashboard surfaces:
+- RPC poll latency (p50 / p95 / p99)
+- Events indexed per minute by type
+- HTTP error rate and latency heatmap
+- Reconciliation repair rate
+- Pod CPU and memory (requires metrics-server)
+
+---
+
+### See Also
+
+- `backend/src/lib/logger.ts` — logger construction and `redactAddress` helper
+- `backend/src/middleware/correlationId.ts` — middleware source
+- `backend/src/lib/tracing.ts` — OpenTelemetry SDK initialisation and `withSpan`
+- `backend/src/routes/health.ts` — health check implementation
+- [Backend API Cookbook](./api-cookbook.md) — recipe examples using `req.log`
+- [Kubernetes Deployment](../README.md#kubernetes-deployment-backend-services) — pod annotations and HPA config

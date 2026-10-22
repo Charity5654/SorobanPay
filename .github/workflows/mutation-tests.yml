@@ -1,0 +1,99 @@
+name: Mutation Tests (slow-tests)
+
+# Runs on the slow-tests branch protection rule and on PRs that touch contract source.
+# This job is intentionally excluded from the standard fast CI path to avoid
+# blocking every commit — cargo-mutants typically takes 5–15 minutes.
+on:
+  push:
+    branches:
+      - slow-tests
+  pull_request:
+    paths:
+      - "contracts/subscription/src/**"
+      - "contracts/subscription/Cargo.toml"
+
+jobs:
+  mutants:
+    name: cargo-mutants
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            contracts/target
+          key: ${{ runner.os }}-mutants-${{ hashFiles('contracts/subscription/Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-mutants-
+
+      - name: Install cargo-mutants
+        run: cargo install cargo-mutants --version "24.11.1" --locked
+
+      - name: Run mutation tests
+        run: |
+          cargo mutants \
+            --manifest-path contracts/subscription/Cargo.toml \
+            --output mutants.out \
+            --timeout 60 \
+            -- --all-features
+
+      - name: Check mutation score >= 80%
+        run: |
+          python3 - <<'EOF'
+          import json, sys, os
+
+          outcomes_path = "mutants.out/outcomes.json"
+          if not os.path.exists(outcomes_path):
+              print("No outcomes.json found — treating as failure")
+              sys.exit(1)
+
+          with open(outcomes_path) as f:
+              data = json.load(f)
+
+          caught  = sum(1 for m in data if m.get("status") in ("caught", "timeout"))
+          missed  = sum(1 for m in data if m.get("status") == "missed")
+          total   = caught + missed
+
+          if total == 0:
+              print("No mutants generated — check source configuration")
+              sys.exit(1)
+
+          score = caught / total * 100
+          print(f"Mutation score: {score:.1f}%  ({caught}/{total} killed)")
+
+          if score < 80.0:
+              print(f"FAIL: score {score:.1f}% is below the 80% threshold")
+              sys.exit(1)
+          else:
+              print(f"PASS: score {score:.1f}% meets the >= 80% threshold")
+          EOF
+
+      - name: Upload mutation report artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutation-report
+          path: mutants.out/
+          retention-days: 30
+
+      - name: Summarise surviving mutants
+        if: always()
+        run: |
+          if [ -f mutants.out/missed.txt ]; then
+            echo "### Surviving mutants" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            cat mutants.out/missed.txt >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+          else
+            echo "No surviving mutants 🎉" >> $GITHUB_STEP_SUMMARY
+          fi

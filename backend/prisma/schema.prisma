@@ -24,6 +24,33 @@ model Event {
   createdAt       DateTime @default(now())
 }
 
+// BE-51: Cursor-based indexer resumability
+// A single row (id = 1) acts as a singleton state record.
+model IndexerState {
+  id                   Int      @id @default(autoincrement())
+  lastCursor           String?  // Opaque RPC pagination cursor from getEvents()
+  lastProcessedLedger  Int      @default(0)
+  updatedAt            DateTime @updatedAt
+}
+
+// BE-51: Normalised payment record for executed payments
+// Stores txHash for deduplication and cross-reference with audit logs.
+model Payment {
+  id          Int      @id @default(autoincrement())
+  subscriber  String
+  merchant    String
+  token       String
+  amount      String   // stroops as string
+  txHash      String   @unique
+  ledger      BigInt
+  timestamp   DateTime
+  status      String   @default("executed") // executed | failed
+  createdAt   DateTime @default(now())
+
+  @@index([merchant, timestamp])
+  @@index([subscriber, merchant])
+}
+
 model AuditLog {
   id               Int      @id @default(autoincrement())
   eventType        String
@@ -55,11 +82,21 @@ model WebhookEndpoint {
   url       String
   active    Boolean  @default(true)
   secret    String?  // HMAC-SHA256 signing secret; null = unsigned
+  /// Comma-separated event types to deliver, e.g. "payment.executed,payment.failed"
+  /// Valid values: payment.executed | payment.failed | subscription.cancelled
+  events    String   @default("payment.executed,payment.failed")  // BE-53
   createdAt DateTime @default(now())
 
   deliveries WebhookDelivery[]
 
   @@unique([merchant, url])
+}
+
+// BE-51: stores the RPC cursor so the indexer can resume after restart
+model IndexerState {
+  id         Int      @id @default(1)
+  lastCursor String?  // opaque cursor returned by getEvents(); null = start from genesis
+  updatedAt  DateTime @updatedAt
 }
 
 model WebhookDelivery {
@@ -102,6 +139,26 @@ model Subscription {
   @@unique([subscriber, merchant], name: "subscriber_merchant")
 }
 
+// Payment retry tracking (automated retry system)
+model PaymentRetry {
+  id            Int       @id @default(autoincrement())
+  subscriber    String
+  merchant      String
+  amount        String    @default("0")
+  token         String    @default("")
+  attemptNumber Int
+  status        String    @default("pending") // pending | succeeded | failed | cancelled
+  scheduledAt   DateTime
+  attemptedAt   DateTime?
+  error         String?
+  jobId         String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@index([subscriber, merchant])
+  @@index([status, scheduledAt])
+}
+
 // BE-68: Email notification preferences
 model NotificationPreference {
   id           Int      @id @default(autoincrement())
@@ -112,4 +169,79 @@ model NotificationPreference {
   emailEnabled Boolean  @default(true)
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
+}
+
+// BE (payment-retry): Tracks individual retry attempts for failed payments.
+// status: "pending" | "processing" | "succeeded" | "failed" | "cancelled"
+model PaymentRetry {
+  id            Int       @id @default(autoincrement())
+  subscriber    String
+  merchant      String
+  token         String    @default("")
+  amount        String    @default("0")
+  /// 1-based attempt counter (1 = first retry, up to MAX_RETRY_ATTEMPTS).
+  attemptNumber Int
+  scheduledAt   DateTime
+  executedAt    DateTime?
+  /// PENDING | PROCESSING | SUCCEEDED | FAILED | CANCELLED
+  status        String    @default("PENDING")
+  error         String?   // last error message if status="failed"
+  errorMessage  String?
+  /// BullMQ job ID — used to cancel the queued job on DELETE.
+  jobId         String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@unique([subscriber, merchant, attemptNumber], name: "subscriber_merchant_attempt")
+  @@index([subscriber, merchant, status])
+  @@index([status, scheduledAt])
+}
+
+// BE (payment-retry): Optional per-merchant retry configuration.
+// Falls back to RETRY_INTERVALS_DAYS env var when absent.
+model RetryConfig {
+  id              Int      @id @default(autoincrement())
+  merchant        String   @unique
+  intervalsDays   String   // comma-separated, e.g. "1,3,7"
+  webhookUrl      String?  // override webhook for max_retries_exceeded
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+}
+
+// Merged from two duplicate PaymentRetry blocks.
+// Superset of all fields from both definitions.
+model PaymentRetry {
+  id           Int      @id @default(autoincrement())
+  subscriber   String
+  merchant     String
+  token        String
+  amount       String   // Payment amount in token's smallest unit (stored as string)
+  attemptCount Int      @default(0)
+  lastAttempt  DateTime?
+  nextRetryAt  DateTime?
+  status       String   @default("pending") // "pending" | "succeeded" | "failed" | "abandoned"
+  errorMessage String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([subscriber, merchant])
+  @@index([nextRetryAt])
+  @@index([status])
+}
+
+// #1072: Transactional domain-event outbox
+// Written atomically with the main Event record; processed asynchronously by OutboxRelay.
+model OutboxEvent {
+  id               Int      @id @default(autoincrement())
+  aggregateType    String   // e.g. "subscription"
+  aggregateId      String   // e.g. "subscriber:merchant"
+  eventType        String   // e.g. "executed", "cancel"
+  payload          String   // JSON string of event data
+  status           String   @default("pending") // pending | published | failed
+  deduplicationKey String   @unique             // RPC event id for idempotency
+  createdAt        DateTime @default(now())
+  publishedAt      DateTime?
+
+  @@index([status, createdAt])
+  @@index([aggregateId])
 }

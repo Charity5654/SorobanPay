@@ -1,0 +1,51 @@
+name: Dependency lock checks
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  npm-locks:
+    name: npm lock (${{ matrix.directory }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - directory: .
+            lockfile: package-lock.json
+            node-version: 22
+          - directory: frontend
+            lockfile: frontend/package-lock.json
+            node-version: 20
+          - directory: backend
+            lockfile: backend/package-lock.json
+            node-version: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+          cache-dependency-path: ${{ matrix.lockfile }}
+
+      - name: Verify lockfile with npm ci
+        run: npm ci --ignore-scripts
+        working-directory: ${{ matrix.directory }}
+
+  cargo-lock:
+    name: Cargo lock (contract)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Verify Cargo.lock matches manifests
+        run: cargo metadata --locked --manifest-path contracts/subscription/Cargo.toml --format-version 1 > /dev/null

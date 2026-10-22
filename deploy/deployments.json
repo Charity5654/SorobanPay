@@ -1,0 +1,5 @@
+{
+  "_comment": "Deployment manifest — updated automatically by deploy/deploy.sh and the CI deploy job. Do not edit by hand.",
+  "testnet": {},
+  "mainnet": {}
+}

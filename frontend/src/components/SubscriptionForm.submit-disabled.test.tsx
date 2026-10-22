@@ -14,13 +14,13 @@ jest.mock('@/constants/network', () => ({
 }));
 
 jest.mock('@/hooks/useWallet', () => ({
-  useWallet: () => ({ publicKey: 'GPUBKEY', isCheckingFreighter: false, freighterInstalled: true }),
+  useWallet: () => ({ publicKey: 'GPUBKEY' }),
 }));
 
 // Controllable pending promise keeps isSubmitting=true until resolved
 let resolveSubmit: (v: { txHash: string }) => void;
 jest.mock('@/lib/transaction_builder', () => ({
-  buildAndSubmitSubscribe: () =>
+  buildSignAndSubmitSubscribe: () =>
     new Promise<{ txHash: string }>((res) => { resolveSubmit = res; }),
 }));
 
@@ -36,41 +36,58 @@ function fillValidForm() {
   fireEvent.change(screen.getByLabelText(/amount/i), { target: { value: '100' } });
 }
 
-async function fillSubmitAndConfirm() {
-  fillValidForm();
-  fireEvent.submit(
-    screen.getByRole('button', { name: /authorize subscription/i }).closest('form')!,
-  );
-  // Wait for the confirmation modal and click Confirm
-  await waitFor(() => screen.getByRole('dialog'));
-  fireEvent.click(screen.getByRole('button', { name: /confirm & authorize/i }));
-}
-
 describe('SubscriptionForm – submit button disabled while submitting', () => {
   it('is enabled before any submission', () => {
     render(<SubscriptionForm />);
     expect(screen.getByRole('button', { name: /authorize subscription/i })).not.toBeDisabled();
   });
 
-  it('becomes disabled (Submitting…) after confirming the modal', async () => {
+  it('becomes disabled immediately after a valid submit', async () => {
     render(<SubscriptionForm />);
-    await fillSubmitAndConfirm();
+    fillValidForm();
 
+    act(() => {
+      fireEvent.submit(
+        screen.getByRole('button', { name: /authorize subscription/i }).closest('form')!,
+      );
+    });
+
+    // The confirm modal appears — click Confirm & Authorize to proceed
     await waitFor(() =>
-      expect(screen.getByRole('button', { name: /submitting/i })).toBeDisabled(),
+      expect(screen.getByRole('button', { name: /confirm & authorize/i })).toBeInTheDocument()
     );
+
+    act(() => {
+      fireEvent.click(screen.getByRole('button', { name: /confirm & authorize/i }));
+    });
+
+    await waitFor(() => {
+      const btn = screen.getByRole('button', { name: /submitting/i });
+      expect(btn).toBeDisabled();
+    });
   });
 
   it('is removed after the transaction completes (success card shown)', async () => {
     render(<SubscriptionForm />);
-    await fillSubmitAndConfirm();
+    fillValidForm();
 
-    // Wait for submitting state
+    act(() => {
+      fireEvent.submit(
+        screen.getByRole('button', { name: /authorize subscription/i }).closest('form')!,
+      );
+    });
+
+    // Wait for confirm modal and click confirm
     await waitFor(() =>
-      expect(screen.getByRole('button', { name: /submitting/i })).toBeDisabled(),
+      expect(screen.getByRole('button', { name: /confirm & authorize/i })).toBeInTheDocument()
     );
 
-    // Resolve the transaction
+    act(() => {
+      fireEvent.click(screen.getByRole('button', { name: /confirm & authorize/i }));
+    });
+
+    await waitFor(() => expect(screen.getByRole('button', { name: /submitting/i })).toBeDisabled());
+
     await act(async () => {
       resolveSubmit({ txHash: 'abc123' });
     });

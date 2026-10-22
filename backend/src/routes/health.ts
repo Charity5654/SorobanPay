@@ -56,5 +56,25 @@ export function buildHealthRouter(rpcUrl: string, contractId: string): Router {
     });
   });
 
+  // Dedicated readiness probe for Kubernetes
+  router.get('/ready', async (_req: Request, res: Response) => {
+    const checks: Record<string, string> = {};
+    let ready = true;
+
+    try {
+      await server.getHealth();
+      checks.rpc = 'ok';
+    } catch (err) {
+      checks.rpc = `error: ${(err as Error).message}`;
+      ready = false;
+    }
+
+    res.status(ready ? 200 : 503).json({
+      status: ready ? 'ready' : 'not_ready',
+      checks,
+      timestamp: new Date().toISOString(),
+    });
+  });
+
   return router;
 }

@@ -1,0 +1,126 @@
+# deploy/k8s/redis-statefulset.yaml
+#
+# ⚠️  DEV / FUTURE REFERENCE ONLY ⚠️
+#
+# Redis is NOT currently used by the SorobanPay backend (v1.0.0).
+# This manifest is provided as a reference for future use cases:
+#   - Session caching / JWT token deny-list
+#   - Rate-limiter distributed state (replace express-rate-limit in-memory store)
+#   - Webhook delivery queue (replace cron-based delivery with a durable queue)
+#   - Pub/Sub for real-time webhook fan-out
+#
+# If you integrate Redis, set REDIS_URL in configmap.yaml and reference it
+# from the relevant deployments.
+#
+# For production Redis, prefer a managed service:
+#   - AWS ElastiCache (Redis OSS)
+#   - Google Cloud Memorystore
+#   - Azure Cache for Redis
+#   - Upstash (serverless)
+---
+# ── Headless Service ─────────────────────────────────────────────────────────
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: sorobanpay
+  labels:
+    app.kubernetes.io/name: sorobanpay
+    app.kubernetes.io/component: redis
+spec:
+  type: ClusterIP
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: sorobanpay
+    app.kubernetes.io/component: redis
+  ports:
+    - name: redis
+      port: 6379
+      targetPort: redis
+      protocol: TCP
+---
+# ── StatefulSet ──────────────────────────────────────────────────────────────
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: redis
+  namespace: sorobanpay
+  labels:
+    app.kubernetes.io/name: sorobanpay
+    app.kubernetes.io/component: redis
+spec:
+  serviceName: redis
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: sorobanpay
+      app.kubernetes.io/component: redis
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: sorobanpay
+        app.kubernetes.io/component: redis
+    spec:
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsUser: 999
+        runAsGroup: 999
+        fsGroup: 999
+      containers:
+        - name: redis
+          image: redis:7-alpine
+          imagePullPolicy: IfNotPresent
+          command:
+            - redis-server
+            - "--appendonly"
+            - "yes"
+            - "--maxmemory"
+            - "256mb"
+            - "--maxmemory-policy"
+            - "allkeys-lru"
+          ports:
+            - name: redis
+              containerPort: 6379
+              protocol: TCP
+          livenessProbe:
+            exec:
+              command:
+                - redis-cli
+                - ping
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            exec:
+              command:
+                - redis-cli
+                - ping
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "256Mi"
+          volumeMounts:
+            - name: redis-data
+              mountPath: /data
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+  volumeClaimTemplates:
+    - metadata:
+        name: redis-data
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: 2Gi

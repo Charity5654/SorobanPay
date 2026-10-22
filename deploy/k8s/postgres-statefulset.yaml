@@ -1,0 +1,140 @@
+# deploy/k8s/postgres-statefulset.yaml
+#
+# ⚠️  DEV / CI REFERENCE ONLY ⚠️
+#
+# This StatefulSet is suitable for local development (minikube) and CI
+# integration tests. It is NOT production-grade:
+#   - No replication or high availability
+#   - No automated backups
+#   - StorageClass must exist in your cluster (uses default StorageClass)
+#
+# For production, use a managed database service:
+#   - AWS RDS / Aurora PostgreSQL
+#   - Google Cloud SQL
+#   - Azure Database for PostgreSQL
+#   - Neon / Supabase
+#
+# If you use a managed DB, delete this file and set DATABASE_URL in secrets.yaml
+# to point to your managed endpoint.
+---
+# ── Headless Service (required for StatefulSet DNS) ─────────────────────────
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: sorobanpay
+  labels:
+    app.kubernetes.io/name: sorobanpay
+    app.kubernetes.io/component: postgres
+spec:
+  type: ClusterIP
+  clusterIP: None  # headless
+  selector:
+    app.kubernetes.io/name: sorobanpay
+    app.kubernetes.io/component: postgres
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres
+      protocol: TCP
+---
+# ── StatefulSet ──────────────────────────────────────────────────────────────
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  namespace: sorobanpay
+  labels:
+    app.kubernetes.io/name: sorobanpay
+    app.kubernetes.io/component: postgres
+spec:
+  serviceName: postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: sorobanpay
+      app.kubernetes.io/component: postgres
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: sorobanpay
+        app.kubernetes.io/component: postgres
+    spec:
+      terminationGracePeriodSeconds: 60
+      securityContext:
+        runAsUser: 999
+        runAsGroup: 999
+        fsGroup: 999
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: postgres
+              containerPort: 5432
+              protocol: TCP
+          env:
+            - name: POSTGRES_USER
+              value: sorobanpay
+            - name: POSTGRES_DB
+              value: sorobanpay
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  # Reuse the DATABASE_URL secret — or create a separate
+                  # postgres-credentials secret with just the password.
+                  # For simplicity, this example reads from sorobanpay-secrets.
+                  # In production, use a dedicated DB secret.
+                  name: sorobanpay-secrets
+                  key: POSTGRES_PASSWORD
+                  optional: true
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          livenessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - pg_isready -U sorobanpay -d sorobanpay
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 6
+          readinessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - pg_isready -U sorobanpay -d sorobanpay
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "256Mi"
+            limits:
+              cpu: "1000m"
+              memory: "512Mi"
+          volumeMounts:
+            - name: postgres-data
+              mountPath: /var/lib/postgresql/data
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+  volumeClaimTemplates:
+    - metadata:
+        name: postgres-data
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            # Adjust for your expected data volume.
+            storage: 10Gi
+        # Omit storageClassName to use the cluster default StorageClass.
+        # For minikube: "standard". For EKS: "gp2" / "gp3". For GKE: "standard-rwo".
+        # storageClassName: gp3

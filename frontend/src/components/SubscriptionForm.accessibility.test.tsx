@@ -22,7 +22,7 @@ jest.mock('@/hooks/useWallet', () => ({
 }));
 
 jest.mock('@/lib/transaction_builder', () => ({
-  buildAndSubmitSubscribe: () => new Promise(() => {}),
+  buildSignAndSubmitSubscribe: () => new Promise(() => {}),
 }));
 
 import SubscriptionForm from '@/components/SubscriptionForm';
@@ -64,8 +64,12 @@ describe('SubscriptionForm – accessibility', () => {
   it('error messages carry role="alert"', async () => {
     fireEvent.submit(screen.getByRole('button', { name: /authorize subscription/i }).closest('form')!);
     await waitFor(() => {
-      expect(screen.getAllByRole('alert').length).toBeGreaterThan(0);
+      expect(screen.getByRole('alert')).toHaveFocus();
     });
+    expect(screen.getByRole('link', { name: /merchant address/i })).toHaveAttribute(
+      'href',
+      '#merchantAddress',
+    );
   });
 
   it('submit button is reachable by keyboard Tab from first input', async () => {

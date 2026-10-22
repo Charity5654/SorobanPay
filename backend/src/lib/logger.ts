@@ -18,6 +18,48 @@ export function redactAddress(address: string): string {
   return `${prefix}...${suffix}`;
 }
 
+/** Redact sensitive Stellar secret seed or private token */
+export function redactSecret(secret: string): string {
+  if (!secret) return secret;
+  if (/^S[A-Z0-9]{55}$/.test(secret)) {
+    return `${secret.slice(0, 4)}...[REDACTED_SEED]`;
+  }
+  if (secret.length > 8) {
+    return `${secret.slice(0, 4)}...[REDACTED]`;
+  }
+  return '[REDACTED]';
+}
+
+const SENSITIVE_KEY_PATTERN = /^(password|secret|seed|authorization|token|apikey|privatekey|webhooksecret)$/i;
+
+/** Recursively redact sensitive fields from telemetry or log payload objects */
+export function redactTelemetryPayload<T>(payload: T): T {
+  if (payload === null || payload === undefined) return payload;
+  if (typeof payload === 'string') {
+    if (/^S[A-Z0-9]{55}$/.test(payload)) {
+      return redactSecret(payload) as unknown as T;
+    }
+    return payload;
+  }
+  if (Array.isArray(payload)) {
+    return payload.map((item) => redactTelemetryPayload(item)) as unknown as T;
+  }
+  if (typeof payload === 'object') {
+    const output: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(payload as Record<string, unknown>)) {
+      if (SENSITIVE_KEY_PATTERN.test(key)) {
+        output[key] = '[REDACTED]';
+      } else if (key.toLowerCase().includes('address') && typeof value === 'string') {
+        output[key] = redactAddress(value);
+      } else {
+        output[key] = redactTelemetryPayload(value);
+      }
+    }
+    return output as T;
+  }
+  return payload;
+}
+
 const isDev = process.env.NODE_ENV !== 'production';
 const logLevel = process.env.LOG_LEVEL ?? 'info';
 

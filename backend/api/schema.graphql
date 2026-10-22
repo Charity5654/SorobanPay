@@ -1,0 +1,28 @@
+type SubscriptionItem {
+  id: ID!
+  subscriber: String!
+  merchant: String!
+  token: String!
+  amount: String!
+  interval: Int!
+  nextPayment: Int!
+  status: String!
+}
+
+type Payment {
+  id: ID!
+  txHash: String!
+  amount: String!
+  timestamp: Int!
+  status: String!
+  merchant: String!
+}
+
+type Query {
+  subscriptions(merchant: String!): [SubscriptionItem]
+  payments(merchant: String!, limit: Int): [Payment]
+}
+
+type Subscription {
+  onNewPayment(merchant: String!): Payment
+}

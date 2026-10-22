@@ -1,122 +1,98 @@
-# Browser Support & Freighter Wallet Setup
+# Browser, Accessibility, and Freighter Support
 
-SorobanPay requires the [Freighter](https://www.freighter.app) browser extension for transaction signing. Freighter injects a JavaScript API that the frontend uses to request signatures — the app will not function without it.
+SorobanPay can be browsed without a wallet. The [Freighter](https://www.freighter.app) browser extension is required to connect an account and sign transactions. RPC reads, simulation, and transaction submission use the configured Soroban RPC endpoint; Freighter is used for wallet access and signing.
 
----
+## Browser and wallet support
 
-## Supported Browsers
+| Browser | App support | Freighter signing | Notes |
+|---|---|---|---|
+| Chrome | Supported | Supported with the Freighter extension | Chromium is included in the Playwright projects; tests use a mocked wallet. |
+| Brave | Supported | Supported with the Freighter extension | Shields or extension settings may block injection. Real extension behavior is not covered by the Playwright mock. |
+| Firefox | Supported | Supported with the Freighter add-on | The app polls for the extension because Firefox may inject it after initial page load. |
+| Edge (Chromium) | Not officially verified | Not officially verified | Chromium compatibility does not guarantee Freighter compatibility. |
+| Safari (desktop) | Browser UI can be viewed | Not supported by the current Freighter integration | Playwright WebKit coverage uses a mock and does not verify a real wallet extension. |
+| Mobile browsers | Responsive UI can be viewed | Not supported | Mobile browser extension signing is not available in the supported setup. Playwright mobile projects are viewport/device emulation, not real phones with Freighter. |
 
-| Browser | Supported | Notes |
-|---------|-----------|-------|
-| Chrome (≥ 92) | ✅ | Recommended |
-| Brave (≥ 1.30) | ✅ | Fully supported; disable Brave Shields for `localhost` if the extension does not connect |
-| Firefox (≥ 91) | ✅ | Supported via Firefox Add-ons |
-| Edge (Chromium-based) | ⚠️ | Install the Chrome Web Store version; not officially tested |
-| Safari | ❌ | Freighter does not support Safari |
-| Mobile browsers | ❌ | Browser extensions are not available on mobile; use a desktop browser |
+No minimum browser versions are claimed: the repository does not define or verify a version-specific support floor. Use a current browser release. The configured Playwright projects are Chromium, Firefox, WebKit, mobile Chrome, mobile Safari, and tablet emulation. This is automated UI coverage, not certification of every browser/version or extension combination.
 
-The app is served over `http://localhost` (dev) or `https://` (production). Freighter blocks requests from `file://` origins — always use a proper dev server (`npm run dev`).
+Serve the app from `http://localhost` during development or `https://` in production. Do not open it from `file://`; extension access and browser APIs require a served origin.
 
----
+## Keyboard support
+
+Interactive controls use native browser keyboard behavior, and `frontend/src/app/globals.css` provides a visible `:focus-visible` outline. On the landing and app pages, the keyboard-shortcuts dialog lists these shortcuts:
+
+| Key | Action |
+|---|---|
+| `?` | Open or close the shortcut help dialog |
+| `N` | Focus the new subscription form |
+| `H` | Jump to payment history |
+| `M` | Jump to the merchant portal |
+| `D` | Jump to the dashboard section when present; the help currently labels this as coming soon |
+| `Escape` | Close an open dialog or cancel the current modal action |
+
+Navigation shortcuts are disabled while focus is in a form control. Dialogs provide keyboard close behavior and focus handling. The section-jump shortcuts request smooth scrolling; see the reduced-motion note below.
+
+## Screen readers
+
+The interface uses semantic form labels and table headers, accessible names for wallet/status controls, and ARIA dialog, alert, status, and live-region roles for dynamic feedback. The Playwright accessibility spec checks selected roles, labels, and keyboard flows. It does not run a screen reader or establish WCAG conformance. Screen-reader and browser combinations have not been formally certified; report a specific control, browser, and assistive technology when an announcement or navigation issue occurs.
+
+## Reduced motion
+
+The global stylesheet responds to `prefers-reduced-motion: reduce` by shortening CSS animations and transitions and disabling CSS smooth scrolling. Components including the confirmation modal and empty state also use Framer Motion's reduced-motion preference. This is not a blanket guarantee for every third-party animation: keyboard section navigation explicitly requests smooth scrolling and may still animate. Follow the operating system's reduced-motion setting and report remaining motion with the browser and action that triggered it.
 
 ## Installing Freighter
 
-### Chrome / Brave
+### Chrome and Brave
 
 1. Open the [Chrome Web Store listing](https://chrome.google.com/webstore/detail/freighter/bcacfldlkkdogcmkkibnjlakofdplcbk).
-2. Click **Add to Chrome** → **Add extension**.
-3. The Freighter icon appears in the browser toolbar.
+2. Install Freighter and confirm its icon appears in the browser toolbar.
 
 ### Firefox
 
 1. Open the [Firefox Add-ons listing](https://addons.mozilla.org/en-US/firefox/addon/freighter/).
-2. Click **Add to Firefox** → **Add**.
-3. The Freighter icon appears in the toolbar.
+2. Install Freighter and confirm its icon appears in the toolbar.
 
-### First-time wallet setup
+For first-time setup, create or import a wallet in the extension and store its recovery phrase securely. Never share a recovery phrase or enter it into SorobanPay.
 
-After installing:
+## Connect and select a network
 
-1. Click the Freighter icon in the toolbar.
-2. Choose **Create a new wallet** (or **Import** if you have an existing seed phrase).
-3. Write down and store your seed phrase securely — it cannot be recovered.
-4. Set a password for local access.
-
----
-
-## Configuring Freighter for SorobanPay
-
-### 1. Select the correct network
-
-Freighter must be set to the same network as your deployed contract.
-
-1. Click the Freighter icon.
-2. Click the network name at the **top-right** of the extension popup.
-3. Select the network that matches your `NEXT_PUBLIC_NETWORK_PASSPHRASE` in `frontend/.env.local`:
+1. Set `NEXT_PUBLIC_NETWORK_PASSPHRASE` in `frontend/.env.local` to the network of the deployed contract. Restart the dev server after changing configuration.
+2. Set Freighter to the same network:
 
 | Network | Passphrase in `.env.local` | Freighter selector |
-|---------|---------------------------|--------------------|
-| Testnet | `Test SDF Network ; September 2015` | **Testnet** |
-| Mainnet | `Public Global Stellar Network ; September 2015` | **Mainnet** |
+|---|---|---|
+| Testnet | `Test SDF Network ; September 2015` | Testnet |
+| Mainnet | `Public Global Stellar Network ; September 2015` | Mainnet |
 
-> A network mismatch causes transactions to be rejected immediately. The app's error card will show "Wrong network" with the current passphrase to help you diagnose this.
+3. Open SorobanPay from `http://localhost:3000` or the deployed HTTPS site and select **Connect**.
+4. Approve the connection in Freighter. The wallet badge should show **Connected**; the public key is used as the subscriber address.
 
-### 2. Fund your wallet
+Use [Stellar Friendbot](https://laboratory.stellar.org/#account-creator?network=test) to fund a Testnet account. Mainnet accounts need sufficient XLM for the network reserve and fees, as well as the token being used. To change accounts, remove the site under Freighter's connected-site settings and reconnect.
 
-**Testnet (free)**
+## Verify and recover
 
-Use [Stellar Friendbot](https://laboratory.stellar.org/#account-creator?network=test) to add test XLM:
-
-```
-https://friendbot.stellar.org?addr=<YOUR_PUBLIC_KEY>
-```
-
-Or via the Stellar CLI:
+Start the app from the repository root:
 
 ```bash
-stellar keys fund alice --network testnet
+cd frontend
+npm run dev
 ```
 
-**Mainnet**
+Expected result: the app is available at `http://localhost:3000`. For the existing browser-based accessibility smoke spec, run this from `frontend/`:
 
-Transfer at least **2 XLM** to your address to cover the base reserve and transaction fees. The `subscribe` call costs roughly 1,000–10,000 stroops (0.0001–0.001 XLM) in network fees on top of the base reserve.
+```bash
+npm run test:e2e -- e2e/05-accessibility.spec.ts
+```
 
-### 3. Connect to the app
+Expected result: the selected Playwright browser projects exercise keyboard help, dialog attributes, form error announcements, and related UI checks using the Freighter mock. A passing run does not verify a real extension or replace manual screen-reader checks. If Playwright reports missing browser binaries, install the configured browsers with `npx playwright install` from `frontend/` and retry. Tests were not run while preparing this support record.
 
-On the first page load the app calls Freighter's `requestAccess()` API. Freighter will show a connection prompt asking you to approve the site.
+| Symptom | Recovery |
+|---|---|
+| Freighter is not detected | Confirm the extension is installed and enabled, reload the served app, and allow a few seconds for Firefox injection. Do not use a `file://` URL. |
+| Freighter popup is blocked | Allow extension popups for the app origin and temporarily disable conflicting wallet extensions. In Brave, check Shields for that site. |
+| Transaction reports a network mismatch | Match Freighter's selected network to `NEXT_PUBLIC_NETWORK_PASSPHRASE` and the deployed contract. |
+| Keyboard shortcut does not run while typing | This is intentional for shortcuts that navigate the page; move focus outside the form control and retry. Use the visible controls as an alternative. |
+| Motion remains when reduced motion is enabled | Check the OS/browser reduced-motion setting. If section navigation still animates, report the shortcut and browser because that scroll currently requests smooth behavior explicitly. |
+| Screen-reader output is missing or confusing | Verify the browser/assistive-technology pair and report the control and expected versus actual announcement; the automated spec checks only selected ARIA behavior. |
 
-1. Click **Connect** in the Freighter popup.
-2. The wallet badge in the top-right of the subscription form turns **green** ("Connected").
-3. Your public key is now used as the `subscriber` address on all transactions.
-
-To disconnect or switch accounts, open Freighter, go to **Settings → Connected Sites**, and remove the site. Then reload the page to reconnect with a different account.
-
----
-
-## Troubleshooting
-
-| Symptom | Cause | Fix |
-|---------|-------|-----|
-| "Freighter wallet not detected" warning in the form | Extension not installed or disabled | Install Freighter from the links above; ensure the extension is enabled in your browser's extension manager |
-| Wallet badge stays gray ("Disconnected") after page load | Site not approved in Freighter | Click the Freighter icon → approve the connection prompt; reload the page |
-| Freighter popup never appears | App served from `file://` origin, or pop-up blocker active | Run `npm run dev` and open `http://localhost:3000`; disable pop-up blockers for `localhost` |
-| Transaction rejected — "wrong network" | Freighter network ≠ app network | Open Freighter → network selector → match the network to `NEXT_PUBLIC_NETWORK_PASSPHRASE` |
-| Transaction rejected — "user declined" | Signing popup dismissed | Resubmit the form and approve in the Freighter popup |
-| "Insufficient balance" error | Not enough XLM or tokens | Fund via Friendbot (testnet) or send XLM (mainnet); ensure you hold the token being subscribed |
-| Signing popup closes before you can sign | Browser pop-up blocker | Disable pop-up blockers for `localhost` in your browser settings |
-| Extension conflicts (popup does not appear) | Multiple wallet extensions installed | Temporarily disable other wallet extensions (MetaMask, etc.) and reload |
-| Brave Shields blocking the extension | Brave's content blocking | Click the Brave Shields icon in the address bar and disable Shields for `localhost` |
-
----
-
-## How the App Detects Freighter
-
-The `useWallet` hook (in `frontend/src/hooks/useWallet.ts`) checks for the Freighter-injected API on mount:
-
-- `freighterInstalled` — `true` if `window.freighter` is present.
-- `isCheckingFreighter` — `true` while the initial detection is in progress.
-- `publicKey` — set after the user approves the connection; `null` when disconnected.
-
-If `freighterInstalled` is `false` after the check completes, the form renders a yellow warning banner with a direct link to `https://www.freighter.app`.
-
-The `transaction_builder.ts` module uses Freighter only for signing (`signTx`). All other operations (fetching account state, simulation, submission) talk directly to the Soroban RPC endpoint configured in `NEXT_PUBLIC_RPC_URL`.
+The wallet integration is isolated in `frontend/src/lib/wallet_manager.ts`; it detects Freighter, requests site access, and signs transactions. Other chain operations use the RPC endpoint configured through `NEXT_PUBLIC_RPC_URL`.

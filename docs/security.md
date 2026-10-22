@@ -6,18 +6,189 @@ This document is the authoritative security reference for SorobanPay. It covers 
 
 ## Table of Contents
 
-1. [Contract Security Model](#1-contract-security-model)
-2. [Authorization Audit (SC-20)](#2-authorization-audit-sc-20)
-3. [Backend Secrets Management](#3-backend-secrets-management)
-4. [Circuit Breaker Runbook (SC-25)](#4-circuit-breaker-runbook-sc-25)
-5. [Frontend Security](#5-frontend-security)
-6. [Known Limitations and Mitigations](#6-known-limitations-and-mitigations)
-7. [Dependency Security](#7-dependency-security)
-8. [Security Disclosure Policy](#8-security-disclosure-policy)
+1. [Trust Boundaries and Threat Model](#1-trust-boundaries-and-threat-model)
+2. [Contract Security Model](#2-contract-security-model)
+3. [Authorization Audit (SC-20)](#3-authorization-audit-sc-20)
+4. [Backend Secrets Management](#4-backend-secrets-management)
+5. [Circuit Breaker Runbook (SC-25)](#5-circuit-breaker-runbook-sc-25)
+6. [Frontend Security](#6-frontend-security)
+7. [Known Limitations and Mitigations](#7-known-limitations-and-mitigations)
+8. [Dependency Security](#8-dependency-security)
+9. [Security Disclosure Policy](#9-security-disclosure-policy)
 
 ---
 
-## 1. Contract Security Model
+## 1. Trust Boundaries and Threat Model
+
+This section maps every component in the SorobanPay architecture to a trust tier and catalogs the threats that can originate from — or cross — each boundary.
+
+### 1.1 System trust-boundary map
+
+```
+╔══════════════════════════════════════════════════════════════════════╗
+║  UNTRUSTED ZONE (public internet / user device)                      ║
+║                                                                      ║
+║  ┌──────────────────────┐   ┌─────────────────────────────────────┐ ║
+║  │  Browser (subscriber │   │  Browser (merchant portal / admin)  │ ║
+║  │  / end-user device)  │   │                                     │ ║
+║  │  • Next.js frontend  │   │  • Next.js frontend                 │ ║
+║  │  • Freighter wallet  │   │  • Freighter wallet                 │ ║
+║  └──────────┬───────────┘   └──────────────────┬──────────────────┘ ║
+║             │ HTTPS/XDR (signed transaction)    │ HTTPS/XDR          ║
+╠═════════════╪══════════════════════════════════╪════════════════════╣
+║  SEMI-TRUSTED ZONE (SorobanPay-operated, but exposed to internet)    ║
+║             │                                  │                    ║
+║  ┌──────────▼──────────────────────────────────▼──────────────────┐ ║
+║  │  Soroban RPC node (stellar.org / ValidationCloud / self-hosted) │ ║
+║  │  • getEvents(), simulateTransaction(), submitTransaction()      │ ║
+║  └──────────────────────────┬────────────────────────────────────-┘ ║
+║                             │ Soroban RPC protocol                  ║
+╠═════════════════════════════╪══════════════════════════════════════╣
+║  TRUSTED ZONE (on-chain — enforced by Stellar validators)            ║
+║                             │                                      ║
+║  ┌──────────────────────────▼───────────────────────────────────┐  ║
+║  │  Soroban Smart Contract (SubscriptionProtocol)               │  ║
+║  │  • Persistent storage (subscription entries)                 │  ║
+║  │  • SEP-41 token contract interactions                        │  ║
+║  └──────────────────────────────────────────────────────────────┘  ║
+╠════════════════════════════════════════════════════════════════════╣
+║  BACKEND ZONE (operator-controlled, private network preferred)      ║
+║                                                                    ║
+║  ┌───────────────────────────────────────────────────────────┐    ║
+║  │  Optional Backend services (Express API + workers)        │    ║
+║  │  • EventIndexer  • PaymentScheduler  • WebhookNotifier    │    ║
+║  │  • Reconciler    • PayoutSummaryGenerator                 │    ║
+║  └───────────────────────────┬───────────────────────────────┘    ║
+║                              │ TCP (Prisma ORM)                   ║
+║  ┌───────────────────────────▼───────────────────────────────┐    ║
+║  │  PostgreSQL database                                      │    ║
+║  └───────────────────────────────────────────────────────────┘    ║
+║                                                                    ║
+║  ┌────────────────────────────────────────────────────────────┐   ║
+║  │  Message queue (optional — BullMQ / Redis)                 │   ║
+║  │  • Webhook delivery queue  • Payment retry queue           │   ║
+║  └────────────────────────────────────────────────────────────┘   ║
+╠════════════════════════════════════════════════════════════════════╣
+║  OPERATOR ZONE (secrets, keys, CI/CD)                              ║
+║  • OPERATOR_SECRET (Stellar signing key)                           ║
+║  • DATABASE_URL, WEBHOOK_SECRET, RPC API keys                      ║
+║  • GitHub Actions, deployment pipelines                            ║
+╚════════════════════════════════════════════════════════════════════╝
+```
+
+### 1.2 Trust tiers
+
+| Tier | Components | Assumptions |
+|------|-----------|-------------|
+| **Untrusted** | Browser, Freighter, subscriber/merchant devices | Hostile environment; any input may be malicious |
+| **Semi-trusted** | Soroban RPC nodes | Correct behavior expected but not cryptographically guaranteed; could be censoring or returning stale data |
+| **On-chain / trusted** | Soroban contract, Stellar ledger, validators | Cryptographically enforced; cannot be tampered with outside of validator consensus |
+| **Backend zone** | Express API, workers, PostgreSQL, Redis | Operator-controlled; trust depends on deployment security posture |
+| **Operator zone** | Secret keys, CI/CD, deployment credentials | Highest privilege; compromise is catastrophic |
+
+### 1.3 Threat catalog
+
+#### Browser / wallet threats
+
+| Threat | Attack vector | Impact | Mitigation |
+|--------|--------------|--------|-----------|
+| **Malicious dApp** | Attacker serves a lookalike frontend | Subscriber signs a fraudulent transaction | Freighter displays exact transaction details before signing; CSP limits script injection |
+| **Wallet phishing** | Fake Freighter extension | Subscriber's secret key stolen | Warn users to install only from official browser stores; `manifest.json` extension ID pinning |
+| **XSS** | Injected script in frontend | Reads DOM state, exfiltrates form data, submits unauthorized transactions | CSP `script-src 'self'`; no `innerHTML` writes with user data; React's default escaping |
+| **Transaction parameter tampering** | Frontend manipulates amount/merchant before signing | Subscriber pays wrong amount or merchant | Transaction is shown verbatim in Freighter before signing; contract validates all parameters on-chain |
+| **Stale transaction replay** | Signed XDR replayed after user intent changed | Duplicate or delayed payment | `timebounds` set to 5 minutes on all constructed transactions |
+| **Supply-chain (npm)** | Malicious npm package in `frontend/` | Arbitrary code in browser | `npm audit`, `--audit-level=high` in CI; exact version pinning |
+
+#### Soroban RPC threats
+
+| Threat | Attack vector | Impact | Mitigation |
+|--------|--------------|--------|-----------|
+| **Stale data served** | RPC lags or returns outdated ledger state | Backend indexes wrong subscription state | Cross-check events against on-chain reads for critical state; use fallback RPC |
+| **Transaction censorship** | RPC drops submitted transactions | Payments or subscriptions not recorded | Retry with exponential backoff; use alternative RPC endpoint |
+| **Simulation manipulation** | RPC returns fake `minResourceFee` | Under-fee'd transaction rejected from ledger | Always add a 10–25% buffer; accept on-chain validation as authoritative |
+| **Man-in-the-middle** | Network-level HTTPS interception | Modified transaction data | Enforce TLS certificate pinning in backend HTTP clients; browser HTTPS |
+
+#### Smart contract threats
+
+| Threat | Attack vector | Impact | Mitigation |
+|--------|--------------|--------|-----------|
+| **Unauthorized subscription creation** | Attacker calls `subscribe` without subscriber's signature | Creates fraudulent subscription record | `require_auth(subscriber)` as first statement; enforced by Soroban host |
+| **Unauthorized payment collection** | Attacker calls `execute_payment` impersonating merchant | Collects payment to declared merchant (not attacker) | `require_auth(merchant)` as first statement; transfer always goes to declared merchant, not caller |
+| **Early / double payment** | Merchant calls `execute_payment` before interval elapses | Extra payment taken | `now >= next_payment` ledger-timestamp check before any transfer |
+| **Self-subscription** | `subscriber == merchant` | Funds circular loop | Explicit check in `subscribe`; returns `SelfSubscription` error |
+| **Token balance drain** | Attacker exploits reentrancy in token callback | Contract drained | Contract holds no balance; transfers go directly subscriber → merchant |
+| **Integer overflow** | Extreme amount values | Silent incorrect math | `overflow-checks = true` in release profile; `AmountTooLarge` guard |
+| **TTL expiry race** | Entry expires between `has()` check and subsequent operations | Stale read returns `None` | TTL extended on every write; `execute_payment` returns `NoActiveSubscription` for expired entries — safe failure mode |
+
+#### Queue / message broker threats
+
+| Threat | Attack vector | Impact | Mitigation |
+|--------|--------------|--------|-----------|
+| **Webhook replay** | Attacker replays a captured webhook delivery | Duplicate event processing | HMAC-SHA256 signature + timestamp tolerance check (±300 s); idempotency key per delivery |
+| **Queue poisoning** | Malformed job inserted into BullMQ | Worker crashes or processes bad data | Schema validation on job dequeue; DLQ for failed jobs; worker sandbox |
+| **Redis credential theft** | `REDIS_URL` leaked | Queue contents exposed; jobs injected | Secrets management (see §4); Redis `requirepass`; TLS in transit |
+| **Webhook SSRF** | Merchant registers internal URL as webhook target | Attacker uses backend to probe internal network | Allowlist/denylist for webhook URLs; block RFC-1918 ranges and loopback addresses |
+
+#### Database threats
+
+| Threat | Attack vector | Impact | Mitigation |
+|--------|--------------|--------|-----------|
+| **SQL injection** | Malicious input in query parameters | Data exfiltration or corruption | All queries use Prisma parameterized ORM; no raw string interpolation |
+| **Credential theft** | `DATABASE_URL` leaked via env, logs, or error messages | Full DB access | Never log `DATABASE_URL`; secrets management (see §4); rotate credentials annually |
+| **Privilege escalation** | Application DB user has DBA rights | Schema modification, data destruction | Principle of least privilege: app user has `SELECT`, `INSERT`, `UPDATE`, `DELETE` on app tables only; no `DROP` or `ALTER` |
+| **Data at rest exposure** | Disk or backup unencrypted | Subscription/payment history exposed | Enable encryption at rest on managed DB (RDS, Railway, Render) |
+| **Migration injection** | Malicious migration file committed | Schema altered in production | Migrations reviewed in PRs; no auto-migration on production startup; explicit `npx prisma migrate deploy` |
+
+#### Backend API threats
+
+| Threat | Attack vector | Impact | Mitigation |
+|--------|--------------|--------|-----------|
+| **JWT forgery** | Attacker forges a JWT without the signing key | Accesses any merchant's data | JWTs signed with ECDSA (EdDSA preferred); signing key stored in secrets manager; short TTL (24 h) |
+| **JWT hijacking** | Bearer token intercepted | Impersonation of merchant | HTTPS enforced; short token TTL; `aud` and `iss` claims validated |
+| **Tenant data leakage** | Query does not filter by authenticated merchant | Cross-tenant data exposure | All DB queries include `WHERE merchant = jwt.sub`; enforced at ORM layer, not just route handler |
+| **Rate limit bypass** | Attacker floods API | DoS; resource exhaustion | Rate limiting per IP and per JWT (`express-rate-limit`); 429 responses with `Retry-After` |
+| **CORS misconfiguration** | Wildcard `Access-Control-Allow-Origin` | Any origin reads API responses | Allowlist known frontend origins; credentials mode requires explicit origin |
+| **Dependency RCE** | Vulnerable npm package exploited | Server compromise | `npm audit` in CI; Dependabot PRs; minimal production dependencies |
+
+#### Operator / CI/CD threats
+
+| Threat | Attack vector | Impact | Mitigation |
+|--------|--------------|--------|-----------|
+| **Secret key exposure** | `OPERATOR_SECRET` leaked in logs or env dump | Attacker collects all due payments | Never log secrets; omit `OPERATOR_SECRET` unless `PaymentScheduler` is needed; rotate after any suspected exposure |
+| **CI pipeline injection** | Malicious PR modifies workflow YAML | Secrets exfiltrated from CI runner | `pull_request_target` restricted; secrets not accessible from fork PRs; branch protection on `main` |
+| **Dependency substitution (typosquatting)** | Malicious npm or crate published with similar name | Arbitrary code in build | Review package names before adding; use `npm install --save-exact` |
+| **Compromised deploy key** | GitHub Actions deploy key stolen | Attacker can deploy arbitrary code | Rotate keys; use short-lived OIDC tokens instead of long-lived secrets |
+
+### 1.4 Boundary crossing rules
+
+The following rules govern data flow across trust boundaries. Contributors must not violate these rules without a documented security review.
+
+| Boundary crossing | Rule |
+|-------------------|------|
+| Browser → RPC | All transactions must be signed by the user's wallet; frontend must never hold or construct raw secret keys |
+| RPC → Contract | Only Stellar-valid signed XDR accepted by validators; contract enforces all invariants independently of RPC honesty |
+| Contract → Token | Only via `token.transfer(subscriber, merchant, amount)` — no arbitrary calls; no balance held |
+| Backend → DB | All queries use Prisma parameterized ORM; no raw SQL with user-supplied values |
+| Backend → RPC | Read-only (`getEvents`, `getLedgerEntries`) unless `OPERATOR_SECRET` is configured; TLS required |
+| Backend → Merchant webhook | HMAC-SHA256 signed payload; webhook URL allowlist enforced; internal IPs blocked |
+| Operator → Backend | Secrets injected via environment or secrets manager, never via source code |
+
+### 1.5 Data classification
+
+| Data | Classification | Handling |
+|------|---------------|----------|
+| Subscriber Stellar public keys | Internal | Stored in DB; returned in API responses to the merchant only |
+| Payment amounts and timestamps | Internal | Stored in DB; accessible to authenticated merchant |
+| Transaction hashes | Internal | Stored in DB; publicly verifiable on Stellar Explorer |
+| `OPERATOR_SECRET` (Stellar private key) | **Secret** | Never logged; injected at runtime; rotate on exposure |
+| `DATABASE_URL` | **Secret** | Never logged; never returned in API responses |
+| `WEBHOOK_SECRET` | **Secret** | Returned once at webhook creation; never returned again |
+| JWT signing key | **Secret** | Generated at server startup or injected; never exposed via API |
+| Soroban RPC API keys (if applicable) | **Secret** | Never logged; injected at runtime |
+
+---
+
+## 2. Contract Security Model
 
 ### Non-custodial design
 
@@ -91,7 +262,7 @@ See [docs/architecture.md](architecture.md#7-storage-ttl-and-entry-lifecycle) fo
 
 ---
 
-## 2. Authorization Audit (SC-20)
+## 3. Authorization Audit (SC-20)
 
 This section documents which address is expected to authenticate at each contract entry point and what an attacker could do if they impersonated a different party.
 
@@ -143,7 +314,7 @@ pub fn subscribe(env: Env, subscriber: Address, ...) -> Result<(), ContractError
 
 ---
 
-## 3. Backend Secrets Management
+## 4. Backend Secrets Management
 
 ### Never commit secrets
 
@@ -329,7 +500,7 @@ const webhookSecret = readSecret('WEBHOOK_SECRET', 'WEBHOOK_SECRET_FILE');
 
 ---
 
-## 4. Circuit Breaker Runbook (SC-25)
+## 5. Circuit Breaker Runbook (SC-25)
 
 A "circuit breaker" for SorobanPay means stopping all payment collection and communicating clearly to users while a fix is prepared. Because the contract is non-upgradeable, the primary levers are:
 
@@ -437,7 +608,7 @@ echo "New contract: $NEW_CONTRACT_ID"
 
 ---
 
-## 5. Frontend Security
+## 6. Frontend Security
 
 ### Content Security Policy (FE-45)
 
@@ -517,7 +688,7 @@ Warn users:
 
 ---
 
-## 6. Known Limitations and Mitigations
+## 7. Known Limitations and Mitigations
 
 ### No MEV protection
 
@@ -572,7 +743,7 @@ stellar account merge --network mainnet ...
 
 ---
 
-## 7. Dependency Security
+## 8. Dependency Security
 
 ### Rust / Cargo (contract)
 
@@ -663,7 +834,7 @@ updates:
 
 ---
 
-## 8. Security Disclosure Policy
+## 9. Security Disclosure Policy
 
 SorobanPay uses **coordinated disclosure**. If you find a security vulnerability:
 

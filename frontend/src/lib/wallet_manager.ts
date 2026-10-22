@@ -14,6 +14,7 @@ import {
   setAllowed,
   requestAccess,
   getAddress,
+  getNetwork,
   signTransaction,
 } from '@stellar/freighter-api';
 
@@ -120,7 +121,31 @@ export async function connectWallet(): Promise<string> {
 export async function signTx(
   xdr: string,
   networkPassphrase: string,
+  expectedPublicKey?: string,
 ): Promise<string> {
+  if (expectedPublicKey) {
+    let accountResult: Awaited<ReturnType<typeof getAddress>>;
+    let networkResult: Awaited<ReturnType<typeof getNetwork>>;
+    try {
+      [accountResult, networkResult] = await Promise.all([getAddress(), getNetwork()]);
+    } catch {
+      throw new Error('Unable to verify the current Freighter account and network. Reconnect your wallet and try again.');
+    }
+
+    if (accountResult.error || !accountResult.address) {
+      throw new Error('Unable to verify the current Freighter account. Reconnect your wallet and try again.');
+    }
+    if (accountResult.address !== expectedPublicKey) {
+      throw new Error('The Freighter account changed before signing. Review the transaction with your current wallet and try again.');
+    }
+    if (networkResult.error || !networkResult.networkPassphrase) {
+      throw new Error('Unable to verify the current Freighter network. Reconnect your wallet and try again.');
+    }
+    if (networkResult.networkPassphrase !== networkPassphrase) {
+      throw new Error('The Freighter network changed before signing. Switch back to the expected network and try again.');
+    }
+  }
+
   const result = await signTransaction(xdr, { networkPassphrase });
 
   if ('error' in result && result.error) {

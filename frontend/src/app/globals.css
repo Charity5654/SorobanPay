@@ -3,10 +3,103 @@
 @tailwind utilities;
 
 @layer base {
-  /* Ensure sufficient contrast baseline for the dark theme */
+  :root {
+    --content-primary: 17 24 39;
+    --content-secondary: 55 65 81;
+    --content-tertiary: 75 85 99;
+    --content-disabled: 107 114 128;
+    --content-inverse: 255 255 255;
+    --surface-base: 255 255 255;
+    --surface-raised: 249 250 251;
+    --surface-overlay: 243 244 246;
+    --surface-border: 107 114 128;
+    --status-success-text: 22 101 52;
+    --status-success-surface: 220 252 231;
+    --status-success-border: 21 128 61;
+    --status-success-icon: 21 128 61;
+    --status-error-text: 153 27 27;
+    --status-error-surface: 254 226 226;
+    --status-error-border: 185 28 28;
+    --status-error-icon: 185 28 28;
+    --status-warning-text: 120 53 15;
+    --status-warning-surface: 254 243 199;
+    --status-warning-border: 180 83 9;
+    --status-warning-icon: 146 64 14;
+    --status-info-text: 30 58 138;
+    --status-info-surface: 219 234 254;
+    --status-info-border: 29 78 216;
+    --status-info-icon: 29 78 216;
+    --interactive-primary: 37 99 235;
+    --interactive-primary-hover: 29 78 216;
+    --interactive-destructive: 185 28 28;
+    --interactive-destructive-hover: 153 27 27;
+    --interactive-focus: 37 99 235;
+    --animation-duration-fast: 150ms;
+    --animation-duration-base: 250ms;
+    --animation-duration-slow: 400ms;
+  }
+
+  .dark {
+    --content-primary: 249 250 251;
+    --content-secondary: 209 213 219;
+    --content-tertiary: 156 163 175;
+    --content-disabled: 156 163 175;
+    --content-inverse: 3 7 18;
+    --surface-base: 3 7 18;
+    --surface-raised: 17 24 39;
+    --surface-overlay: 31 41 55;
+    --surface-border: 107 114 128;
+    --status-success-text: 134 239 172;
+    --status-success-surface: 20 83 45;
+    --status-success-border: 21 128 61;
+    --status-success-icon: 74 222 128;
+    --status-error-text: 252 165 165;
+    --status-error-surface: 69 10 10;
+    --status-error-border: 185 28 28;
+    --status-error-icon: 248 113 113;
+    --status-warning-text: 253 224 71;
+    --status-warning-surface: 66 32 6;
+    --status-warning-border: 161 98 7;
+    --status-warning-icon: 250 204 21;
+    --status-info-text: 147 197 253;
+    --status-info-surface: 12 26 46;
+    --status-info-border: 29 78 216;
+    --status-info-icon: 96 165 250;
+    --interactive-primary: 37 99 235;
+    --interactive-primary-hover: 29 78 216;
+    --interactive-destructive: 185 28 28;
+    --interactive-destructive-hover: 153 27 27;
+    --interactive-focus: 96 165 250;
+  }
+
+  /**
+   * Semantic foreground and surface tokens resolve to the active theme.
+   * The 'dark' class is toggled on <html> by ThemeProvider / ThemeScript.
+   */
   body {
-    background-color: #030712; /* gray-950 — darker than gray-900 for better card contrast */
-    color: #f9fafb;            /* gray-50 — 16.7:1 on gray-950, exceeds WCAG AAA */
+    background-color: rgb(var(--surface-base));
+    color: rgb(var(--content-primary));
+  }
+
+  /**
+   * Respect prefers-reduced-motion (#452 UX-117).
+   * Setting duration to near-zero keeps event firing without visual motion.
+   */
+  @media (prefers-reduced-motion: reduce) {
+    :root {
+      --animation-duration-fast:  0.01ms;
+      --animation-duration-base:  0.01ms;
+      --animation-duration-slow:  0.01ms;
+    }
+
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
   }
 
   /*
@@ -16,12 +109,41 @@
    * via CSS specificity.
    */
   :focus-visible {
-    outline: 2px solid #60a5fa; /* blue-400 — meets WCAG 3:1 on gray-900 */
+    outline: 2px solid rgb(var(--interactive-focus));
     outline-offset: 2px;
   }
 
   /* Remove the browser default outline only when we know JS focus-visible is active */
   :focus:not(:focus-visible) {
     outline: none;
+  }
+
+  /*
+   * Issue #1144 – Reduced-motion safety
+   *
+   * When the user has enabled "Reduce motion" at the OS level
+   * (prefers-reduced-motion: reduce), strip all animations and
+   * transitions globally. Individual components should also use the
+   * useReducedMotion() hook to swap animated SVGs for static indicators.
+   *
+   * This rule acts as a safety net for any animation not explicitly
+   * controlled at the component level.
+   */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+}
+
+@layer utilities {
+  /* UX-114: safe-area-inset-bottom padding for iOS home indicator */
+  .safe-area-inset-bottom {
+    padding-bottom: env(safe-area-inset-bottom, 0px);
   }
 }

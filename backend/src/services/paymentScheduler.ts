@@ -1,15 +1,15 @@
 import {
   Keypair,
   rpc as SorobanRpc,
-  TransactionBuilder,
   Networks,
-  BASE_FEE,
-  Address,
-  Contract,
 } from '@stellar/stellar-sdk';
 import prisma from '../lib/prisma';
 import logger from '../lib/logger';
 import { redactAddress } from '../lib/logger';
+import {
+  submitExecutePayment,
+  ExecutePaymentHelperError,
+} from './executePaymentHelper';
 
 /**
  * PaymentScheduler — discovers due subscriptions from the event index and
@@ -118,49 +118,17 @@ export class PaymentScheduler {
   }
 
   /** Build, simulate, and submit an execute_payment transaction. */
-  private async executePayment(subscriber: string, merchant: string): Promise<string> {
-    const account = await this.server.getAccount(this.operatorKeypair.publicKey());
-    const contract = new Contract(this.contractId);
+  async executePayment(subscriber: string, merchant: string): Promise<string> {
+    const result = await submitExecutePayment(
+      { subscriber, merchant },
+      {
+        server: this.server,
+        contractId: this.contractId,
+        signer: this.operatorKeypair,
+        networkPassphrase: this.networkPassphrase,
+      },
+    );
 
-    const subscriberScVal = new Address(subscriber).toScVal();
-    const merchantScVal = new Address(merchant).toScVal();
-
-    const tx = new TransactionBuilder(account, {
-      fee: BASE_FEE,
-      networkPassphrase: this.networkPassphrase,
-    })
-      .addOperation(contract.call('execute_payment', subscriberScVal, merchantScVal))
-      .setTimeout(30)
-      .build();
-
-    // Simulate first to get auth entries and resource footprint
-    const simResult = await this.server.simulateTransaction(tx);
-    if (SorobanRpc.Api.isSimulationError(simResult)) {
-      throw new Error(`Simulation failed: ${simResult.error}`);
-    }
-
-    const preparedTx = SorobanRpc.assembleTransaction(tx, simResult).build();
-    preparedTx.sign(this.operatorKeypair);
-
-    const sendResult = await this.server.sendTransaction(preparedTx);
-    if (sendResult.status === 'ERROR') {
-      throw new Error(`Send failed: ${JSON.stringify(sendResult.errorResult)}`);
-    }
-
-    // Poll for confirmation
-    const txHash = sendResult.hash;
-    for (let i = 0; i < 20; i++) {
-      await sleep(1500);
-      const status = await this.server.getTransaction(txHash);
-      if (status.status === SorobanRpc.Api.GetTransactionStatus.SUCCESS) return txHash;
-      if (status.status === SorobanRpc.Api.GetTransactionStatus.FAILED) {
-        throw new Error(`Transaction failed on-chain: ${txHash}`);
-      }
-    }
-    throw new Error(`Transaction ${txHash} not confirmed after 30 s`);
+    return result.txHash;
   }
-}
-
-function sleep(ms: number) {
-  return new Promise((r) => setTimeout(r, ms));
 }

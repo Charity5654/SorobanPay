@@ -27,7 +27,7 @@ jest.mock('@/hooks/useWallet', () => ({
 
 // Never resolves so isSubmitting stays true for the duration of each assertion.
 jest.mock('@/lib/transaction_builder', () => ({
-  buildAndSubmitSubscribe: () => new Promise(() => {}),
+  buildSignAndSubmitSubscribe: () => new Promise(() => {}),
 }));
 
 import SubscriptionForm from '@/components/SubscriptionForm';

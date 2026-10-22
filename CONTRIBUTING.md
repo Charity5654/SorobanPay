@@ -322,6 +322,46 @@ Closes #<number>
 
 For maintainers and trusted contributors.
 
+### Issue naming conventions
+
+Issue titles must be concise and follow this pattern:
+
+```
+<Type>: <Short imperative description>
+```
+
+**Types:**
+
+| Type | When to use |
+|------|------------|
+| `Bug:` | Confirmed or suspected unintended behaviour |
+| `Feature:` | New capability or enhancement |
+| `Docs:` | Documentation additions or corrections |
+| `Chore:` | Dependency updates, CI config, tooling |
+| `Security:` | Security concern — prefer a private advisory instead |
+| `Perf:` | Performance regressions or improvements |
+
+**Good titles:**
+
+```
+Bug: execute_payment returns NoActiveSubscription after TTL expiry mid-cycle
+Feature: Add pause/resume entry point to contract
+Docs: Document all deploy.sh environment variables
+Chore: Bump soroban-sdk to 22.x
+```
+
+**Avoid:**
+
+```
+something is broken          (too vague)
+add stuff to the frontend    (not imperative, no type)
+#77                          (no description)
+```
+
+> **Security issues** — do not use a public issue title that describes the vulnerability. Use GitHub Security Advisories instead (see [Security Vulnerability Reporting](#7-security-vulnerability-reporting)).
+
+### Triage steps
+
 1. Read and understand the issue — ask for clarification before labelling.
 2. Search for duplicates before accepting.
 3. Assign labels (see [Labels Reference](#8-labels-reference)).
