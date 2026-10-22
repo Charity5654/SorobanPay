@@ -1,14 +1,18 @@
 #!/usr/bin/env bash
-# Smoke test for deploy/deploy.sh
-# Validates: syntax, env defaults, network selection, and unknown-network rejection.
-# Does NOT require stellar CLI or a live network.
+# Offline deployment smoke test. All deploys run in disposable fixtures with
+# stubbed build/CLI commands; no live network or wallet credentials are used.
 set -euo pipefail
 
 SCRIPT="$(cd "$(dirname "$0")" && pwd)/deploy.sh"
-REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-WASM_PATH="$REPO_ROOT/contracts/target/wasm32-unknown-unknown/release/soroban_subscription_contract.wasm"
+TMP_ROOT="$(mktemp -d)"
 PASS=0
 FAIL=0
+EXPECTED_CONTRACT_ID="CFAKECONTRACTID000000000000000000000000000000000000000000"
+
+cleanup() {
+  rm -rf "$TMP_ROOT"
+}
+trap cleanup EXIT
 
 pass() { echo "  PASS: $1"; PASS=$((PASS + 1)); }
 fail() { echo "  FAIL: $1"; FAIL=$((FAIL + 1)); }
@@ -20,65 +24,163 @@ else
   fail "syntax check"
 fi
 
-# ── Stub helpers ──────────────────────────────────────────────────────────────
-make_stub_dir() {
-  local dir
-  dir="$(mktemp -d)"
+# ── Isolated deployment fixture ──────────────────────────────────────────────
+make_fixture() {
+  local fixture="$TMP_ROOT/$1"
+  mkdir -p "$fixture/deploy" "$fixture/stubs"
+  cp "$SCRIPT" "$fixture/deploy/deploy.sh"
+  printf '{}\n' > "$fixture/deploy/deployments.json"
 
-  # make stub: creates the WASM artifact at the expected path
-  cat > "$dir/make" <<STUB
+  cat > "$fixture/stubs/make" <<'STUB'
 #!/usr/bin/env bash
-mkdir -p "$(dirname "$WASM_PATH")"
-touch "$WASM_PATH"
+set -euo pipefail
+mkdir -p contracts/target/wasm32-unknown-unknown/release
+touch contracts/target/wasm32-unknown-unknown/release/soroban_subscription_contract.wasm
 STUB
-  chmod +x "$dir/make"
+  chmod +x "$fixture/stubs/make"
 
-  # stellar stub: emits a fake contract ID
-  cat > "$dir/stellar" <<'STUB'
+  cat > "$fixture/stubs/stellar" <<'STUB'
 #!/usr/bin/env bash
-echo "CFAKECONTRACTID000000000000000000000000000000000000000000"
+set -euo pipefail
+if [[ "${1:-}" == "version" ]]; then
+  echo "stellar 21.3.0"
+elif [[ "${1:-}" == "contract" && "${2:-}" == "inspect" ]]; then
+  echo "hash: smoke-wasm-hash"
+elif [[ "${1:-}" == "contract" && "${2:-}" == "deploy" ]]; then
+  [[ "${SMOKE_FAIL_DEPLOY:-0}" != "1" ]] || exit 1
+  echo "CFAKECONTRACTID000000000000000000000000000000000000000000"
+else
+  echo "Unexpected stellar command" >&2
+  exit 2
+fi
 STUB
-  chmod +x "$dir/stellar"
-
-  echo "$dir"
+  chmod +x "$fixture/stubs/stellar"
+  printf '%s\n' "$fixture"
 }
 
 run_deploy() {
-  # $1 = stub dir, remaining = env overrides passed before the script call
-  local stub_dir="$1"; shift
+  local fixture="$1"
+  shift
   (
-    export PATH="$stub_dir:$PATH"
-    cd "$REPO_ROOT"
-    env "$@" bash "$SCRIPT"
+    export PATH="$fixture/stubs:$PATH"
+    cd "$fixture"
+    env "$@" bash deploy/deploy.sh
   )
 }
 
-# ── 2. testnet run produces contract ID ──────────────────────────────────────
-stub="$(make_stub_dir)"
-if output=$(run_deploy "$stub" STELLAR_NETWORK=testnet STELLAR_IDENTITY=alice 2>/dev/null) && [ -n "$output" ]; then
-  pass "testnet run produces contract ID on stdout"
-else
-  fail "testnet run produces contract ID on stdout"
-fi
-rm -rf "$stub"
+manifest_matches() {
+  python3 - "$1/deploy/deployments.json" "$2" "$3" <<'PY'
+import json
+import sys
 
-# ── 3. mainnet run produces contract ID ──────────────────────────────────────
-stub="$(make_stub_dir)"
-if output=$(run_deploy "$stub" STELLAR_NETWORK=mainnet STELLAR_IDENTITY=alice 2>/dev/null) && [ -n "$output" ]; then
-  pass "mainnet run produces contract ID on stdout"
-else
-  fail "mainnet run produces contract ID on stdout"
-fi
-rm -rf "$stub"
+with open(sys.argv[1], encoding="utf-8") as manifest_file:
+    manifest = json.load(manifest_file)
+entry = manifest.get(sys.argv[2], {})
+raise SystemExit(0 if entry.get("contract_id") == sys.argv[3]
+                 and entry.get("wasm_hash") == "smoke-wasm-hash" else 1)
+PY
+}
 
-# ── 4. unknown network is rejected with non-zero exit ────────────────────────
-stub="$(make_stub_dir)"
-if run_deploy "$stub" STELLAR_NETWORK=badnet 2>/dev/null; then
-  fail "unknown network should exit non-zero"
+manifest_is_empty() {
+  python3 - "$1/deploy/deployments.json" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as manifest_file:
+    raise SystemExit(0 if json.load(manifest_file) == {} else 1)
+PY
+}
+
+# ── Positive paths ───────────────────────────────────────────────────────────
+if bash -n "$SCRIPT"; then
+  pass "deployment script syntax"
 else
-  pass "unknown network exits non-zero"
+  fail "deployment script syntax"
 fi
-rm -rf "$stub"
+
+fixture="$(make_fixture testnet)"
+if output="$(run_deploy "$fixture" STELLAR_NETWORK=testnet STELLAR_IDENTITY=ci-smoke 2>/dev/null)" \
+  && [[ "$output" == "$EXPECTED_CONTRACT_ID" ]] \
+  && manifest_matches "$fixture" testnet "$EXPECTED_CONTRACT_ID"; then
+  pass "testnet deploy writes contract ID and manifest"
+else
+  fail "testnet deploy writes contract ID and manifest"
+fi
+
+fixture="$(make_fixture mainnet)"
+if output="$(run_deploy "$fixture" STELLAR_NETWORK=mainnet STELLAR_IDENTITY=ci-smoke 2>/dev/null)" \
+  && [[ "$output" == "$EXPECTED_CONTRACT_ID" ]] \
+  && manifest_matches "$fixture" mainnet "$EXPECTED_CONTRACT_ID"; then
+  pass "mainnet configuration runs against stubs only"
+else
+  fail "mainnet configuration runs against stubs only"
+fi
+
+# ── Negative and boundary paths ──────────────────────────────────────────────
+fixture="$(make_fixture invalid-network)"
+if run_deploy "$fixture" STELLAR_NETWORK=badnet 2>/dev/null; then
+  fail "unsupported network is rejected"
+else
+  pass "unsupported network is rejected"
+fi
+
+fixture="$(make_fixture unchanged-wasm)"
+printf '{"testnet":{"contract_id":"CPREVIOUS","wasm_hash":"smoke-wasm-hash"}}\n' \
+  > "$fixture/deploy/deployments.json"
+if run_deploy "$fixture" STELLAR_NETWORK=testnet 2>/dev/null; then
+  fail "unchanged WASM requires explicit override"
+else
+  pass "unchanged WASM requires explicit override"
+fi
+if output="$(run_deploy "$fixture" STELLAR_NETWORK=testnet FORCE_DEPLOY=1 2>/dev/null)" \
+  && [[ "$output" == "$EXPECTED_CONTRACT_ID" ]]; then
+  pass "FORCE_DEPLOY recovers unchanged-WASM boundary"
+else
+  fail "FORCE_DEPLOY recovers unchanged-WASM boundary"
+fi
+
+# ── Recovery path ────────────────────────────────────────────────────────────
+fixture="$(make_fixture deploy-retry)"
+if run_deploy "$fixture" STELLAR_NETWORK=testnet SMOKE_FAIL_DEPLOY=1 2>/dev/null; then
+  fail "failed deploy leaves manifest untouched"
+else
+  if manifest_is_empty "$fixture"; then
+    pass "failed deploy leaves manifest untouched"
+  else
+    fail "failed deploy leaves manifest untouched"
+  fi
+fi
+if output="$(run_deploy "$fixture" STELLAR_NETWORK=testnet 2>/dev/null)" \
+  && [[ "$output" == "$EXPECTED_CONTRACT_ID" ]] \
+  && manifest_matches "$fixture" testnet "$EXPECTED_CONTRACT_ID"; then
+  pass "successful retry updates deployment manifest"
+else
+  fail "successful retry updates deployment manifest"
+fi
+
+# Promotion workflows may supply a health URL; PR runs never need a secret or
+# contact a deployed service.
+if [[ -n "${SMOKE_TARGET_URL:-}" ]]; then
+  if python3 - "$SMOKE_TARGET_URL" <<'PY'
+import sys
+from urllib.parse import urlparse
+
+url = urlparse(sys.argv[1])
+raise SystemExit(0 if url.scheme == "https" and url.hostname
+                 and not url.username and not url.password
+                 and not url.query and not url.fragment else 1)
+PY
+  then
+    if curl --fail --silent --show-error --max-time 10 \
+      "${SMOKE_TARGET_URL%/}/health" --output /dev/null 2>/dev/null; then
+      pass "configured deployment health endpoint responds"
+    else
+      fail "configured deployment health endpoint responds"
+    fi
+  else
+    fail "SMOKE_TARGET_URL must be an HTTPS URL without credentials or query data"
+  fi
+fi
 
 # ── Summary ───────────────────────────────────────────────────────────────────
 echo ""

@@ -627,6 +627,223 @@ For the full event reference and RPC query examples, see [docs/events.md](events
 
 ---
 
+---
+
+## 11. Subscription State Transitions
+
+Every on-chain subscription exists in one of five states. This section defines
+each state, the triggers that move between them, the operations that are allowed
+in each state, the events emitted at each transition, and how to recover from
+error states.
+
+### 11.1 State definitions
+
+| State | Storage | Description |
+|-------|---------|-------------|
+| `NONEXISTENT` | No entry | No subscription exists for the `(subscriber, merchant, token)` triple. |
+| `ACTIVE` | Entry present, `is_paused = false`, `overdue_since = null` | Subscription is live and in good standing. Payments can be collected when due. |
+| `ACTIVE_OVERDUE` | Entry present, `is_paused = false`, `overdue_since = <timestamp>` | Payment attempt failed (e.g. insufficient balance). Subscription remains active but has a recorded failure timestamp. Retry is allowed. |
+| `PAUSED` | Entry present, `is_paused = true` | Admin or merchant has paused the subscription. `execute_payment` is blocked until the pause expires or is lifted. |
+| `EXPIRED` | No entry (garbage-collected) | Ledger TTL reached zero. Entry was evicted by the Soroban host. Equivalent to `NONEXISTENT` for all operations. |
+
+### 11.2 State transition diagram
+
+```
+                        ┌──────────────┐
+                        │  NONEXISTENT │◄──────────────────────────────────┐
+                        └──────┬───────┘                                   │
+                               │ subscribe()                               │
+                               │ emit: subscribe                           │
+                               ▼                                           │
+                        ┌──────────────┐                                   │
+              ┌─────────│    ACTIVE    │─────────┐                         │
+              │         └──────┬───────┘         │                         │
+              │                │                 │                         │
+              │ execute_payment()│(not due)        │ cancel()               │
+              │ → PaymentNotDue  │                 │ emit: cancel           │
+              │ (no state change)│                 │ (entry removed)        │
+              │                 │                 ▼                         │
+              │    execute_payment() succeeds  NONEXISTENT                  │
+              │    emit: executed                                           │
+              │    (stay ACTIVE)                                            │
+              │                │                                           │
+              │    execute_payment() fails (insufficient balance)           │
+              │    emit: payment_transfer_failure                           │
+              │                │                                           │
+              │                ▼                                           │
+              │       ┌──────────────────┐                                 │
+              │       │  ACTIVE_OVERDUE  │                                 │
+              │       └────────┬─────────┘                                 │
+              │                │                                           │
+              │  execute_payment() retry succeeds                          │
+              │  emit: executed; overdue_since cleared                      │
+              │  → back to ACTIVE                                          │
+              │                │                                           │
+              │  grace_period elapsed AND expire_subscription() called      │
+              │  (entry removed)                                           │
+              │                ▼                                           │
+              │           NONEXISTENT ────────────────────────────────────►│
+              │                                                            │
+              │   pause_subscription() called                              │
+              │   ──────────────────────────────────►                      │
+              │                                 ┌──────────────┐          │
+              │                                 │    PAUSED    │          │
+              │                                 └──────┬───────┘          │
+              │                                        │                  │
+              │   resume_subscription() or pause_until elapsed             │
+              │   ◄─────────────────────────────────────                  │
+              │                                                            │
+              │   TTL reaches 0 (any state)                                │
+              └────────────────────────────────────────────────────────► EXPIRED
+                                                                    (≡ NONEXISTENT)
+```
+
+### 11.3 Transitions reference table
+
+| From state | Trigger | Entry point / mechanism | To state | Events emitted |
+|------------|---------|------------------------|----------|----------------|
+| `NONEXISTENT` | New subscription | `subscribe()` | `ACTIVE` | `subscribe` |
+| `ACTIVE` | Subscription updated | `update_subscription()` | `ACTIVE` | `updated` |
+| `ACTIVE` | Payment due and collected | `execute_payment()` | `ACTIVE` | `executed` |
+| `ACTIVE` | Payment due, balance insufficient | `execute_payment()` | `ACTIVE_OVERDUE` | `payment_transfer_failure` |
+| `ACTIVE` | Payment not yet due | `execute_payment()` | `ACTIVE` (no change) | *(none — error returned)* |
+| `ACTIVE` | Subscriber cancels | `cancel()` | `NONEXISTENT` | `cancel` |
+| `ACTIVE` | Reassigned to new merchant | `transfer_subscription()` | `ACTIVE` (new key) | `subscription_transferred` |
+| `ACTIVE` | Admin/merchant pauses | `pause_subscription()` | `PAUSED` | `paused` |
+| `ACTIVE` | Ledger TTL expires | Soroban host eviction | `EXPIRED` | *(none)* |
+| `ACTIVE_OVERDUE` | Retry succeeds | `execute_payment()` | `ACTIVE` | `executed` |
+| `ACTIVE_OVERDUE` | Subscriber cancels | `cancel()` | `NONEXISTENT` | `cancel` |
+| `ACTIVE_OVERDUE` | Grace period elapsed, expire called | `expire_subscription()` | `NONEXISTENT` | `expired` |
+| `ACTIVE_OVERDUE` | Ledger TTL expires | Soroban host eviction | `EXPIRED` | *(none)* |
+| `PAUSED` | Pause duration elapses | Automatic on next `execute_payment()` | `ACTIVE` | *(none — pause lifted inline)* |
+| `PAUSED` | Admin/merchant resumes early | `resume_subscription()` | `ACTIVE` | `resumed` |
+| `PAUSED` | Subscriber cancels | `cancel()` | `NONEXISTENT` | `cancel` |
+| `EXPIRED` | New subscription created | `subscribe()` | `ACTIVE` | `subscribe` |
+
+### 11.4 Allowed operations per state
+
+| Operation | `NONEXISTENT` | `ACTIVE` | `ACTIVE_OVERDUE` | `PAUSED` | `EXPIRED` |
+|-----------|:---:|:---:|:---:|:---:|:---:|
+| `subscribe()` | ✅ Creates | ✅ Updates (overwrites) | ✅ Updates | ✅ Updates | ✅ Recreates |
+| `execute_payment()` | ❌ `NoActiveSubscription` | ✅ If due | ✅ Retry allowed | ❌ `SubscriptionPaused` | ❌ `NoActiveSubscription` |
+| `cancel()` | ❌ `NoActiveSubscription` | ✅ | ✅ | ✅ | ❌ `NoActiveSubscription` |
+| `update_subscription()` | ❌ `NoActiveSubscription` | ✅ | ✅ | ✅ | ❌ `NoActiveSubscription` |
+| `transfer_subscription()` | ❌ `NoActiveSubscription` | ✅ | ✅ | ✅ | ❌ `NoActiveSubscription` |
+| `get_subscription()` | Returns `None` | Returns `SubscriptionData` | Returns `SubscriptionData` | Returns `SubscriptionData` | Returns `None` |
+| `expire_subscription()` | ❌ No-op | ❌ Grace period must have elapsed | ✅ If grace elapsed | ❌ N/A | ❌ No-op |
+
+### 11.5 Events emitted at each transition
+
+| Transition | Symbol | Topics | Data |
+|------------|--------|--------|------|
+| `NONEXISTENT → ACTIVE` (create) | `subscribe` | `(subscribe, subscriber, merchant, token)` | `amount: i128` |
+| `ACTIVE → ACTIVE` (update) | `updated` | `(updated, subscriber, merchant)` | `(old_amount, new_amount, old_interval, new_interval)` |
+| `ACTIVE → ACTIVE` (payment collected) | `executed` | `(executed, subscriber, merchant, token)` | `amount: i128` |
+| `ACTIVE → ACTIVE_OVERDUE` | `payment_transfer_failure` | `(payment_transfer_failure, subscriber, merchant)` | `amount: i128` |
+| `ACTIVE_OVERDUE → ACTIVE` (retry success) | `executed` | `(executed, subscriber, merchant, token)` | `amount: i128` |
+| `ACTIVE_OVERDUE → NONEXISTENT` (grace expired) | `expired` | `(expired, subscriber, merchant)` | `()` |
+| `ACTIVE → PAUSED` | `paused` | `(paused, subscriber, merchant)` | `pause_until: u64` |
+| `PAUSED → ACTIVE` (resumed) | `resumed` | `(resumed, subscriber, merchant)` | `()` |
+| `ACTIVE → NONEXISTENT` (cancel) | `cancel` | `(cancel, subscriber, merchant)` | `()` |
+| `ACTIVE → ACTIVE` (transfer) | `subscription_transferred` | `(subscription_transferred, subscriber, old_merchant, new_merchant)` | `()` |
+
+Off-chain indexers must handle **unknown event symbols** gracefully — new event
+types may be introduced in minor versions. Filter for known symbols and skip
+unknown ones.
+
+### 11.6 Recovery paths
+
+#### Payment failed (`ACTIVE → ACTIVE_OVERDUE`)
+
+**Trigger:** `execute_payment()` is called but the subscriber's token balance or
+allowance is insufficient. The contract emits `payment_transfer_failure` and
+sets `overdue_since = now`. The subscription remains in storage.
+
+**Recovery options:**
+
+1. **Retry collection** — once the subscriber has funded their account or
+   reinstated their allowance, call `execute_payment()` again. If the payment
+   succeeds, `overdue_since` is cleared and the subscription returns to
+   `ACTIVE`.
+
+2. **Subscriber self-cure** — the subscriber can call `subscribe()` again on
+   the same pair with `strict = false` to reset the overdue state without
+   changing the subscription terms. (Note: this overwrites `next_payment` with
+   `now + interval`, which resets the billing cycle.)
+
+3. **Grace period expiry** — if a `grace_period` was set at subscription time
+   and `now >= overdue_since + grace_period`, anyone may call
+   `expire_subscription(subscriber, merchant, token)` to remove the entry. The
+   contract emits `expired`. Merchants should monitor `overdue_since` via the
+   backend API and notify subscribers before the grace period runs out.
+
+4. **Subscriber cancel** — the subscriber may call `cancel()` at any time to
+   cleanly remove the overdue subscription. They should also revoke the SEP-41
+   allowance:
+
+   ```bash
+   stellar contract invoke \
+     --id $CONTRACT_ID --source alice --network testnet \
+     -- cancel \
+     --subscriber GABC...ALICE \
+     --merchant   GXYZ...MERCHANT \
+     --token      CABC...USDC
+
+   # Revoke allowance to prevent any future collection
+   stellar contract invoke \
+     --id $TOKEN_CONTRACT_ID --source alice --network testnet \
+     -- approve \
+     --from    GABC...ALICE \
+     --spender $CONTRACT_ID \
+     --amount  0
+   ```
+
+#### Subscription paused (`ACTIVE → PAUSED`)
+
+**Trigger:** `pause_subscription()` is called by the admin or merchant, setting
+`is_paused = true` and an optional `pause_until` timestamp.
+
+**Recovery:**
+- **Automatic:** when `execute_payment()` is next called and
+  `now >= pause_until`, the contract clears the pause inline before checking
+  payment eligibility. No separate call is needed if a `pause_until` was set.
+- **Manual:** call `resume_subscription(subscriber, merchant, token)` before
+  `pause_until` to lift the pause early.
+
+#### Entry expired (`* → EXPIRED`)
+
+**Trigger:** The Soroban host evicts the entry when its TTL reaches zero. This
+is equivalent to the entry never having existed — `get_subscription()` returns
+`None` and `execute_payment()` returns `NoActiveSubscription`.
+
+**Recovery:**
+- If the subscription should continue, the subscriber calls `subscribe()` again
+  with the same (or updated) parameters. This creates a fresh entry with a full
+  TTL, and `next_payment = now + interval` — the billing cycle resets.
+- Merchants should monitor TTL health via
+  `GET /health/ttl` (see [API Cookbook — Recipe 8](api-cookbook.md)) and alert
+  before entries fall below 36 days (622,080 ledgers) remaining.
+
+#### No active subscription error (`NoActiveSubscription` — error code 4)
+
+Returned by `execute_payment()`, `cancel()`, `update_subscription()`, and
+`transfer_subscription()` when the entry does not exist.
+
+**Causes:**
+- The subscription was never created — call `subscribe()` first.
+- The subscription was cancelled by the subscriber.
+- The entry expired due to TTL exhaustion.
+- A wrong `(subscriber, merchant, token)` triple was supplied — verify the
+  addresses.
+
+**Recovery:**
+- Verify the addresses are correct with `get_subscription(subscriber, merchant,
+  token)` — returns `None` if the entry does not exist.
+- If the subscription should exist, have the subscriber call `subscribe()` to
+  recreate it.
+
+---
+
 ## References
 
 - [Soroban RPC Documentation](https://developers.stellar.org/docs/learn/soroban-rpc/events)

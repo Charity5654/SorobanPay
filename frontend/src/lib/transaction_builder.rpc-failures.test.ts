@@ -10,6 +10,7 @@
 // ─── Shared mock fixtures ──────────────────────────────────────────────────────
 
 const mockGetAccount = jest.fn();
+const mockSimulateTransaction = jest.fn();
 const mockPrepareTransaction = jest.fn();
 const mockSendTransaction = jest.fn();
 const mockGetTransaction = jest.fn();
@@ -31,16 +32,22 @@ jest.mock('@stellar/stellar-sdk', () => {
     BASE_FEE: '100',
     nativeToScVal: jest.fn().mockReturnValue({}),
     Address: jest.fn().mockReturnValue({ toScVal: jest.fn().mockReturnValue({}) }),
+    // scValToNative is called by checkAllowance to decode the i128 allowance
+    scValToNative: jest.fn().mockReturnValue(9999999n),
     xdr: {},
     SorobanRpc: {
       Server: jest.fn().mockImplementation(() => ({
         getAccount: mockGetAccount,
+        simulateTransaction: mockSimulateTransaction,
         prepareTransaction: mockPrepareTransaction,
         sendTransaction: mockSendTransaction,
         getTransaction: mockGetTransaction,
       })),
       Api: {
         GetTransactionStatus: { SUCCESS: 'SUCCESS', FAILED: 'FAILED', NOT_FOUND },
+        // checkAllowance uses these type-guards to inspect the simulation result
+        isSimulationError:   jest.fn().mockReturnValue(false),
+        isSimulationSuccess: jest.fn().mockReturnValue(true),
       },
     },
   };
@@ -80,26 +87,41 @@ function callBuilder() {
 describe('buildAndSubmitSubscribe – prepareTransaction RPC failure', () => {
   beforeEach(() => {
     mockGetAccount.mockResolvedValue({ id: VALID_PARAMS.subscriber, sequence: '0' });
+    // simulateTransaction is called by checkAllowance for the pre-flight allowance
+    // check. Return a successful simulation so the check passes and the test can
+    // reach prepareTransaction.
+    mockSimulateTransaction.mockResolvedValue({ result: { retval: {} } });
   });
 
   afterEach(() => jest.clearAllMocks());
 
+  // Note: transaction_builder throws normalizeRpcError(...) which returns a
+  // NormalizedRpcError plain object (not an Error). Jest's toThrow(/pattern/)
+  // matches the .message property of an Error, which is absent on a plain
+  // object. We use toMatchObject({ rawMessage: ... }) instead.
+
   it('wraps a prepareTransaction network error with a descriptive message', async () => {
     mockPrepareTransaction.mockRejectedValueOnce(new Error('Network request failed'));
 
-    await expect(callBuilder()).rejects.toThrow(/transaction preparation failed/i);
+    await expect(callBuilder()).rejects.toMatchObject({
+      rawMessage: expect.stringMatching(/transaction preparation failed/i),
+    });
   });
 
   it('includes the original error text in the thrown message', async () => {
     mockPrepareTransaction.mockRejectedValueOnce(new Error('simulation error: resource exhausted'));
 
-    await expect(callBuilder()).rejects.toThrow(/simulation error: resource exhausted/i);
+    await expect(callBuilder()).rejects.toMatchObject({
+      rawMessage: expect.stringMatching(/simulation error: resource exhausted/i),
+    });
   });
 
   it('wraps a non-Error rejection (string) from prepareTransaction', async () => {
     mockPrepareTransaction.mockRejectedValueOnce('RPC 503 Service Unavailable');
 
-    await expect(callBuilder()).rejects.toThrow(/transaction preparation failed/i);
+    await expect(callBuilder()).rejects.toMatchObject({
+      rawMessage: expect.stringMatching(/transaction preparation failed/i),
+    });
   });
 });
 
@@ -108,6 +130,9 @@ describe('buildAndSubmitSubscribe – prepareTransaction RPC failure', () => {
 describe('buildAndSubmitSubscribe – sendTransaction RPC failure', () => {
   beforeEach(() => {
     mockGetAccount.mockResolvedValue({ id: VALID_PARAMS.subscriber, sequence: '0' });
+    // simulateTransaction is called by checkAllowance for the pre-flight allowance
+    // check. Return a successful simulation so the check passes.
+    mockSimulateTransaction.mockResolvedValue({ result: { retval: {} } });
     mockPrepareTransaction.mockResolvedValue({ toXDR: () => 'PREPARED_XDR' });
   });
 
@@ -119,7 +144,9 @@ describe('buildAndSubmitSubscribe – sendTransaction RPC failure', () => {
       errorResult: null,
     });
 
-    await expect(callBuilder()).rejects.toThrow(/transaction submission failed/i);
+    await expect(callBuilder()).rejects.toMatchObject({
+      rawMessage: expect.stringMatching(/transaction submission failed/i),
+    });
   });
 
   it('includes XDR in the error when errorResult is present', async () => {
@@ -128,13 +155,17 @@ describe('buildAndSubmitSubscribe – sendTransaction RPC failure', () => {
       errorResult: { toXDR: () => 'AAAA_ERROR_XDR==' },
     });
 
-    await expect(callBuilder()).rejects.toThrow(/AAAA_ERROR_XDR==/);
+    await expect(callBuilder()).rejects.toMatchObject({
+      rawMessage: expect.stringMatching(/AAAA_ERROR_XDR==/),
+    });
   });
 
   it('falls back to "unknown error" text when errorResult is null', async () => {
     mockSendTransaction.mockResolvedValueOnce({ status: 'ERROR', errorResult: null });
 
-    await expect(callBuilder()).rejects.toThrow(/unknown error/i);
+    await expect(callBuilder()).rejects.toMatchObject({
+      rawMessage: expect.stringMatching(/unknown error/i),
+    });
   });
 
   it('throws when sendTransaction itself rejects (network-level error)', async () => {

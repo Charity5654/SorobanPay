@@ -34,7 +34,7 @@ export interface StoredSubscription {
   subscriber: string;
   merchant: string;
   token: string;          // SEP-41 token contract ID
-  amount: bigint;
+  amount: bigint | string; // Can be string from DB (Prisma stores as string) or bigint
   interval: number;       // seconds
   next_payment: number;   // Unix timestamp
   last_payment_at: number | null;
@@ -153,10 +153,21 @@ export function reconcile(
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
+/**
+ * Parse a value to BigInt, handling both string and bigint inputs.
+ * Throws if the value cannot be converted.
+ */
+function toBigInt(val: bigint | string): bigint {
+  if (typeof val === 'bigint') {
+    return val;
+  }
+  return BigInt(val);
+}
+
 function recordsMatch(a: StoredSubscription, b: StoredSubscription): boolean {
   return (
     a.token === b.token &&
-    a.amount === b.amount &&
+    toBigInt(a.amount) === toBigInt(b.amount) &&
     a.interval === b.interval &&
     a.next_payment === b.next_payment &&
     a.last_payment_at === b.last_payment_at

@@ -9,20 +9,21 @@ import { buildAndSubmitSubscribe, SubscribeParams } from './transaction_builder'
 
 // ─── Fixtures ─────────────────────────────────────────────────────────────────
 
-const VALID_G = 'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
-const VALID_C = 'CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
+const VALID_G  = 'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
+const VALID_G2 = 'GBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB';
+const VALID_C  = 'CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
 
 const BASE_PARAMS: SubscribeParams = {
   subscriber: VALID_G,
-  merchant: VALID_G,
-  token: VALID_C,
-  amount: 100,
-  interval: 86400,
+  merchant:   VALID_G2,   // distinct from subscriber
+  token:      VALID_C,
+  amount:     100,
+  interval:   86400,
 };
 
-const CONTRACT_ID = VALID_C;
+const CONTRACT_ID       = VALID_C;
 const NETWORK_PASSPHRASE = 'Test SDF Network ; September 2015';
-const RPC_URL = 'https://soroban-testnet.stellar.org';
+const RPC_URL            = 'https://soroban-testnet.stellar.org';
 
 // ─── Helper ───────────────────────────────────────────────────────────────────
 
@@ -87,5 +88,29 @@ describe('buildAndSubmitSubscribe: invalid subscriber/merchant addresses', () =>
 
   it('throws for invalid merchant address (not G-address)', async () => {
     await expect(call({ merchant: 'BAD' })).rejects.toThrow(/invalid merchant address/i);
+  });
+});
+
+// ─── Self-subscription guard — must throw before any network call ─────────────
+
+describe('buildAndSubmitSubscribe: self-subscription guard', () => {
+  it('throws when subscriber and merchant are the same address', async () => {
+    await expect(
+      call({ subscriber: VALID_G, merchant: VALID_G }),
+    ).rejects.toThrow(/selfsubscription|subscriber and merchant cannot be the same/i);
+  });
+
+  it('rejects before making any network call (no RPC mock needed)', async () => {
+    const start = Date.now();
+    await expect(
+      buildAndSubmitSubscribe(
+        { ...BASE_PARAMS, subscriber: VALID_G, merchant: VALID_G },
+        CONTRACT_ID,
+        VALID_G,
+        NETWORK_PASSPHRASE,
+        'https://0.0.0.0:1', // unreachable — network must never be reached
+      ),
+    ).rejects.toThrow(/selfsubscription|subscriber and merchant cannot be the same/i);
+    expect(Date.now() - start).toBeLessThan(100);
   });
 });

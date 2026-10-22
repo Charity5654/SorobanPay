@@ -32,6 +32,8 @@ export interface WalletContextValue {
   freighterInstalled: boolean;
   /** True while checking Freighter availability on initial load. */
   isCheckingFreighter: boolean;
+  /** True when the active wallet session is no longer valid because Freighter is unavailable. */
+  sessionInvalid: boolean;
   /** Trigger wallet connection — opens Freighter permission dialog. */
   connect: () => Promise<void>;
   /** Clear publicKey and return to disconnected state. */
@@ -50,6 +52,19 @@ export function WalletProvider({ children }: { children: ReactNode }) {
   const [connectError, setConnectError] = useState<string | null>(null);
   const [freighterInstalled, setFreighterInstalled] = useState(false);
   const [isCheckingFreighter, setIsCheckingFreighter] = useState(true);
+  const [sessionInvalid, setSessionInvalid] = useState(false);
+
+  useEffect(() => {
+    if (publicKey && !freighterInstalled) {
+      setSessionInvalid(true);
+      setConnectError(
+        "Freighter is no longer available. Disconnect and reconnect to restore your session.",
+      );
+    } else if (publicKey && freighterInstalled) {
+      setSessionInvalid(false);
+      setConnectError(null);
+    }
+  }, [publicKey, freighterInstalled]);
 
   // Check Freighter availability on mount (Issue #110)
   useEffect(() => {
@@ -77,6 +92,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
   const connect = useCallback(async () => {
     setIsConnecting(true);
     setConnectError(null);
+    setSessionInvalid(false);
 
     try {
       // Check installation first so we can show the install link (Req 9.1)
@@ -107,6 +123,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
   const disconnect = useCallback(() => {
     setPublicKey(null); // Clears stored key (Req 9.6)
     setConnectError(null);
+    setSessionInvalid(false);
   }, []);
 
   return (
@@ -117,6 +134,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
         connectError,
         freighterInstalled,
         isCheckingFreighter,
+        sessionInvalid,
         connect,
         disconnect,
       }}

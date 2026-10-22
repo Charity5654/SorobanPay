@@ -5,7 +5,10 @@
   "description": "SorobanPay monorepo scripts — gas estimation harness and tooling",
   "scripts": {
     "gas-estimation": "ts-node scripts/gas-estimation-test.ts",
-    "update-baseline": "ts-node scripts/gas-estimation-test.ts --update-baseline"
+    "update-baseline": "ts-node scripts/gas-estimation-test.ts --update-baseline",
+    "db:seed": "ts-node scripts/seed-local-db.ts",
+    "db:reset": "ts-node scripts/reset-local-db.ts",
+    "db:seed-and-reset": "bash scripts/seed-and-reset.sh"
   },
   "devDependencies": {
     "@stellar/stellar-sdk": "^16.0.1",
@@ -13,6 +16,6 @@
     "typescript": "^5.5.4"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=22"
   }
 }

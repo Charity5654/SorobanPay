@@ -7,6 +7,8 @@
  * Requirements: 10.1, 10.9
  */
 
+import { StrKey } from '@stellar/stellar-sdk';
+
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 /** Map of field name → error message. Empty object means all fields are valid. */
@@ -23,6 +25,8 @@ export interface SubscriptionFormValues {
   tokenAddress: string;
   amount: string;
   interval: string;
+  /** The connected subscriber's public key. When provided, used to guard against self-subscription. */
+  subscriberAddress?: string;
 }
 
 // ─── Interval bounds ──────────────────────────────────────────────────────────
@@ -43,6 +47,74 @@ export function isValidCAddress(addr: string): boolean {
   return /^C[A-Z2-7]{55}$/.test(addr.trim());
 }
 
+// ─── Address normalization + assertion helpers (Issue #37) ────────────────────
+//
+// transaction_builder.ts repeated the same
+//   if (!isValidGAddress(x)) throw new Error(`Invalid ... address: ${x}`)
+// block seven times across its builder functions, each operating on the raw,
+// un-trimmed param. These helpers centralize that: normalize (trim) once,
+// validate once, and either return the clean address or throw a consistently
+// worded error — so every builder function does address handling the same way
+// before it ever builds a contract call.
+
+/** Trim a Stellar address. The sole normalization StrKey addresses need —
+ *  they have no case variation, so there's nothing else safe to fold. */
+export function normalizeAddress(addr: string): string {
+  return addr.trim();
+}
+
+/**
+ * Normalize and validate a Stellar G-address (account/subscriber/merchant).
+ *
+ * @param addr  Raw address, e.g. straight from a form field or params object.
+ * @param label Used in the thrown message, e.g. "subscriber" → "Invalid subscriber address: …".
+ * @returns     The trimmed address, once confirmed to match the G-address shape.
+ * @throws      Error with a message matching the `/invalid (subscriber|merchant|...) address/i`
+ *              pattern that lib/errors.ts's mapError() and rpc_error_normalizer.ts already key off.
+ */
+export function assertValidGAddress(addr: string, label: string): string {
+  const normalized = normalizeAddress(addr);
+  if (!isValidGAddress(normalized)) {
+    throw new Error(`Invalid ${label} address: ${addr}`);
+  }
+  return normalized;
+}
+
+/** Same as `assertValidGAddress`, for a token contract C-address. */
+export function assertValidCAddress(addr: string, label: string): string {
+  const normalized = normalizeAddress(addr);
+  if (!isValidCAddress(normalized)) {
+    throw new Error(`Invalid ${label} address: ${addr}`);
+  }
+  return normalized;
+}
+
+// ─── Stricter, checksum-verified validation (opt-in) ───────────────────────────
+//
+// isValidGAddress/isValidCAddress above only check shape (length, charset) via
+// regex — a string can match and still carry a corrupted StrKey checksum,
+// which would only surface later as a confusing SDK/RPC error. StrKey (from
+// @stellar/stellar-sdk) verifies the embedded CRC16 checksum for real.
+//
+// This is intentionally NOT wired into isValidGAddress/isValidCAddress or the
+// assert* helpers above: a lot of this codebase's existing tests use
+// regex-shaped-but-not-checksum-valid placeholder addresses (e.g.
+// 'G' + 'A'.repeat(55)) as fixtures, and swapping the strictness of the
+// widely-used validators out from under them would break those tests. Use
+// these directly wherever you specifically want a real checksum guarantee —
+// e.g. before persisting an address, or in a new form that isn't relying on
+// the existing placeholder-fixture convention.
+
+/** Returns true only for a G-address with a valid embedded StrKey checksum. */
+export function isValidGAddressChecksum(addr: string): boolean {
+  return StrKey.isValidEd25519PublicKey(normalizeAddress(addr));
+}
+
+/** Returns true only for a C-address with a valid embedded StrKey checksum. */
+export function isValidCAddressChecksum(addr: string): boolean {
+  return StrKey.isValidContract(normalizeAddress(addr));
+}
+
 // ─── Form validator ───────────────────────────────────────────────────────────
 
 /**
@@ -56,12 +128,18 @@ export function validateSubscriptionForm(
 ): FieldErrors {
   const errors: FieldErrors = {};
 
-  // merchantAddress — valid Stellar G-address
+  // merchantAddress — valid Stellar G-address, and must not equal the subscriber
   if (!values.merchantAddress.trim()) {
     errors.merchantAddress = 'Merchant address is required.';
   } else if (!isValidGAddress(values.merchantAddress)) {
     errors.merchantAddress =
       'Must be a valid Stellar G-address (56 characters, starts with G).';
+  } else if (
+    values.subscriberAddress &&
+    values.merchantAddress.trim() === values.subscriberAddress.trim()
+  ) {
+    errors.merchantAddress =
+      'Merchant address cannot be the same as your subscriber address. A subscription to yourself is not allowed.';
   }
 
   // tokenAddress — valid Stellar C-address (contract)

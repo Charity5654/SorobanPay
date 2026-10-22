@@ -128,6 +128,7 @@ success "Accounts funded."
 
 info "Building subscription contract (wasm32)…"
 cargo build \
+  --locked \
   --manifest-path "${CONTRACT_DIR}/Cargo.toml" \
   --target wasm32-unknown-unknown \
   --release \

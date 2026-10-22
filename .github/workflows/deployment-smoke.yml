@@ -1,0 +1,24 @@
+name: Deployment smoke
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  deployment-smoke:
+    name: Offline deployment smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check shell syntax
+        run: |
+          bash -n deploy/deploy.sh
+          bash -n deploy/smoke_test.sh
+
+      - name: Run isolated deployment smoke scenarios
+        run: bash deploy/smoke_test.sh

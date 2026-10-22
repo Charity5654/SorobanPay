@@ -13,6 +13,7 @@
 import { useSearchParams } from "next/navigation";
 import { Suspense } from "react";
 import SubscriptionForm from "@/components/SubscriptionForm";
+import ContractFooter from "@/components/ContractFooter";
 import { useWallet } from "@/hooks/useWallet";
 
 // ─── Stellar address patterns ─────────────────────────────────────────────────
@@ -139,6 +140,9 @@ function SubscribePageInner() {
           </p>
         </div>
       )}
+
+      {/* Contract footer — links to deployed contract explorer */}
+      <ContractFooter />
     </main>
   );
 }

@@ -1,0 +1,65 @@
+# deploy/k8s/kustomization.yaml
+#
+# Kustomize base configuration — wires all manifests together.
+# Apply everything in one command:
+#
+#   kubectl apply -k deploy/k8s/
+#
+# Or generate the full YAML without applying:
+#
+#   kubectl kustomize deploy/k8s/
+#
+# ── Environment overlays ─────────────────────────────────────────────────────
+# Create Kustomize overlays for per-environment differences:
+#
+#   deploy/k8s/overlays/
+#     staging/
+#       kustomization.yaml   (patches for CONTRACT_ID, replicas, image tag)
+#     production/
+#       kustomization.yaml   (patches for real domain, resource limits)
+#
+# Apply staging overlay:
+#   kubectl apply -k deploy/k8s/overlays/staging/
+#
+# See: https://kubectl.docs.kubernetes.io/guides/introduction/kustomize/
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: sorobanpay
+
+resources:
+  # ── Namespace ──────────────────────────────────────────────────────────────
+  - namespace.yaml
+
+  # ── Configuration & Secrets ───────────────────────────────────────────────
+  - configmap.yaml
+  - secrets.yaml
+
+  # ── Backend Deployments ───────────────────────────────────────────────────
+  - indexer-deployment.yaml
+  - api-deployment.yaml
+  - webhook-worker-deployment.yaml
+
+  # ── Services & Ingress ────────────────────────────────────────────────────
+  - api-service.yaml
+
+  # ── Autoscaling ───────────────────────────────────────────────────────────
+  - hpa.yaml
+
+  # ── Dev/Reference: StatefulSets ───────────────────────────────────────────
+  # Comment these out and use managed services in production.
+  - postgres-statefulset.yaml
+  # - redis-statefulset.yaml   # Uncomment when Redis integration is added
+
+# ── Common labels ─────────────────────────────────────────────────────────────
+# These labels are applied to all resources in this kustomization.
+commonLabels:
+  app.kubernetes.io/part-of: sorobanpay
+  app.kubernetes.io/managed-by: kustomize
+
+# ── Image management ──────────────────────────────────────────────────────────
+# Override the image tag for a specific release without editing each manifest.
+# Example: kustomize edit set image sorobanpay/backend=sorobanpay/backend:v1.2.3
+images:
+  - name: sorobanpay/backend
+    newTag: latest

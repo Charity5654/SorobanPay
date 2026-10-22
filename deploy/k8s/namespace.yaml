@@ -1,0 +1,10 @@
+# deploy/k8s/namespace.yaml
+# Dedicated Kubernetes namespace for all SorobanPay backend workloads.
+# Apply first: kubectl apply -f deploy/k8s/namespace.yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: sorobanpay
+  labels:
+    app.kubernetes.io/name: sorobanpay
+    app.kubernetes.io/managed-by: kubectl

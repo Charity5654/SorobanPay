@@ -23,6 +23,61 @@ node --version           # v18.x.x or higher
 stellar --version        # stellar 21.x.x
 ```
 
+## Deterministic tests without credentials
+
+Frontend and backend tests can replace wallets, network responses, databases,
+and time. These controls use synthetic values; do not put private keys, real
+wallet seeds, access tokens, production database URLs, or signed transactions
+in test fixtures or logs.
+
+| Dependency | Existing control | What it isolates |
+|------------|------------------|------------------|
+| Freighter wallet | `frontend/tests/freighter-mock.ts` and `frontend/e2e/helpers/freighter-mock.ts` | Supplies a synthetic public key and sentinel transaction response in the browser. It does not connect to an installed wallet. |
+| Soroban RPC/network | `frontend/src/test-utils/msw-server.ts` | MSW intercepts the testnet RPC URL with JSON-RPC success, network-error, timeout, account, and simulation responses. Add a per-test handler with `server.use(...)`. |
+| Backend API | `frontend/tests/pact/api.consumer.pact.test.ts` | Pact's local mock server returns the responses declared by each consumer interaction; it does not call a deployed backend. |
+| Database | `backend/tests/helpers/inMemoryDb.ts`; the Pact provider test also uses in-memory Prisma mocks | Stores test records in process memory rather than PostgreSQL. The helper implements only the methods its tests exercise. |
+| Clock | Jest fake timers in frontend unit tests | Freezes or advances JavaScript timers and `Date` without waiting for wall-clock time. |
+
+Run one of these commands from the repository root:
+
+```bash
+(cd frontend && npm test -- --runInBand)
+```
+
+```bash
+(cd frontend && npx playwright test tests/subscription-form.spec.ts --project=chromium)
+```
+
+```bash
+(cd backend && npm run test:integration -- --runInBand)
+```
+
+Playwright starts the frontend using the dummy contract address in
+`frontend/playwright.config.ts`; a wallet extension, funded account, RPC
+credential, and `.env.local` are not required for that configured test run.
+Expected results are Jest `PASS` output or Playwright passing tests. The
+integration suite uses its in-memory database helper, so it does not require a
+live database.
+
+### Isolating failures
+
+- For RPC cases, override only the needed MSW handler with `server.use(...)`.
+  Unhandled requests are warned about; add a mock for the exact URL and method
+  rather than allowing a test to reach a live service. Use
+  `rpcNetworkErrorHandler` or `rpcTimeoutHandler` to cover failures explicitly.
+- Keep each test's database state local and clear it between cases with the
+  helper's `clear()` method. If a mock Prisma method is involved, reset its
+  mocked state in the test lifecycle too.
+- Pair `jest.useFakeTimers()` with `jest.useRealTimers()` in cleanup. Advance
+  the clock deliberately with `jest.advanceTimersByTime(...)`; do not add real
+  sleeps to tests.
+- Use the wallet mock when exercising wallet-dependent browser flows. If a
+  test still reports that no wallet is connected, confirm its init script runs
+  before page code; do not work around it with a real wallet or real secret.
+- When failures include request or application details, inspect the sanitized
+  error and correlation context. Never print credentials or full secret
+  material to make a failure easier to diagnose.
+
 ---
 
 ## 1. Smart Contract Tests

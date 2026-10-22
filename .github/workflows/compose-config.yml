@@ -1,0 +1,25 @@
+name: Compose configuration
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  compose-config:
+    name: Validate Compose configurations
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate base services
+        env:
+          CONTRACT_ID: CTEST000000000000000000000000000000000000000000000000000000000000
+        run: docker compose -f docker-compose.yml config --quiet
+
+      - name: Validate development override
+        env:
+          CONTRACT_ID: CTEST000000000000000000000000000000000000000000000000000000000000
+        run: docker compose -f docker-compose.yml -f docker-compose.dev.yml config --quiet

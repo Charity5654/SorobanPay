@@ -1,0 +1,42 @@
+name: Contract format and audit
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  contract-quality:
+    name: Contract format and dependency audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable with rustfmt
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: contracts/subscription
+
+      - name: Check contract formatting
+        run: cargo fmt --manifest-path contracts/subscription/Cargo.toml -- --check
+
+      - name: Prepare lockfile for audit
+        run: |
+          if [ ! -f contracts/subscription/Cargo.lock ]; then
+            cargo generate-lockfile --manifest-path contracts/subscription/Cargo.toml
+          fi
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      - name: Audit contract dependencies
+        run: cargo audit
+        working-directory: contracts/subscription

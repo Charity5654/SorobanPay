@@ -328,3 +328,57 @@ describe('validateSubscriptionForm: all fields invalid', () => {
     expect(isFormValid(errors)).toBe(false);
   });
 });
+
+// ─── validateSubscriptionForm — self-subscription guard ───────────────────────
+
+const VALID_G2 = 'GBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB';
+
+describe('validateSubscriptionForm: self-subscription guard', () => {
+  it('returns no error when subscriberAddress is not provided', () => {
+    // Without subscriberAddress the guard is inactive — existing callers unaffected
+    const errors = validateSubscriptionForm({ ...BASE_FORM, merchantAddress: VALID_G });
+    expect(errors.merchantAddress).toBeUndefined();
+  });
+
+  it('returns no error when subscriber and merchant are different addresses', () => {
+    const errors = validateSubscriptionForm({
+      ...BASE_FORM,
+      merchantAddress: VALID_G2,
+      subscriberAddress: VALID_G,
+    });
+    expect(errors.merchantAddress).toBeUndefined();
+    expect(isFormValid(errors)).toBe(true);
+  });
+
+  it('returns a merchantAddress error when subscriber and merchant are identical', () => {
+    const errors = validateSubscriptionForm({
+      ...BASE_FORM,
+      merchantAddress: VALID_G,
+      subscriberAddress: VALID_G,
+    });
+    expect(errors.merchantAddress).toBeDefined();
+    expect(errors.merchantAddress).toMatch(/same as your subscriber address/i);
+    expect(isFormValid(errors)).toBe(false);
+  });
+
+  it('is case-insensitive to surrounding whitespace', () => {
+    const errors = validateSubscriptionForm({
+      ...BASE_FORM,
+      merchantAddress: `  ${VALID_G}  `,
+      subscriberAddress: VALID_G,
+    });
+    expect(errors.merchantAddress).toBeDefined();
+  });
+
+  it('does not set errors on other fields when only the self-subscription rule fires', () => {
+    const errors = validateSubscriptionForm({
+      ...BASE_FORM,
+      merchantAddress: VALID_G,
+      subscriberAddress: VALID_G,
+    });
+    expect(errors.merchantAddress).toBeDefined();
+    expect(errors.tokenAddress).toBeUndefined();
+    expect(errors.amount).toBeUndefined();
+    expect(errors.interval).toBeUndefined();
+  });
+});

@@ -12,12 +12,14 @@
  *  - Renders a QR code via qrcode.react (MIT licensed)
  *  - Download as PNG via canvas rendering
  *  - Copy link to clipboard
+ *  - QR code generation uses Web Worker when available (FE-1056)
  *
- * Issue: FE-37
+ * Issue: FE-37, FE-1056
  */
 
 import { useState, useCallback, useRef } from "react";
 import { QRCodeCanvas } from "qrcode.react";
+import { useQRWorker } from "@/hooks/useQRWorker";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -63,6 +65,14 @@ export function ShareQRCode({ merchant, token, amount, interval }: ShareQRCodePr
 
   const subscriptionUrl = buildSubscriptionUrl({ merchant, token, amount, interval });
   const hasUrl = subscriptionUrl.length > 0;
+
+  // Use worker to pre-generate QR code when URL is ready
+  // This offloads expensive QR generation from the main thread
+  const { status: workerStatus } = useQRWorker(
+    subscriptionUrl,
+    200,
+    'M'
+  );
 
   const handleCopy = useCallback(async () => {
     if (!subscriptionUrl) return;
@@ -163,13 +173,24 @@ export function ShareQRCode({ merchant, token, amount, interval }: ShareQRCodePr
             aria-label="QR code for subscription link"
           >
             <div className="rounded-xl bg-white p-4 shadow-lg">
-              <QRCodeCanvas
-                value={subscriptionUrl}
-                size={200}
-                includeMargin={false}
-                level="M"
-                aria-label={`QR code linking to: ${subscriptionUrl}`}
-              />
+              {workerStatus === 'loading' && (
+                <div
+                  className="w-[200px] h-[200px] bg-gray-200 animate-pulse rounded flex items-center justify-center"
+                  role="status"
+                  aria-label="QR code generating"
+                >
+                  <span className="text-xs text-gray-500">Generating...</span>
+                </div>
+              )}
+              {workerStatus !== 'loading' && (
+                <QRCodeCanvas
+                  value={subscriptionUrl}
+                  size={200}
+                  includeMargin={false}
+                  level="M"
+                  aria-label={`QR code linking to: ${subscriptionUrl}`}
+                />
+              )}
             </div>
           </div>
 
@@ -211,9 +232,11 @@ export function ShareQRCode({ merchant, token, amount, interval }: ShareQRCodePr
             <button
               type="button"
               onClick={handleDownloadPng}
+              disabled={workerStatus === 'loading'}
               className="flex-1 min-w-[120px] inline-flex items-center justify-center gap-2 rounded-lg
                          bg-gray-700 hover:bg-gray-600 active:bg-gray-500 px-4 py-2
                          text-sm font-semibold text-gray-200 transition-colors
+                         disabled:opacity-40 disabled:cursor-not-allowed
                          focus:outline-none focus-visible:ring-2 focus-visible:ring-gray-400"
             >
               <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">

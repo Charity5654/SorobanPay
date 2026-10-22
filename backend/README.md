@@ -73,6 +73,13 @@ GET /api/summaries/:id
 - **Daily Summaries**: 1:00 AM every day
 - **Weekly Summaries**: 2:00 AM every Sunday
 
+## CI Quality Gates
+
+Pull requests run backend type checking, unit tests, and integration tests with
+`npm ci`. These checks require no production credentials or external services.
+See [CI quality gates](docs/ci-quality-gates.md) for local commands and rollback
+guidance.
+
 ## Troubleshooting
 
 If you encounter issues with the event indexer, webhooks, the payment scheduler, or the database, see the dedicated guide:

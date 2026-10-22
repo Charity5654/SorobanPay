@@ -26,7 +26,7 @@ jest.mock('@/constants/network', () => mockNetwork);
 
 const mockBuildAndSubmit = jest.fn();
 jest.mock('@/lib/transaction_builder', () => ({
-  buildAndSubmitSubscribe: (...args: unknown[]) => mockBuildAndSubmit(...args),
+  buildSignAndSubmitSubscribe: (...args: unknown[]) => mockBuildAndSubmit(...args),
 }));
 
 // useWallet state controlled per test

@@ -36,7 +36,7 @@ export const SHORTCUT_DEFINITIONS: ShortcutDefinition[] = [
   { key: '?', description: 'Show keyboard shortcuts', category: 'modal' },
   { key: 'N', description: 'Focus new subscription form', category: 'actions' },
   { key: 'H', description: 'Jump to payment history', category: 'navigation' },
-  { key: 'M', description: 'Jump to merchant portal (coming soon)', category: 'navigation' },
+  { key: 'M', description: 'Jump to merchant portal', category: 'navigation' },
   { key: 'D', description: 'Jump to dashboard (coming soon)', category: 'navigation' },
   { key: 'Esc', description: 'Close modal / cancel', category: 'modal' },
 ];
