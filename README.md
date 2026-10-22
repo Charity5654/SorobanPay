@@ -20,7 +20,7 @@ SorobanPay
 ```
 
 **Three layers:**
-1. **Smart Contract** — `SubscriptionProtocol` Soroban contract with `subscribe`, `execute_payment`, and `cancel` entry points. Uses persistent storage with TTL management and emits structured events for off-chain indexing. This is the sole source of truth for subscription state and payment execution — it never holds balances and requires a fresh auth signature on every call.
+1. **Smart Contract** — `SubscriptionProtocol` Soroban contract with 11 implemented entry points (`initialize`, `get_version`, `get_schema_version`, `migrate`, `compute_subscription_key`, `get_merchant_subscription_keys`, `subscribe`, `execute_payment`, `batch_execute_payment`, `cancel`, `get_subscription`). Uses persistent storage with TTL management and emits structured events for off-chain indexing. This is the sole source of truth for subscription state and payment execution — it never holds balances and requires a fresh auth signature on every call.
 2. **Frontend** — Next.js 14 App Router + Freighter wallet integration + Tailwind CSS. Signs and submits transactions directly to Soroban RPC; handles no server-side logic.
 3. **Backend** (`backend/`) — Optional off-chain service for event indexing, cancellation detection, payout summaries, and a merchant REST API. Read-only with respect to the chain — it polls `getEvents()` but never submits transactions. See [docs/architecture.md](docs/architecture.md) for the full backend role definition.
 4. **Build & Deploy** — GNU Makefile + bash deployment script with testnet/mainnet switching.
@@ -519,11 +519,27 @@ Three ways to access the shortcuts reference:
 
 ## Contract entry points
 
-| Function | Auth required | Description |
-|----------|--------------|-------------|
-| `subscribe(subscriber, merchant, token, amount, interval)` | subscriber | Create or update subscription. Amount must be > 0, interval in [86400, 31536000] seconds. |
-| `execute_payment(subscriber, merchant)` | merchant | Collect payment if interval has elapsed. Transfers tokens directly subscriber → merchant. |
-| `cancel(subscriber, merchant)` | subscriber | Remove subscription from persistent storage. |
+All entry points listed below are implemented in the current contract version (`1.0.0`).
+
+> **Note:** Entry points marked **Planned** are not yet implemented in the contract.  
+> Open a tracking issue or check the linked issue before using them.
+
+| Function | Auth required | Description | Status |
+|----------|--------------|-------------|--------|
+| `initialize(env, admin)` | admin (one-time) | Initialise the contract by storing the admin address and schema version. Must be called once after deployment; subsequent calls panic. | ✅ Implemented |
+| `get_version()` | none | Return the contract semantic version string (e.g. `"1.0.0"`). | ✅ Implemented |
+| `get_schema_version()` | none | Return the on-chain schema version set during the last `migrate` call. | ✅ Implemented |
+| `migrate(env, admin)` | admin | Migrate the contract schema to `CURRENT_SCHEMA_VERSION`. Returns `AlreadyMigrated` if already current. | ✅ Implemented |
+| `compute_subscription_key(env, subscriber, merchant)` | none | Compute and return the compact 32-byte storage key for a subscription pair. Useful for off-chain tooling. | ✅ Implemented |
+| `get_merchant_subscription_keys(env, merchant)` | none | Return all subscription key hashes indexed for a given merchant. | ✅ Implemented |
+| `subscribe(env, subscriber, merchant, token, amount, interval, strict)` | subscriber | Create or update subscription. Amount must be > 0 and ≤ 10¹⁸, interval in [86400, 31536000] seconds. If `strict` is `true`, rejects when allowance < amount. | ✅ Implemented |
+| `execute_payment(env, subscriber, merchant)` | merchant | Collect payment if interval has elapsed. Transfers tokens directly subscriber → merchant. | ✅ Implemented |
+| `batch_execute_payment(env, merchant, subscribers)` | merchant | Collect payments from up to 50 subscribers in a single transaction. Returns a vector of `(Address, bool)` success/failure pairs. | ✅ Implemented |
+| `cancel(env, subscriber, merchant)` | subscriber | Remove subscription from persistent storage. | ✅ Implemented |
+| `get_subscription(env, subscriber, merchant)` | none | Query active subscription details for a subscriber-merchant pair. Read-only. | ✅ Implemented |
+| `pause_subscription(subscriber, merchant)` | subscriber | Pause a subscription, suspending payments without cancelling. | 🔲 Planned — [#1411](https://github.com/Chrisland58/SorobanPay/issues/1411) |
+| `expire_subscription(subscriber, merchant)` | admin | Force-expire a subscription entry for maintenance. | 🔲 Planned — [#1411](https://github.com/Chrisland58/SorobanPay/issues/1411) |
+| `transfer_subscription(subscriber, new_subscriber)` | subscriber | Transfer a subscription to a new subscriber account. | 🔲 Planned — [#1411](https://github.com/Chrisland58/SorobanPay/issues/1411) |
 
 ### Examples
 
@@ -601,8 +617,12 @@ For the full parameter reference and error cases see [docs/contract-api.md](docs
 | `executed` | `(symbol("executed"), subscriber, merchant, token)` | `amount: i128` | Successful transfer |
 | `payment_transfer_failure` | `(symbol("payment_transfer_failure"), subscriber, merchant)` | `amount: i128` | Insufficient balance detected before transfer |
 | `cancel` | `(symbol("cancel"), subscriber, merchant)` | `()` | Always on success |
+| `payment_transfer_success` | `(symbol("payment_transfer_success"), subscriber, merchant)` | `amount: i128` | Successful transfer (batch telemetry) |
+| `batch_execute_initiated` | `(symbol("batch_execute_initiated"), merchant)` | `batch_size: i128` | Start of `batch_execute_payment` |
+| `contract_migrated` | `(symbol("contract_migrated"), admin)` | `new_version: i128` | Schema migration completed |
+| `low_allowance` | `(symbol("low_allowance"), subscriber, merchant, token)` | `(allowance: i128, required: i128)` | Subscriber allowance below amount (non-fatal warning) |
 
-Events use a `Symbol` discriminant as the first topic. The data field is an `i128` amount in stroops (or `()` for `cancel`).
+Events use a `Symbol` discriminant as the first topic. The data field is an `i128` amount in stroops, a tuple `(i128, i128)` for `low_allowance`, or `()` for `cancel`.
 
 **Quick decode example (TypeScript):**
 
@@ -759,17 +779,27 @@ Failed calls that return a `ContractError` (e.g., `PaymentNotDue`, `NoActiveSubs
 | 9 | `AmountTooLarge` | `amount > 10¹⁸` in `subscribe` |
 | 10 | `SelfSubscription` | `subscriber == merchant` in `subscribe` |
 | 11 | `InvalidTokenAddress` | `token` is the contract's own address in `subscribe` |
+| 12 | `EmptyBatch` | `batch_execute_payment` called with an empty subscribers vector |
+| 13 | `BatchTooLarge` | `batch_execute_payment` called with more than 50 subscribers |
+| 14 | `InsufficientAllowance` | `subscribe` called with `allowance < amount` in strict mode |
+| 15 | `AlreadyMigrated` | `migrate` called when contract is already at current schema version |
+| 16 | `NotAdmin` | `migrate` called by an address that is not the stored admin |
+| 17 | `NotInitialized` | Admin address not initialised; call `initialize` first |
 
 ---
 
 ## Event Indexing Architecture
 
-SorobanPay emits structured events via Soroban RPC for off-chain indexing. The contract publishes four event types:
+SorobanPay emits structured events via Soroban RPC for off-chain indexing. The contract publishes eight event types:
 
 - **`subscribe`** — Emitted when a subscription is created or updated. Signals the start of a recurring payment relationship.
 - **`executed`** — Emitted after a successful payment transfer and timestamp advance. Confirms payment collection.
 - **`payment_transfer_failure`** — Emitted when a payment attempt fails due to insufficient subscriber balance. The subscription remains active and is eligible for retry.
 - **`cancel`** — Emitted after a subscription is successfully removed. Provides an explicit, reliable signal for off-chain indexers to mark the relationship as ended.
+- **`payment_transfer_success`** — Emitted after each successful transfer in a batch. Provides telemetry for backend reconciliation.
+- **`batch_execute_initiated`** — Emitted at the start of `batch_execute_payment` with the batch size. Useful for tracking batch processing.
+- **`contract_migrated`** — Emitted when a schema migration completes. Signals off-chain systems to update their schema expectations.
+- **`low_allowance`** — Emitted as a non-fatal warning when the subscriber's token allowance is below the subscription amount (non-strict mode). Can be used to prompt the subscriber to approve a larger allowance.
 
 ### Key Components
 
@@ -783,8 +813,8 @@ SorobanPay emits structured events via Soroban RPC for off-chain indexing. The c
 ### Event Schema
 
 Each event contains:
-- **Topics:** `(symbol, subscriber_address, merchant_address[, token_address])` — enables filtering by party or event type
-- **Data:** `amount: i128` (or `()` for `cancel`) — payment amount in token's smallest unit
+- **Topics:** `(symbol, subscriber_address, merchant_address[, token_address])` — enables filtering by party or event type. `batch_execute_initiated` has only `(symbol, merchant)` and `contract_migrated` has only `(symbol, admin)`.
+- **Data:** `amount: i128` for most events, `(allowance: i128, required: i128)` for `low_allowance`, `batch_size: i128` for `batch_execute_initiated`, `new_version: i128` for `contract_migrated`, or `()` for `cancel` — all amounts in token's smallest unit.
 
 ### Recommended Architecture
 
